@@ -168,7 +168,7 @@ Every tagged release is automatically built by GitHub Actions and published with
 The easiest method. Works directly from a Chromium-based browser (Chrome, Edge, Brave).
 
 1. Connect the ESP32-S3 via USB
-2. Open the **[RTKino Web Flasher](https://flyingsurveyor.github.io/RTKINO/)**
+2. Open the **[RTKino Web Flasher](https://flyingsurveyor.github.io/RTKino/)**
 3. Click **"Install RTKino"** and select the serial port
 4. Done in ~60 seconds
 
