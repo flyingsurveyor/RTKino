@@ -1,0 +1,19 @@
+# RTKino Base Stations - New Format (with Antenna Height Correction)
+
+# File format: name;lat;lon;altGround;stid;hARP;antennaIdx
+# - name: Descriptive name of the base station
+# - lat: Latitude in decimal degrees
+# - lon: Longitude in decimal degrees  
+# - altGround: Ellipsoidal height of GROUND POINT in meters
+# - stid: Station ID (1-4095)
+# - hARP: Height from ground to Antenna Reference Point in meters
+# - antennaIdx: Index into antenna list (-1 = none/manual)
+
+# Example base stations
+Caposaldo IGM 12345;45.12345678;11.98765432;118.456;1;1.523;0
+Vertice rete GPS;44.98765432;12.12345678;95.234;2;1.800;1
+Pillar Station;45.55555555;12.44444444;200.123;3;0.000;3
+
+# When starting a base, RTKino calculates:
+# H_to_send = altGround + hARP + antenna_offset
+# This H_to_send is what gets sent to the ZED-F9P

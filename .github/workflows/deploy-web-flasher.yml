@@ -1,0 +1,105 @@
+name: Deploy Web Flasher
+
+# Runs after a release is published, copying the built binaries
+# into the web-flasher folder and deploying to GitHub Pages.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag to deploy (e.g. v1.0.0)'
+        required: true
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy-web-flasher:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag_name || github.event.release.tag_name }}
+
+      - name: Determine release tag
+        id: tag
+        run: |
+          TAG="${{ github.event.inputs.tag_name || github.event.release.tag_name }}"
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "Deploying web flasher for release: ${TAG}"
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          FLASHER_DIR="docs/web-flasher"
+
+          echo "Downloading binaries from release ${TAG}..."
+
+          ASSET_NAME=$(gh release view "${TAG}" --json assets -q '.assets[].name' | grep '\.zip$' | head -1)
+
+          if [ -z "$ASSET_NAME" ]; then
+            echo "::error::No ZIP asset found in release ${TAG}"
+            exit 1
+          fi
+
+          gh release download "${TAG}" --pattern "*.zip" --dir /tmp/
+          unzip -o "/tmp/${ASSET_NAME}" -d /tmp/release-files/
+
+          RELEASE_DIR=$(find /tmp/release-files -maxdepth 1 -type d | tail -1)
+
+          cp "${RELEASE_DIR}/bootloader.bin"  "${FLASHER_DIR}/bootloader.bin"
+          cp "${RELEASE_DIR}/partitions.bin"  "${FLASHER_DIR}/partitions.bin"
+          cp "${RELEASE_DIR}/boot_app0.bin"   "${FLASHER_DIR}/boot_app0.bin"
+          cp "${RELEASE_DIR}/firmware.bin"    "${FLASHER_DIR}/firmware.bin"
+
+          echo "=== Binaries copied to ${FLASHER_DIR} ==="
+          ls -la "${FLASHER_DIR}/"
+
+      - name: Update manifest version
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          VERSION="${TAG#v}"
+
+          cd docs/web-flasher
+          python3 -c "
+          import json
+          with open('manifest.json', 'r') as f:
+              m = json.load(f)
+          m['version'] = '${VERSION}'
+          m['name'] = 'RTKino ${VERSION}'
+          with open('manifest.json', 'w') as f:
+              json.dump(m, f, indent=2)
+          print(f'Manifest updated to version ${VERSION}')
+          "
+
+      - name: Update HTML version badge
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          cd docs/web-flasher
+          sed -i "s|v[0-9]\+\.[0-9]\+\.[0-9]\+[^<]*|${TAG} — LOLIN S3 Pro|g" index.html
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: 'docs/web-flasher'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

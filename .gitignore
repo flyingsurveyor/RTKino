@@ -1,0 +1,26 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# VS Code
+.vscode/
+*. code-workspace
+
+# Build files
+build/
+*. o
+*.obj
+*. elf
+*.hex
+*.bin
+
+# Sistema operativo
+Thumbs.db
+. DS_Store
+
+# File temporanei
+*.tmp
+*.bak
+*.swp
+

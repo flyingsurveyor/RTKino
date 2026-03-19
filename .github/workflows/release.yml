@@ -1,0 +1,199 @@
+name: Build & Release Firmware
+
+on:
+  push:
+    tags:
+      - 'v*'          # Triggered by version tags: v1.0.0, v1.1.0-beta, etc.
+  workflow_dispatch:   # Manual trigger for testing
+    inputs:
+      tag_name:
+        description: 'Release tag (e.g. v1.0.0)'
+        required: true
+
+permissions:
+  contents: write      # Needed to create releases
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        env: [lolin_s3_pro]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini') }}
+
+      - name: Install PlatformIO & esptool
+        run: |
+          pip install platformio esptool
+
+      - name: Build ${{ matrix.env }}
+        run: pio run -e ${{ matrix.env }}
+
+      # ---------------------------------------------------------------
+      # Collect all binaries needed for a full flash
+      # PlatformIO puts them in .pio/build/<env>/
+      # ---------------------------------------------------------------
+      - name: Identify binary paths
+        id: bins
+        run: |
+          BUILD_DIR=".pio/build/${{ matrix.env }}"
+          echo "build_dir=${BUILD_DIR}" >> $GITHUB_OUTPUT
+
+          echo "firmware=${BUILD_DIR}/firmware.bin" >> $GITHUB_OUTPUT
+          echo "partitions=${BUILD_DIR}/partitions.bin" >> $GITHUB_OUTPUT
+
+          BOOTLOADER=$(find ${BUILD_DIR} -name "bootloader.bin" | head -1)
+          if [ -z "$BOOTLOADER" ]; then
+            BOOTLOADER=$(find ~/.platformio/packages -path "*/esp32s3/bin/bootloader*.bin" | head -1)
+          fi
+          echo "bootloader=${BOOTLOADER}" >> $GITHUB_OUTPUT
+
+          BOOT_APP0=$(find ~/.platformio/packages -name "boot_app0.bin" | head -1)
+          echo "boot_app0=${BOOT_APP0}" >> $GITHUB_OUTPUT
+
+          echo "=== Binary locations ==="
+          echo "Firmware:   ${BUILD_DIR}/firmware.bin ($(stat -c%s ${BUILD_DIR}/firmware.bin) bytes)"
+          echo "Partitions: ${BUILD_DIR}/partitions.bin ($(stat -c%s ${BUILD_DIR}/partitions.bin) bytes)"
+          echo "Bootloader: ${BOOTLOADER} ($(stat -c%s ${BOOTLOADER}) bytes)"
+          echo "boot_app0:  ${BOOT_APP0} ($(stat -c%s ${BOOT_APP0}) bytes)"
+
+      # ---------------------------------------------------------------
+      # Create MERGED binary (single file, flash at 0x0)
+      # ---------------------------------------------------------------
+      - name: Create merged firmware
+        run: |
+          esptool.py --chip esp32s3 merge_bin \
+            --output rtkino-${{ matrix.env }}-merged.bin \
+            --flash_mode dio \
+            --flash_freq 80m \
+            --flash_size 16MB \
+            0x0000  ${{ steps.bins.outputs.bootloader }} \
+            0x8000  ${{ steps.bins.outputs.partitions }} \
+            0xe000  ${{ steps.bins.outputs.boot_app0 }} \
+            0x10000 ${{ steps.bins.outputs.firmware }}
+
+          echo "Merged binary size: $(stat -c%s rtkino-${{ matrix.env }}-merged.bin) bytes"
+
+      # ---------------------------------------------------------------
+      # Download standalone esptool binaries (no Python needed)
+      # ---------------------------------------------------------------
+      - name: Download standalone esptool
+        run: |
+          ESPTOOL_VER="v4.8.1"
+          ESPTOOL_BASE="https://github.com/espressif/esptool/releases/download/${ESPTOOL_VER}"
+          mkdir -p esptool-standalone
+
+          echo "Downloading esptool ${ESPTOOL_VER} standalone binaries..."
+
+          # Windows
+          echo "  → Windows..."
+          curl -fSL "${ESPTOOL_BASE}/esptool-${ESPTOOL_VER}-win64.zip" -o /tmp/esptool-win.zip
+          unzip -oq /tmp/esptool-win.zip -d /tmp/esptool-win
+          cp /tmp/esptool-win/esptool-win64/esptool.exe esptool-standalone/esptool.exe
+
+          # macOS (universal binary in v4.8.1)
+          echo "  → macOS..."
+          curl -fSL "${ESPTOOL_BASE}/esptool-${ESPTOOL_VER}-macos.zip" -o /tmp/esptool-mac.zip
+          unzip -oq /tmp/esptool-mac.zip -d /tmp/esptool-mac
+          cp /tmp/esptool-mac/esptool-macos/esptool esptool-standalone/esptool-macos
+          chmod +x esptool-standalone/esptool-macos
+
+          # Linux x86_64
+          echo "  → Linux..."
+          curl -fSL "${ESPTOOL_BASE}/esptool-${ESPTOOL_VER}-linux-amd64.zip" -o /tmp/esptool-linux.zip
+          unzip -oq /tmp/esptool-linux.zip -d /tmp/esptool-linux
+          cp /tmp/esptool-linux/esptool-linux-amd64/esptool esptool-standalone/esptool-linux
+          chmod +x esptool-standalone/esptool-linux
+
+          echo "=== Standalone esptool binaries ==="
+          ls -la esptool-standalone/
+
+      # ---------------------------------------------------------------
+      # Package release ZIP
+      # ---------------------------------------------------------------
+      - name: Package release ZIP
+        run: |
+          TAG="${{ github.event.inputs.tag_name || github.ref_name }}"
+          DIR="rtkino-${TAG}-${{ matrix.env }}"
+          mkdir -p "${DIR}"
+
+          # Firmware binaries
+          cp ${{ steps.bins.outputs.firmware }}   "${DIR}/firmware.bin"
+          cp ${{ steps.bins.outputs.partitions }} "${DIR}/partitions.bin"
+          cp ${{ steps.bins.outputs.bootloader }} "${DIR}/bootloader.bin"
+          cp ${{ steps.bins.outputs.boot_app0 }}  "${DIR}/boot_app0.bin"
+          cp rtkino-${{ matrix.env }}-merged.bin  "${DIR}/rtkino-merged.bin"
+
+          # Flash scripts
+          cp tools/flash.bat                       "${DIR}/flash.bat"
+          cp tools/flash.sh                        "${DIR}/flash.sh"
+          chmod +x "${DIR}/flash.sh"
+
+          # Standalone esptool (no Python required)
+          cp esptool-standalone/esptool.exe        "${DIR}/esptool.exe"
+          cp esptool-standalone/esptool-macos      "${DIR}/esptool-macos"
+          cp esptool-standalone/esptool-linux      "${DIR}/esptool-linux"
+          chmod +x "${DIR}/esptool-macos" "${DIR}/esptool-linux"
+
+          # Docs
+          cp docs/FLASHING.md                      "${DIR}/README_FLASHING.md"
+
+          zip -r "${DIR}.zip" "${DIR}/"
+
+          echo "release_zip=${DIR}.zip" >> $GITHUB_ENV
+          echo "release_dir=${DIR}" >> $GITHUB_ENV
+
+      # ---------------------------------------------------------------
+      # Create GitHub Release
+      # ---------------------------------------------------------------
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
+          name: "RTKino ${{ github.event.inputs.tag_name || github.ref_name }}"
+          draft: true
+          prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
+          generate_release_notes: true
+          files: |
+            ${{ env.release_zip }}
+            rtkino-${{ matrix.env }}-merged.bin
+            ${{ env.release_dir }}/firmware.bin
+          body: |
+            ## RTKino ${{ github.event.inputs.tag_name || github.ref_name }}
+
+            ### Download & Flash
+
+            **Option 1 — Web Flasher (recommended, zero install)**
+            Open the [Web Flasher](https://flyingsurveyor.github.io/RTKino/) in Google Chrome and follow the on-screen instructions.
+
+            **Option 2 — Release ZIP**
+            Download `rtkino-*-lolin_s3_pro.zip`, extract and run:
+            - Windows: double-click `flash.bat`
+            - macOS/Linux: `./flash.sh`
+
+            **Option 3 — OTA Update (RTKino already installed)**
+            Download `firmware.bin` only and upload it from the RTKino web interface (Menu → OTA Update).
+
+            ### Binaries included in the ZIP
+            | File | Address | Description |
+            |------|---------|-------------|
+            | `bootloader.bin` | `0x0000` | ESP32-S3 bootloader |
+            | `partitions.bin` | `0x8000` | Custom OTA partition table |
+            | `boot_app0.bin` | `0xE000` | OTA boot selector |
+            | `firmware.bin` | `0x10000` | RTKino firmware |
+            | `rtkino-merged.bin` | `0x0000` | **All-in-one binary** (single flash) |
+
+            ### Supported boards
+            - LOLIN S3 Pro (ESP32-S3, 16MB Flash, 8MB PSRAM)

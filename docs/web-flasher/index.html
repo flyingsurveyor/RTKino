@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RTKino — Web Flasher</title>
+  <script
+    type="module"
+    src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"
+  ></script>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --border: #2a2d3a;
+      --text: #e4e4e7;
+      --muted: #9ca3af;
+      --accent: #22c55e;
+      --accent-dim: #16a34a;
+      --warn: #f59e0b;
+      --warn-bg: #1c1508;
+      --warn-border: #422d08;
+      --info-bg: #0b1a2b;
+      --info-border: #0e3a5e;
+      --info-text: #7dc4e8;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+    }
+
+    .container {
+      max-width: 540px;
+      width: 100%;
+      text-align: center;
+    }
+
+    .logo-img {
+      width: 100px;
+      height: 100px;
+      margin: 0 auto 1.25rem;
+      border-radius: 22px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      object-fit: cover;
+    }
+
+    h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      margin-bottom: 0.25rem;
+    }
+
+    .version {
+      color: var(--accent);
+      font-size: 0.9rem;
+      font-weight: 600;
+      margin-bottom: 0.75rem;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 0.95rem;
+      line-height: 1.6;
+      margin-bottom: 1.75rem;
+    }
+
+    esp-web-install-button {
+      display: block;
+      margin: 0 auto 2rem;
+    }
+    esp-web-install-button::part(button) {
+      background: var(--accent);
+      color: #000;
+      font-size: 1.1rem;
+      font-weight: 600;
+      padding: 0.9rem 2.5rem;
+      border: none;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    esp-web-install-button::part(button):hover {
+      background: var(--accent-dim);
+    }
+
+    .not-supported {
+      display: none;
+      background: #3b1818;
+      border: 1px solid #7f1d1d;
+      border-radius: 12px;
+      padding: 1rem 1.5rem;
+      color: #fca5a5;
+      font-size: 0.9rem;
+      margin-bottom: 2rem;
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 1.5rem;
+      text-align: left;
+      margin-bottom: 1.25rem;
+    }
+
+    .panel h3 {
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 1rem;
+    }
+
+    .step {
+      display: flex;
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
+      font-size: 0.95rem;
+      line-height: 1.5;
+    }
+
+    .step:last-child { margin-bottom: 0; }
+
+    .step-num {
+      flex-shrink: 0;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: #000;
+      font-size: 0.75rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .step-num.dim {
+      background: var(--border);
+      color: var(--muted);
+    }
+
+    .ap-box {
+      background: var(--info-bg);
+      border: 1px solid var(--info-border);
+      border-radius: 12px;
+      padding: 1rem 1.25rem;
+      margin: 0.75rem 0;
+    }
+
+    .ap-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.35rem 0;
+      font-size: 0.9rem;
+    }
+
+    .ap-label {
+      color: var(--muted);
+      font-size: 0.8rem;
+    }
+
+    .ap-value {
+      font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+      color: var(--info-text);
+      font-weight: 600;
+      font-size: 0.95rem;
+      user-select: all;
+      cursor: pointer;
+    }
+
+    .ap-value:hover { text-decoration: underline; }
+
+    .ap-divider {
+      border: none;
+      border-top: 1px solid var(--info-border);
+      margin: 0.25rem 0;
+    }
+
+    .zed-notice {
+      background: var(--warn-bg);
+      border: 1px solid var(--warn-border);
+      border-radius: 12px;
+      padding: 1rem 1.25rem;
+      margin-top: 0.75rem;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      color: #fcd790;
+    }
+
+    .zed-notice strong { color: var(--warn); }
+
+    .zed-notice a {
+      color: var(--warn);
+      text-decoration: underline;
+    }
+
+    .footer {
+      color: var(--muted);
+      font-size: 0.8rem;
+      line-height: 1.6;
+      margin-top: 0.5rem;
+    }
+
+    .footer a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+    .footer a:hover { text-decoration: underline; }
+
+    code {
+      background: rgba(255,255,255,0.06);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+      font-size: 0.85em;
+      font-family: "SF Mono", "Fira Code", monospace;
+    }
+
+    .sep {
+      width: 40px;
+      height: 2px;
+      background: var(--border);
+      margin: 1.5rem auto;
+      border-radius: 1px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <img src="logo.png" alt="RTKino" class="logo-img" />
+
+    <h1>RTKino</h1>
+    <div class="version">v1.0.0 — LOLIN S3 Pro</div>
+    <p class="subtitle">
+      Flash RTKino firmware directly from your browser.<br />
+      No installation required.
+    </p>
+
+    <esp-web-install-button manifest="manifest.json">
+      <span slot="unsupported">
+        <div class="not-supported" style="display:block">
+          Your browser does not support Web Serial.<br />
+          Please use <strong>Google Chrome</strong>, Edge, or Brave on desktop.
+        </div>
+      </span>
+      <span slot="not-allowed">
+        <div class="not-supported" style="display:block">
+          Web Serial is blocked. Make sure this page is served over HTTPS.
+        </div>
+      </span>
+    </esp-web-install-button>
+
+    <div class="panel">
+      <h3>How to flash</h3>
+      <div class="step">
+        <div class="step-num">1</div>
+        <span>Connect the ESP32-S3 to your computer with a USB-C <strong>data</strong> cable</span>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <span>Click <strong>"Install RTKino"</strong> above and select the serial port</span>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <span>Wait for completion (~60 sec). RTKino will restart automatically.</span>
+      </div>
+    </div>
+
+    <div class="sep"></div>
+
+    <div class="panel">
+      <h3>After flashing — First setup</h3>
+
+      <div class="step">
+        <div class="step-num dim">4</div>
+        <span>RTKino creates its own WiFi access point. Connect from your phone or laptop:</span>
+      </div>
+
+      <div class="ap-box">
+        <div class="ap-row">
+          <span class="ap-label">Network (SSID)</span>
+          <span class="ap-value" title="Click to copy" onclick="copyText(this)">rtkino_AP</span>
+        </div>
+        <hr class="ap-divider" />
+        <div class="ap-row">
+          <span class="ap-label">Password</span>
+          <span class="ap-value" title="Click to copy" onclick="copyText(this)">rtkino_zedf9p</span>
+        </div>
+        <hr class="ap-divider" />
+        <div class="ap-row">
+          <span class="ap-label">Web interface</span>
+          <span class="ap-value" title="Click to copy" onclick="copyText(this)">192.168.4.1</span>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num dim">5</div>
+        <span>From the RTKino web interface, configure your <strong>WiFi network</strong> and <strong>NTRIP caster</strong> credentials to start receiving RTK corrections</span>
+      </div>
+
+      <div class="zed-notice">
+        <strong>ZED-F9P configuration required.</strong>
+        The u-blox ZED-F9P must be configured before use with RTKino.
+        Load the provided
+        <a href="https://github.com/FlyingSurveyor/RTKino/blob/main/docs/ZEDCONF_RTKino.txt">configuration file</a>
+        using
+        <a href="https://www.u-blox.com/en/product/u-center">u-center</a>
+        and save to flash (UBX-CFG-CFG &rarr; Save).
+        See the
+        <a href="https://github.com/FlyingSurveyor/RTKino/blob/main/docs/FLASHING.md">full setup guide</a>
+        for step-by-step instructions.
+      </div>
+    </div>
+
+    <p class="footer">
+      Port not showing up? Hold <strong>BOOT</strong>, press <strong>RESET</strong>, release BOOT.<br />
+      On Linux: <code>sudo usermod -a -G dialout $USER</code><br /><br />
+      <a href="https://github.com/FlyingSurveyor/RTKino">GitHub</a> &middot;
+      <a href="https://github.com/FlyingSurveyor/RTKino/releases">All releases</a> &middot;
+      <a href="https://github.com/FlyingSurveyor/RTKino/blob/main/docs/FLASHING.md">Setup guide</a>
+    </p>
+  </div>
+
+  <script>
+    function copyText(el) {
+      var t = el.textContent.trim();
+      try {
+        navigator.clipboard.writeText(t);
+        var orig = el.textContent;
+        el.textContent = 'copied!';
+        setTimeout(function() { el.textContent = orig; }, 1200);
+      } catch(e) {
+        var r = document.createRange();
+        r.selectNodeContents(el);
+        var s = window.getSelection();
+        s.removeAllRanges();
+        s.addRange(r);
+      }
+    }
+  </script>
+</body>
+</html>

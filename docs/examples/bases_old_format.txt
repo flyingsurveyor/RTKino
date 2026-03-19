@@ -1,0 +1,20 @@
+# RTKino Base Stations - Old Format (Backward Compatible)
+
+# File format: name;lat;lon;alt;stid
+# - name: Descriptive name of the base station
+# - lat: Latitude in decimal degrees
+# - lon: Longitude in decimal degrees
+# - alt: Ellipsoidal height in meters
+# - stid: Station ID (1-4095)
+
+# Example base stations (old format)
+Caposaldo IGM 12345;45.12345678;11.98765432;118.456;1
+Vertice rete GPS;44.98765432;12.12345678;95.234;2
+
+# When RTKino loads this old format:
+# - alt is treated as altGround
+# - hARP is set to 0.0
+# - antennaIdx is set to -1 (none)
+# 
+# When the file is next saved, it will be automatically
+# converted to the new 7-field format.

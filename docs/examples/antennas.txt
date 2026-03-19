@@ -1,0 +1,15 @@
+# RTKino Antenna Models - Sample Configuration
+
+# File format: name;offset
+# - name: Descriptive name of the antenna model
+# - offset: ARP to L1/L2 phase center offset in meters
+
+# Professional GNSS Antennas
+u-blox ANN-MB;0.065
+Ardusimple Survey;0.072
+Beitian BT-560;0.061
+Tallysman TW3882;0.068
+
+# Special Cases
+Antenna on pillar;0.000
+Custom patch antenna;0.050

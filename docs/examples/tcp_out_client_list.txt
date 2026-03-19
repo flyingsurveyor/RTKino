@@ -1,0 +1,14 @@
+# LAST=-1
+# TCP OUT CLIENT Profiles for RTKINO
+# Format: name;host;port
+# 
+# Examples:
+# LocalBase;192.168.1.100;5000
+# CloudServer;rtk.myserver.com;2102
+# MobileBase;10.0.0.50;5555
+#
+# To activate a profile, either:
+# 1. Use the WebUI at http://<rtkino-ip>/base-cfg
+# 2. Set LAST=<index> where index is the line number (0-based)
+#
+# Active profile: LAST=-1 means no profile is active

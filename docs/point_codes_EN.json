@@ -1,0 +1,97 @@
+{
+  "categorie": [
+    {
+      "id": "buildings",
+      "label": "Buildings",
+      "codici": [
+        { "cod": "BLD_CRN", "label": "Building corner" },
+        { "cod": "WALL_ANG", "label": "Wall angle" },
+        { "cod": "WALL_CRN", "label": "Wall corner" },
+        { "cod": "DOOR", "label": "Door / entrance" },
+        { "cod": "WINDOW", "label": "Window" },
+        { "cod": "COLUMN", "label": "Column / pillar" },
+        { "cod": "STEP", "label": "Step / threshold" },
+        { "cod": "BLD_GEN", "label": "Building (generic)" }
+      ]
+    },
+    {
+      "id": "fences",
+      "label": "Fences & boundaries",
+      "codici": [
+        { "cod": "FNC_CRN", "label": "Fence corner" },
+        { "cod": "FNC_POST", "label": "Fence post" },
+        { "cod": "GATE", "label": "Gate / access" },
+        { "cod": "BND_PT", "label": "Boundary point" },
+        { "cod": "BND_MRK", "label": "Boundary marker" }
+      ]
+    },
+    {
+      "id": "roads",
+      "label": "Roads & infrastructure",
+      "codici": [
+        { "cod": "RD_EDGE", "label": "Road edge" },
+        { "cod": "PVT_EDGE", "label": "Pavement edge" },
+        { "cod": "ISLAND", "label": "Flowerbed / island" },
+        { "cod": "RD_STEP", "label": "Road step" },
+        { "cod": "CURVE", "label": "Curve / junction" },
+        { "cod": "RD_CTR", "label": "Road centreline" }
+      ]
+    },
+    {
+      "id": "utilities",
+      "label": "Utilities & structures",
+      "codici": [
+        { "cod": "MANHOLE", "label": "Manhole / cover" },
+        { "cod": "HYDRANT", "label": "Hydrant" },
+        { "cod": "LT_POLE", "label": "Light pole" },
+        { "cod": "RD_SIGN", "label": "Road sign" },
+        { "cod": "CABINET", "label": "Cabinet / enclosure" },
+        { "cod": "OUTLET", "label": "Outlet / drain" }
+      ]
+    },
+    {
+      "id": "vegetation",
+      "label": "Vegetation & green",
+      "codici": [
+        { "cod": "TREE", "label": "Tree (trunk)" },
+        { "cod": "BUSH", "label": "Bush / hedge" },
+        { "cod": "GRN_EDGE", "label": "Green area edge" },
+        { "cod": "SLP_TOE", "label": "Slope (toe)" },
+        { "cod": "SLP_CRST", "label": "Slope (crest)" }
+      ]
+    },
+    {
+      "id": "ground",
+      "label": "Ground level & morphology",
+      "codici": [
+        { "cod": "GL", "label": "Ground level" },
+        { "cod": "GL_FLAT", "label": "Ground level (flat)" },
+        { "cod": "GL_SLOPE", "label": "Ground level (slope)" },
+        { "cod": "DTCH_BTM", "label": "Ditch bottom" },
+        { "cod": "DTCH_BNK", "label": "Ditch bank" },
+        { "cod": "EMB_EDGE", "label": "Embankment edge" },
+        { "cod": "EMB_TOE", "label": "Embankment toe" }
+      ]
+    },
+    {
+      "id": "hydrography",
+      "label": "Hydrography",
+      "codici": [
+        { "cod": "WC_BANK", "label": "Watercourse bank" },
+        { "cod": "WTR_LVL", "label": "Water surface" },
+        { "cod": "LVE_CRST", "label": "Levee (crest)" },
+        { "cod": "LVE_TOE", "label": "Levee (toe)" }
+      ]
+    },
+    {
+      "id": "other",
+      "label": "Other",
+      "codici": [
+        { "cod": "STATION", "label": "Station / base" },
+        { "cod": "CTRL", "label": "Control point" },
+        { "cod": "REF", "label": "Reference point" },
+        { "cod": "OTHER", "label": "Other (see notes)" }
+      ]
+    }
+  ]
+}
