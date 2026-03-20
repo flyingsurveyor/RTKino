@@ -14,12 +14,16 @@
 
 // Time sync globals (defined in main.cpp)
 extern char g_ntpServer[64];
+extern char g_ntpTz[64];
 extern char g_mdnsName[32];
 extern volatile uint8_t g_timeSource;
 extern volatile time_t  g_lastSyncEpoch;
 
 // Time sync function (defined in main.cpp)
 extern bool syncTimeFromNtp(const char* server);
+
+// Timezone apply helper (defined in main.cpp)
+extern void applyTimezone();
 
 // mDNS apply helper (defined in main.cpp)
 extern bool applyMdnsHostname(const char* hostname);
@@ -448,6 +452,19 @@ static bool loadNtpServerFile(String& out) {
 
 static bool saveNtpServerFile(const String& s) {
   return FlashConfig::writeFile("/config/ntp.txt", s + "\n");
+}
+
+// NTP timezone file helpers
+static bool loadNtpTzFile(String& out) {
+  String content = FlashConfig::readFile("/config/tz.txt");
+  content.trim();
+  if (content.length() < 2) return false;
+  out = content;
+  return true;
+}
+
+static bool saveNtpTzFile(const String& s) {
+  return FlashConfig::writeFile("/config/tz.txt", s + "\n");
 }
 
 // mDNS hostname file helpers
@@ -1963,6 +1980,17 @@ static void handleBasePage() {
   sendChunk("      if (surveyPollInterval) { clearInterval(surveyPollInterval); surveyPollInterval = null; }");
   sendChunk("      document.getElementById('startBtn').style.display = 'inline-block';");
   sendChunk("      document.getElementById('stopBtn').style.display = 'none';");
+  sendChunk("      if (d.complete && d.samples > 0) {");
+  sendChunk("        document.getElementById('surveyProgress').style.display = 'none';");
+  sendChunk("        document.getElementById('surveyResults').style.display = 'block';");
+  sendChunk("        document.getElementById('finalLat').textContent = d.lat.toFixed(8);");
+  sendChunk("        document.getElementById('finalLon').textContent = d.lon.toFixed(8);");
+  sendChunk("        document.getElementById('finalAlt').textContent = d.altGround.toFixed(3);");
+  sendChunk("        var horizStd = Math.sqrt(d.stdLat*d.stdLat + d.stdLon*d.stdLon);");
+  sendChunk("        document.getElementById('finalStd').textContent = horizStd.toFixed(9);");
+  sendChunk("      } else {");
+  sendChunk("        document.getElementById('surveyProgress').style.display = 'none';");
+  sendChunk("      }");
   sendChunk("      return;");
   sendChunk("    }");
   sendChunk("    document.getElementById('progressBar').style.width = d.progress + '%';");
@@ -2284,6 +2312,11 @@ static void handleSettingsPage() {
     strncpy(g_ntpServer, fromFile.c_str(), sizeof(g_ntpServer) - 1);
     g_ntpServer[sizeof(g_ntpServer) - 1] = 0;
   }
+  String tzFromFile;
+  if (loadNtpTzFile(tzFromFile)) {
+    strncpy(g_ntpTz, tzFromFile.c_str(), sizeof(g_ntpTz) - 1);
+    g_ntpTz[sizeof(g_ntpTz) - 1] = 0;
+  }
   
   time_t nowEpoch = time(nullptr);
   String nowStr = "n/a";
@@ -2320,6 +2353,41 @@ static void handleSettingsPage() {
   sendChunk("<button type='submit'>Save</button> ");
   sendChunk("</form>");
   sendChunk("<p><a href='/ntp/sync' class='btn'>Sync Now</a></p>");
+
+  sendChunk("<h3>Timezone</h3>");
+  sendChunk("<p>Active POSIX string: <code>" + htmlEscape(String(g_ntpTz)) + "</code></p>");
+  sendChunk("<form method='POST' action='/ntp/tz/save'>");
+  sendChunk("<label>Timezone:</label><select name='tz' style='width:320px'>");
+  static const struct { const char* label; const char* posix; } TZ_LIST[] = {
+    { "UTC",                                  "UTC0"                                      },
+    { "London (GMT/BST)",                     "GMT0BST,M3.5.0/1,M10.5.0"                 },
+    { "Italy / Central Europe (CET/CEST)",    "CET-1CEST,M3.5.0/2,M10.5.0/3"            },
+    { "Eastern Europe (EET/EEST)",            "EET-2EEST,M3.5.0/3,M10.5.0/4"            },
+    { "Moscow (MSK)",                         "MSK-3"                                     },
+    { "Dubai (GST)",                          "GST-4"                                     },
+    { "India (IST)",                          "IST-5:30"                                  },
+    { "Bangkok (ICT)",                        "ICT-7"                                     },
+    { "China / Singapore (CST/SGT)",          "CST-8"                                     },
+    { "Japan (JST)",                          "JST-9"                                     },
+    { "Eastern Australia (AEST/AEDT)",        "AEST-10AEDT,M10.1.0,M4.1.0/3"            },
+    { "New Zealand (NZST/NZDT)",              "NZST-12NZDT,M9.5.0,M4.1.0/3"             },
+    { "Azores",                               "AZOT1AZOST,M3.5.0/0,M10.5.0/1"            },
+    { "Brazil (BRT/BRST)",                    "BRT+3BRST,M10.3.0/0,M2.3.0/0"             },
+    { "Argentina (ART)",                      "ART+3"                                     },
+    { "Eastern US (EST/EDT)",                 "EST5EDT,M3.2.0,M11.1.0"                   },
+    { "Central US (CST/CDT)",                 "CST6CDT,M3.2.0,M11.1.0"                   },
+    { "Mountain US (MST/MDT)",                "MST7MDT,M3.2.0,M11.1.0"                   },
+    { "Pacific US (PST/PDT)",                 "PST8PDT,M3.2.0,M11.1.0"                   },
+  };
+  String curTz = String(g_ntpTz);
+  for (int i = 0; i < (int)(sizeof(TZ_LIST)/sizeof(TZ_LIST[0])); i++) {
+    String sel = (curTz == TZ_LIST[i].posix) ? " selected" : "";
+    sendChunk("<option value='" + htmlEscape(String(TZ_LIST[i].posix)) + "'" + sel + ">" +
+              htmlEscape(String(TZ_LIST[i].label)) + "</option>");
+  }
+  sendChunk("</select><br>");
+  sendChunk("<button type='submit'>Save</button>");
+  sendChunk("</form>");
   sendChunk("</div>");
   
   // ZED Rate
@@ -3142,6 +3210,22 @@ static void handleNtpSync() {
   }
   bool ok = syncTimeFromNtp(g_ntpServer);
   _server->send(200, "text/plain", ok ? "OK" : "FAIL");
+}
+
+static void handleNtpTzSave() {
+  String s = _server->arg("tz");
+  s.trim();
+  if (s.isEmpty()) { _server->send(400, "text/plain", "Invalid timezone"); return; }
+
+  if (!saveNtpTzFile(s)) { _server->send(503, "text/plain", "Write failed"); return; }
+  FlashConfig::markDirty();
+
+  strncpy(g_ntpTz, s.c_str(), sizeof(g_ntpTz) - 1);
+  g_ntpTz[sizeof(g_ntpTz) - 1] = 0;
+  applyTimezone();
+
+  _server->sendHeader("Location", "/settings");
+  _server->send(303);
 }
 
 // ========================================================================
@@ -4722,14 +4806,29 @@ static void handleSurveyPage() {
   sendChunk("function delSurvey(sid){");
   sendChunk("  if(!confirm('Delete survey? All points will be lost.'))return;");
   sendChunk("  fetch('/api/pts/delete?sid='+sid,{method:'POST'}).then(function(r){return r.json();})");
-  sendChunk("    .then(function(d){if(d.ok)location.reload();else alert('Error: '+(d.error||'unknown'));})");
+  sendChunk("    .then(function(d){");
+  sendChunk("      if(d.ok){");
+  sendChunk("        var div=document.querySelector('div[data-sid=\"'+sid+'\"]');");
+  sendChunk("        if(div)div.remove();");
+  sendChunk("        var banner=document.getElementById('active-banner');");
+  sendChunk("        if(banner&&banner.getAttribute('data-sid')===sid)location.reload();");
+  sendChunk("      }else{alert('Error: '+(d.error||'unknown'));}");
+  sendChunk("    })");
   sendChunk("    .catch(function(e){alert('Network error: '+e);});");
   sendChunk("}");
 
   sendChunk("function delPoint(sid,pid){");
   sendChunk("  if(!confirm('Delete point '+pid+'?'))return;");
   sendChunk("  fetch('/api/pts/point/delete?sid='+sid+'&pid='+pid,{method:'POST'}).then(function(r){return r.json();})");
-  sendChunk("    .then(function(d){if(d.ok)location.reload();else alert('Error: '+(d.error||'unknown'));})");
+  sendChunk("    .then(function(d){");
+  sendChunk("      if(d.ok){");
+  sendChunk("        var tr=document.querySelector('tr[data-pid=\"'+pid+'\"]');");
+  sendChunk("        if(tr)tr.remove();");
+  sendChunk("        var cnt=document.getElementById('active-pts-count');");
+  sendChunk("        if(cnt){var n=parseInt(cnt.textContent,10);if(!isNaN(n))cnt.textContent=n-1;}");
+  sendChunk("        refreshSurveyMap();");
+  sendChunk("      }else{alert('Error: '+(d.error||'unknown'));}");
+  sendChunk("    })");
   sendChunk("    .catch(function(e){alert('Network error: '+e);});");
   sendChunk("}");
 
@@ -4748,8 +4847,8 @@ static void handleSurveyPage() {
     int ti = json.indexOf("\"title\":\"");
     if (ti >= 0) { int ts=ti+9, te=json.indexOf("\"",ts); if(te>ts) title=json.substring(ts,te); }
     int pts = SurveyPoints::getSurveyPointCount(activeSid);
-    sendChunk("<div style='background:#2ecc71;color:white;padding:10px;border-radius:4px;margin-bottom:12px'>");
-    sendChunk("<b>Active survey: " + title + "</b> &nbsp;|&nbsp; Points: " + String(pts) + " &nbsp;|&nbsp; ID: " + activeSid);
+    sendChunk("<div id='active-banner' data-sid='" + activeSid + "' style='background:#2ecc71;color:white;padding:10px;border-radius:4px;margin-bottom:12px'>");
+    sendChunk("<b>Active survey: " + title + "</b> &nbsp;|&nbsp; Points: <span id='active-pts-count'>" + String(pts) + "</span> &nbsp;|&nbsp; ID: " + activeSid);
     sendChunk("</div>");
     // Measure form
     sendChunk("<h3>Measure point</h3>");
@@ -4788,7 +4887,7 @@ static void handleSurveyPage() {
       int pts = SurveyPoints::getSurveyPointCount(sid);
       bool isActive = (sid == activeSid);
 
-      sendChunk("<div style='border:1px solid #ddd;border-radius:4px;padding:10px;margin:6px 0;background:" + String(isActive?"#eafaf1":"white") + "'>");
+      sendChunk("<div data-sid='" + sid + "' style='border:1px solid #ddd;border-radius:4px;padding:10px;margin:6px 0;background:" + String(isActive?"#eafaf1":"white") + "'>");
       sendChunk("<b>" + String(isActive ? "(*) " : "") + title + "</b> &nbsp;");
       sendChunk("<span style='color:#7f8c8d'>Punti: " + String(pts) + " | " + created + " | ID: " + sid + "</span><br>");
       if (!isActive) {
@@ -5146,7 +5245,18 @@ static void handleSurveyPage() {
     sendChunk("  document.getElementById('map-status').textContent='Loading...';");
     sendChunk("  fetch('/api/pts/download').then(function(r){return r.json();}).then(function(g){initSurveyMap(g);}).catch(function(e){document.getElementById('map-status').textContent='Error: '+e;});");
     sendChunk("}");
-    sendChunk("refreshSurveyMap();");
+    sendChunk("(function(){");
+    sendChunk("  var mapDiv=document.getElementById('survey-map');");
+    sendChunk("  if(!mapDiv)return;");
+    sendChunk("  if('IntersectionObserver' in window){");
+    sendChunk("    var obs=new IntersectionObserver(function(entries){");
+    sendChunk("      if(entries[0].isIntersecting){obs.disconnect();refreshSurveyMap();}");
+    sendChunk("    },{threshold:0.1});");
+    sendChunk("    obs.observe(mapDiv);");
+    sendChunk("  } else {");
+    sendChunk("    refreshSurveyMap();");
+    sendChunk("  }");
+    sendChunk("})();");
 
     sendChunk("</script>");
     sendChunk("</div>");
@@ -5203,7 +5313,7 @@ static void handleSurveyPage() {
           if(c2>0) alt_s=coords.substring(c2+1); lat_s.trim(); lon_s.trim(); alt_s.trim();}
       }
 
-      sendChunk("<tr><td>" + pid + "</td><td>" + name + "</td><td>" + codice + "</td>");
+      sendChunk("<tr data-pid='" + pid + "'><td>" + pid + "</td><td>" + name + "</td><td>" + codice + "</td>");
       sendChunk("<td>" + lat_s + "</td><td>" + lon_s + "</td><td>" + alt_s + "</td>");
       sendChunk("<td>" + getNum("pdop",from) + "</td><td>" + getNum("hdop",from) + "</td><td>" + getNum("vdop",from) + "</td>");
       sendChunk("<td>" + getNum("sigma_N",from) + "</td><td>" + getNum("sigma_E",from) + "</td><td>" + getNum("sigma_U",from) + "</td>");
@@ -5892,8 +6002,9 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
   _server->on("/antennas/update", HTTP_POST, handleAntennaUpdate);
 
   // NTP
-  _server->on("/ntp/save", HTTP_POST, handleNtpSave);
-  _server->on("/ntp/sync", HTTP_GET, handleNtpSync);
+  _server->on("/ntp/save",    HTTP_POST, handleNtpSave);
+  _server->on("/ntp/sync",    HTTP_GET,  handleNtpSync);
+  _server->on("/ntp/tz/save", HTTP_POST, handleNtpTzSave);
 
   // mDNS
   _server->on("/mdns/save", HTTP_POST, handleMdnsSave);
