@@ -19,6 +19,7 @@ static const struct { const char* sdPath; const char* flashPath; } MIGRATE_FILES
   { "/gnss/config.txt",               "/config/config.txt"              },
   { "/gnss/ntrip.txt",                "/config/ntrip.txt"               },
   { "/gnss/codici_punto.json",        "/config/codici_punto.json"       },
+  { "/gnss/tz.txt",                   "/config/tz.txt"                  },
 };
 static const int MIGRATE_COUNT = sizeof(MIGRATE_FILES) / sizeof(MIGRATE_FILES[0]);
 
@@ -36,6 +37,7 @@ static const struct { const char* flashPath; const char* sdPath; } SYNC_FILES[] 
   { "/config/ble_name.txt",             "/gnss/ble_name.txt"            },
   { "/config/ble_pin.txt",              "/gnss/ble_pin.txt"             },
   { "/config/codici_punto.json",        "/gnss/codici_punto.json"       },
+  { "/config/tz.txt",                   "/gnss/tz.txt"                  },
 };
 static const int SYNC_COUNT = sizeof(SYNC_FILES) / sizeof(SYNC_FILES[0]);
 

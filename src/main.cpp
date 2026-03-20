@@ -73,6 +73,8 @@ volatile time_t  g_lastSyncEpoch = 0;
 
 // NTP server config (can be edited from WebUI)
 char g_ntpServer[64] = "pool.ntp.org";
+// NTP timezone POSIX string (can be edited from WebUI, default: Italy CET/CEST)
+char g_ntpTz[64] = "CET-1CEST,M3.5.0/2,M10.5.0/3";
 
 // mDNS hostname (can be edited from WebUI) - browse: http://<name>.local/
 // NOTE: only the host label is stored here (without .local)
@@ -1206,10 +1208,13 @@ static void startApMode() {
   wifiAvailable = true;
 }
 
-static void setItalianTimezone() {
-  // CET/CEST rules (Italy)
-  setenv("TZ", "CET-1CEST,M3.5.0/2,M10.5.0/3", 1);
+void applyTimezone() {
+  setenv("TZ", g_ntpTz, 1);
   tzset();
+}
+
+static bool loadNtpTz(char* out, size_t outSize) {
+  return FlashConfig::readFileToBuffer("/config/tz.txt", out, outSize);
 }
 
 static bool loadNtpServer(char* out, size_t outSize) {
@@ -1307,7 +1312,7 @@ bool applyBleName(const char* newName) {
 bool syncTimeFromNtp(const char* server) {
   if (!server || !server[0]) return false;
   // Use local timezone rules via TZ; configTime expects UTC offsets, but TZ handles localtime().
-  configTzTime("CET-1CEST,M3.5.0/2,M10.5.0/3", server);
+  configTzTime(g_ntpTz, server);
   tzset();
   struct tm tmNow;
   // wait up to ~3 seconds for SNTP to set time
@@ -1345,9 +1350,8 @@ static bool syncTimeFromUbxTimeUtc(uint16_t year, uint8_t month, uint8_t day,
   setenv("TZ", "UTC0", 1);
   tzset();
   epochUtc = mktime(&t);
-  // Restore Italian timezone
-  setenv("TZ", "CET-1CEST,M3.5.0/2,M10.5.0/3", 1);
-  tzset();
+  // Restore configured timezone
+  applyTimezone();
 #endif
   if (epochUtc < 1700000000) return false;
   struct timeval tv;
@@ -2072,9 +2076,9 @@ static void loadStakeoutFilePoints(int fileIdx) {
 void setup() {
   Serial.begin(115200);
   delay(300);
-  // Timezone italiana (CET/CEST) per localtime() e formattazione filename
-  setenv("TZ", "CET-1CEST,M3.5.0/2,M10.5.0/3", 1);
-  tzset();
+  // Apply default timezone (CET/CEST) for localtime() and filename formatting;
+  // will be overridden after FlashConfig is loaded from flash.
+  applyTimezone();
 
   // ===== MUTEX INITIALIZATION =====
   // SD/SPI non e' thread-safe:  usiamo un mutex globale per evitare accessi concorrenti
@@ -2395,6 +2399,8 @@ void setup() {
   // Wi-Fi + Web + NTRIP (rover IN)
   WifiProfiles::loadFromFlash(wifiList);
   loadNtpServer(g_ntpServer, sizeof(g_ntpServer));
+  loadNtpTz(g_ntpTz, sizeof(g_ntpTz));
+  applyTimezone();   // re-apply after loading persisted timezone from flash
   loadMdnsName(g_mdnsName, sizeof(g_mdnsName));
   if (wifiList.empty()) { WifiCred c{1, DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASSWORD}; wifiList.push_back(c); oledPrintln("[WiFi] Uso fallback:  " DEFAULT_WIFI_SSID); }
   WifiProfiles::sortByPriority(wifiList);
