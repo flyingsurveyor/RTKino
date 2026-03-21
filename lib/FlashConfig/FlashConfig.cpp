@@ -242,3 +242,56 @@ size_t FlashConfig::totalBytes() {
 bool FlashConfig::isMigrated() {
   return LittleFS.exists("/config/.migrated");
 }
+
+// ---- Recursive SD directory removal helper ----
+static void rmDirRecursiveSD(SdFat& sd, const char* path) {
+  FsFile dir = sd.open(path, O_RDONLY);
+  if (!dir || !dir.isDirectory()) { dir.close(); return; }
+  
+  FsFile entry;
+  while (entry.openNext(&dir, O_RDONLY)) {
+    char name[128];
+    entry.getName(name, sizeof(name));
+    
+    String fullPath = String(path) + "/" + name;
+    bool isDir = entry.isDirectory();
+    entry.close();
+    
+    if (isDir) {
+      rmDirRecursiveSD(sd, fullPath.c_str());
+    } else {
+      sd.remove(fullPath.c_str());
+    }
+  }
+  dir.close();
+  sd.rmdir(path);
+}
+
+bool FlashConfig::factoryReset(SdFat& sd, SemaphoreHandle_t sdMutex, bool wipeSD) {
+  Serial.println("[Flash] === FACTORY RESET ===");
+
+  // 1. Format entire LittleFS (wipes /config/, /surveys/, /stakeout/, everything)
+  LittleFS.end();
+  bool ok = LittleFS.format();
+  if (ok) {
+    LittleFS.begin(true);  // remount so ESP.restart() is clean
+  }
+  Serial.printf("[Flash] LittleFS format: %s\n", ok ? "OK" : "FAILED");
+
+  // 2. Optionally wipe SD config and data directories
+  if (wipeSD && sdMutex) {
+    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(5000)) == pdTRUE) {
+      Serial.println("[Flash] Wiping SD directories...");
+      rmDirRecursiveSD(sd, "/gnss");
+      rmDirRecursiveSD(sd, "/surveys");
+      rmDirRecursiveSD(sd, "/stakeout");
+      Serial.println("[Flash] SD wipe completed");
+      xSemaphoreGive(sdMutex);
+    } else {
+      Serial.println("[Flash] SD busy, could not wipe SD");
+    }
+  }
+
+  Serial.println("[Flash] Factory reset complete. Reboot required.");
+  return ok;
+}

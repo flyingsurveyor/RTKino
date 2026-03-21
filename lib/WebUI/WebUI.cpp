@@ -998,19 +998,6 @@ static void handleCSS() {
   _server->send_P(200, "text/css", CSS_CONTENT);
 }
 
-// Leaflet assets — served as separate cacheable endpoints so the browser
-// caches them across page loads.  The ?v= query string in the Survey page
-// HTML is used for cache-busting when LEAFLET_ASSET_VERSION changes.
-static void handleLeafletCSS() {
-  _server->sendHeader("Cache-Control", "public, max-age=31536000, immutable");
-  _server->send_P(200, "text/css", LEAFLET_CSS);
-}
-
-static void handleLeafletJS() {
-  _server->sendHeader("Cache-Control", "public, max-age=31536000, immutable");
-  _server->send_P(200, "application/javascript", LEAFLET_JS);
-}
-
 // ========================================================================
 // API ENDPOINTS
 // ========================================================================
@@ -1993,17 +1980,6 @@ static void handleBasePage() {
   sendChunk("      if (surveyPollInterval) { clearInterval(surveyPollInterval); surveyPollInterval = null; }");
   sendChunk("      document.getElementById('startBtn').style.display = 'inline-block';");
   sendChunk("      document.getElementById('stopBtn').style.display = 'none';");
-  sendChunk("      if (d.complete && d.samples > 0) {");
-  sendChunk("        document.getElementById('surveyProgress').style.display = 'none';");
-  sendChunk("        document.getElementById('surveyResults').style.display = 'block';");
-  sendChunk("        document.getElementById('finalLat').textContent = d.lat.toFixed(8);");
-  sendChunk("        document.getElementById('finalLon').textContent = d.lon.toFixed(8);");
-  sendChunk("        document.getElementById('finalAlt').textContent = d.altGround.toFixed(3);");
-  sendChunk("        var horizStd = Math.sqrt(d.stdLat*d.stdLat + d.stdLon*d.stdLon);");
-  sendChunk("        document.getElementById('finalStd').textContent = horizStd.toFixed(9);");
-  sendChunk("      } else {");
-  sendChunk("        document.getElementById('surveyProgress').style.display = 'none';");
-  sendChunk("      }");
   sendChunk("      return;");
   sendChunk("    }");
   sendChunk("    document.getElementById('progressBar').style.width = d.progress + '%';");
@@ -2536,7 +2512,46 @@ static void handleSettingsPage() {
   sendChunk("}");
   sendChunk("loadCodesEditor();");
   sendChunk("</script>");
-  
+
+  // ===== Factory Reset Section =====
+  sendChunk("<div class='card'>");
+  sendChunk("<h2>&#9888;&#65039; Factory Reset</h2>");
+  sendChunk("<p style='color:#888;font-size:13px;margin-bottom:15px'>Erase all configuration, survey data, and stakeout files from internal flash. RTKino will restart as if it were brand new.</p>");
+
+  // Flash-only reset
+  sendChunk("<div style='margin-bottom:15px'>");
+  sendChunk("<button onclick='factoryReset(false)' class='btn btn-warning'>&#128465; Reset Flash Only</button>");
+  sendChunk("<span style='margin-left:10px;color:#666'>Keeps SD card data intact</span>");
+  sendChunk("</div>");
+
+  // Flash + SD reset
+  sendChunk("<div>");
+  sendChunk("<button onclick='factoryReset(true)' class='btn btn-danger'>&#128465; Reset Flash + SD</button>");
+  sendChunk("<span style='margin-left:10px;color:#666'>Wipes everything (config, surveys, stakeout) from both flash and SD</span>");
+  sendChunk("</div>");
+
+  sendChunk("<p id='resetStatus' style='margin-top:12px'></p>");
+  sendChunk("</div>");
+
+  sendChunk("<script>");
+  sendChunk("function factoryReset(wipeSD){");
+  sendChunk("  var msg=wipeSD?'⚠️ This will ERASE ALL DATA from flash AND SD card.\\n\\nWiFi, NTRIP, bases, surveys, stakeout — everything will be lost.\\n\\nAre you absolutely sure?'");
+  sendChunk("                :'⚠️ This will ERASE ALL DATA from internal flash.\\n\\nWiFi, NTRIP, bases, surveys, stakeout config will be lost.\\nSD card data will NOT be erased.\\n\\nContinue?';");
+  sendChunk("  if(!confirm(msg))return;");
+  sendChunk("  if(wipeSD&&!confirm('LAST CHANCE — Wipe SD card too?\\n\\nThis cannot be undone.'))return;");
+  sendChunk("  document.getElementById('resetStatus').innerHTML='<span style=\"color:#e67e22\">&#9203; Factory reset in progress...</span>';");
+  sendChunk("  fetch('/api/factory-reset?wipeSD='+(wipeSD?'1':'0'))");
+  sendChunk("  .then(r=>r.json()).then(d=>{");
+  sendChunk("    if(d.status==='ok'){");
+  sendChunk("      document.getElementById('resetStatus').innerHTML='<span style=\"color:green\">&#10003; Reset complete. Rebooting...</span>';");
+  sendChunk("      setTimeout(function(){location.reload();},5000);");
+  sendChunk("    }else{");
+  sendChunk("      document.getElementById('resetStatus').innerHTML='<span style=\"color:red\">&#9888; Error: '+(d.error||'unknown')+'</span>';");
+  sendChunk("    }");
+  sendChunk("  }).catch(e=>{document.getElementById('resetStatus').innerHTML='<span style=\"color:red\">&#9888; '+e+'</span>';});");
+  sendChunk("}");
+  sendChunk("</script>");
+
   // ===== NEW: System Logs Section =====
   sendChunk("<div class='card'><h2>📝 System Logs</h2>");
   sendChunk("<p>View and download system event logs (max 3 files)</p>");
@@ -4232,6 +4247,25 @@ static void handleConfigSync() {
   _server->send(200, "text/plain", "OK");
 }
 
+// Handler: Factory Reset
+static void handleFactoryReset() {
+  bool wipeSD = _server->hasArg("wipeSD") && _server->arg("wipeSD") == "1";
+
+  if (loggingActive) {
+    _server->send(409, "application/json", "{\"error\":\"Cannot reset while logging is active\"}");
+    return;
+  }
+
+  bool ok = FlashConfig::factoryReset(sd, sdMutex, wipeSD);
+  if (ok) {
+    _server->send(200, "application/json", "{\"status\":\"ok\"}");
+    delay(500);
+    ESP.restart();
+  } else {
+    _server->send(500, "application/json", "{\"error\":\"LittleFS format failed\"}");
+  }
+}
+
 // Handler: Export all configuration as JSON
 static void handleConfigExport() {
   String json = "{";
@@ -4727,9 +4761,7 @@ static void handleSurveyPage() {
   sendChunk("        if(res){res.style.display='';");
   sendChunk("          res.innerHTML=d.status==='done'?'<b style=color:green>&#10003; Saved: '+d.lastPointId+'</b>':'<span style=color:red>&#9888; Error: '+d.errorMsg+'</span>';}");
   sendChunk("        document.getElementById('btn-misura').disabled=false;");
-  sendChunk("        if(d.status==='done'){");
-  sendChunk("          fetch('/api/pts/download').then(function(r){return r.json();}).then(function(g){initSurveyMap(g);refreshPointsTable(g);}).catch(function(){});");
-  sendChunk("        }");
+  sendChunk("        if(d.status==='done')setTimeout(function(){location.reload();},2000);");
   sendChunk("      } else if(Date.now()<_measureDeadline){");
   sendChunk("        _measureTimeout=setTimeout(poll,500);");
   sendChunk("      } else {");
@@ -4944,9 +4976,13 @@ static void handleSurveyPage() {
     sendChunk(".survey-cross-icon{background:none!important;border:none!important;}");
     sendChunk("</style>");
 
-    // ---- Leaflet CSS + JS (served as cacheable assets; ?v= busts cache on version change) ----
-    sendChunk("<link rel='stylesheet' href='/assets/leaflet.css?v=" LEAFLET_ASSET_VERSION "'>");
-    sendChunk("<script src='/assets/leaflet.js?v=" LEAFLET_ASSET_VERSION "'></script>");
+    // ---- Leaflet CSS + JS ----
+    sendChunk("<style>");
+    sendChunkPROGMEM(LEAFLET_CSS);
+    sendChunk("</style>");
+    sendChunk("<script>");
+    sendChunkPROGMEM(LEAFLET_JS);
+    sendChunk("</script>");
 
     // ---- Map container ----
     sendChunk("<div id='survey-map'></div>");
@@ -4985,7 +5021,6 @@ static void handleSurveyPage() {
     sendChunk("var _measLine=null,_measCount=0;");
     sendChunk("var _pointsIndex=[];"); // [{name,lat,lon,alt,marker}]
     sendChunk("var _snapEnabled=true;"); // OSnap active by default
-    sendChunk("var _activeSid='" + activeSid + "';"); // current active survey ID (injected server-side)
 
     // --- Utility: RTK color ---
     sendChunk("function rtkColor(s){var r=String(s).toLowerCase();if(r.indexOf('fixed')>=0)return'#27ae60';if(r.indexOf('float')>=0)return'#f39c12';return'#e74c3c';}");
@@ -5257,30 +5292,6 @@ static void handleSurveyPage() {
     sendChunk("  document.getElementById('map-status').textContent='Loading...';");
     sendChunk("  fetch('/api/pts/download').then(function(r){return r.json();}).then(function(g){initSurveyMap(g);}).catch(function(e){document.getElementById('map-status').textContent='Error: '+e;});");
     sendChunk("}");
-    // Rebuild the points table in-place from a GeoJSON FeatureCollection
-    // (the same object returned by /api/pts/download / initSurveyMap).
-    sendChunk("function refreshPointsTable(g){");
-    sendChunk("  var tbody=document.getElementById('pts-table-body');");
-    sendChunk("  if(!tbody||!g||!g.features)return;");
-    sendChunk("  tbody.innerHTML='';");
-    sendChunk("  g.features.forEach(function(f){");
-    sendChunk("    var p=f.properties||{};");
-    sendChunk("    var c=(f.geometry&&f.geometry.coordinates)?f.geometry.coordinates:[];");
-    sendChunk("    var lon=c[0]||0,lat=c[1]||0,alt=c[2]||0;");
-    sendChunk("    var tr=document.createElement('tr');");
-    sendChunk("    tr.setAttribute('data-pid',p.id||'');");
-    sendChunk("    var vals=[p.id||'',p.name||'',p.codice||'',lat,lon,alt,p.pdop||0,p.hdop||0,p.vdop||0,p.sigma_N||0,p.sigma_E||0,p.sigma_U||0,p.rtk||'',p.n_samples||0];");
-    sendChunk("    vals.forEach(function(v){var td=document.createElement('td');td.textContent=v;tr.appendChild(td);});");
-    sendChunk("    var td=document.createElement('td');");
-    sendChunk("    var btn=document.createElement('button');");
-    sendChunk("    btn.className='btn btn-small btn-danger';");
-    sendChunk("    btn.textContent='X';");
-    sendChunk("    (function(sid,pid){btn.onclick=function(){delPoint(sid,pid);};}(_activeSid,p.id||''));");
-    sendChunk("    td.appendChild(btn);tr.appendChild(td);tbody.appendChild(tr);");
-    sendChunk("  });");
-    sendChunk("  var cnt=document.getElementById('active-pts-count');");
-    sendChunk("  if(cnt)cnt.textContent=g.features.length;");
-    sendChunk("}");
     sendChunk("(function(){");
     sendChunk("  var mapDiv=document.getElementById('survey-map');");
     sendChunk("  if(!mapDiv)return;");
@@ -5299,68 +5310,64 @@ static void handleSurveyPage() {
   }
 
   // ---- Point table for active survey ----
-  // Always render the table skeleton when there is an active survey so that
-  // refreshPointsTable() (called after a measure completes) can update it in-place.
-  if (!activeSid.isEmpty()) {
+  if (!activeSid.isEmpty() && SurveyPoints::getSurveyPointCount(activeSid) > 0) {
     sendChunk("<div class='card'><h2>Active survey points</h2>");
     sendChunk("<table><thead><tr>");
     sendChunk("<th>ID</th><th>Name</th><th>Code</th><th>Lat</th><th>Lon</th><th>AltHAE</th>");
     sendChunk("<th>PDOP</th><th>HDOP</th><th>VDOP</th><th>&sigma;N(m)</th><th>&sigma;E(m)</th><th>&sigma;U(m)</th><th>RTK</th><th>Samples</th><th>Actions</th>");
-    sendChunk("</tr></thead><tbody id='pts-table-body'>");
+    sendChunk("</tr></thead><tbody>");
 
-    if (SurveyPoints::getSurveyPointCount(activeSid) > 0) {
-      String json = SurveyPoints::loadSurveyJSON(activeSid);
-      int pos = 0;
-      while (true) {
-        int fi = json.indexOf("\"type\":\"Feature\"", pos);
-        if (fi < 0) break;
-        int featureStart = -1;
-        for (int i = fi; i >= 1; i--) { if (json[i] == '{') { featureStart = i; break; } }
-        if (featureStart < 0) { pos = fi+1; continue; }
-        int depth=0, featureEnd=-1;
-        for (int i=featureStart; i<(int)json.length(); i++) {
-          if (json[i]=='{') depth++;
-          else if (json[i]=='}') { if(--depth==0){featureEnd=i;break;} }
-        }
-        if (featureEnd<0) break;
-
-        auto getStr=[&](const String& key, int from)->String{
-          String nd="\""+key+"\":\""; int ki=json.indexOf(nd,from); if(ki<0)return "";
-          int vs=ki+nd.length(), ve=json.indexOf("\"",vs); return ve>vs?json.substring(vs,ve):"";
-        };
-        auto getNum=[&](const String& key, int from)->String{
-          String nd="\""+key+"\":"; int ki=json.indexOf(nd,from); if(ki<0)return "0";
-          int vs=ki+nd.length(); while(vs<(int)json.length()&&json[vs]==' ')vs++;
-          int ve=vs; while(ve<(int)json.length()&&(isdigit(json[ve])||json[ve]=='.'||json[ve]=='-'||json[ve]=='e'||json[ve]=='E'))ve++;
-          return json.substring(vs,ve);
-        };
-
-        String pid    = getStr("id",    featureStart);
-        String name   = getStr("name",  featureStart);
-        String codice = getStr("codice",featureStart);
-        String rtk    = getStr("rtk",   featureStart);
-        int propsPos  = json.indexOf("\"properties\":", featureStart);
-        int from      = propsPos>0 ? propsPos : featureStart;
-
-        int geomPos   = json.indexOf("\"coordinates\":", featureStart);
-        String lat_s="0", lon_s="0", alt_s="0";
-        if (geomPos>0) {
-          int bp=json.indexOf("[",geomPos);
-          if(bp>0){int eb=json.indexOf("]",bp); String coords=json.substring(bp+1,eb);
-            int c1=coords.indexOf(","); int c2=coords.indexOf(",",c1+1);
-            lon_s=coords.substring(0,c1); lat_s=coords.substring(c1+1,c2>0?c2:coords.length());
-            if(c2>0) alt_s=coords.substring(c2+1); lat_s.trim(); lon_s.trim(); alt_s.trim();}
-        }
-
-        sendChunk("<tr data-pid='" + pid + "'><td>" + pid + "</td><td>" + name + "</td><td>" + codice + "</td>");
-        sendChunk("<td>" + lat_s + "</td><td>" + lon_s + "</td><td>" + alt_s + "</td>");
-        sendChunk("<td>" + getNum("pdop",from) + "</td><td>" + getNum("hdop",from) + "</td><td>" + getNum("vdop",from) + "</td>");
-        sendChunk("<td>" + getNum("sigma_N",from) + "</td><td>" + getNum("sigma_E",from) + "</td><td>" + getNum("sigma_U",from) + "</td>");
-        sendChunk("<td>" + rtk + "</td><td>" + getNum("n_samples",from) + "</td>");
-        sendChunk("<td><button class='btn btn-small btn-danger' onclick=\"delPoint('" + activeSid + "','" + pid + "')\">X</button></td>");
-        sendChunk("</tr>");
-        pos = featureEnd + 1;
+    String json = SurveyPoints::loadSurveyJSON(activeSid);
+    int pos = 0;
+    while (true) {
+      int fi = json.indexOf("\"type\":\"Feature\"", pos);
+      if (fi < 0) break;
+      int featureStart = -1;
+      for (int i = fi; i >= 1; i--) { if (json[i] == '{') { featureStart = i; break; } }
+      if (featureStart < 0) { pos = fi+1; continue; }
+      int depth=0, featureEnd=-1;
+      for (int i=featureStart; i<(int)json.length(); i++) {
+        if (json[i]=='{') depth++;
+        else if (json[i]=='}') { if(--depth==0){featureEnd=i;break;} }
       }
+      if (featureEnd<0) break;
+
+      auto getStr=[&](const String& key, int from)->String{
+        String nd="\""+key+"\":\""; int ki=json.indexOf(nd,from); if(ki<0)return "";
+        int vs=ki+nd.length(), ve=json.indexOf("\"",vs); return ve>vs?json.substring(vs,ve):"";
+      };
+      auto getNum=[&](const String& key, int from)->String{
+        String nd="\""+key+"\":"; int ki=json.indexOf(nd,from); if(ki<0)return "0";
+        int vs=ki+nd.length(); while(vs<(int)json.length()&&json[vs]==' ')vs++;
+        int ve=vs; while(ve<(int)json.length()&&(isdigit(json[ve])||json[ve]=='.'||json[ve]=='-'||json[ve]=='e'||json[ve]=='E'))ve++;
+        return json.substring(vs,ve);
+      };
+
+      String pid    = getStr("id",    featureStart);
+      String name   = getStr("name",  featureStart);
+      String codice = getStr("codice",featureStart);
+      String rtk    = getStr("rtk",   featureStart);
+      int propsPos  = json.indexOf("\"properties\":", featureStart);
+      int from      = propsPos>0 ? propsPos : featureStart;
+
+      int geomPos   = json.indexOf("\"coordinates\":", featureStart);
+      String lat_s="0", lon_s="0", alt_s="0";
+      if (geomPos>0) {
+        int bp=json.indexOf("[",geomPos);
+        if(bp>0){int eb=json.indexOf("]",bp); String coords=json.substring(bp+1,eb);
+          int c1=coords.indexOf(","); int c2=coords.indexOf(",",c1+1);
+          lon_s=coords.substring(0,c1); lat_s=coords.substring(c1+1,c2>0?c2:coords.length());
+          if(c2>0) alt_s=coords.substring(c2+1); lat_s.trim(); lon_s.trim(); alt_s.trim();}
+      }
+
+      sendChunk("<tr data-pid='" + pid + "'><td>" + pid + "</td><td>" + name + "</td><td>" + codice + "</td>");
+      sendChunk("<td>" + lat_s + "</td><td>" + lon_s + "</td><td>" + alt_s + "</td>");
+      sendChunk("<td>" + getNum("pdop",from) + "</td><td>" + getNum("hdop",from) + "</td><td>" + getNum("vdop",from) + "</td>");
+      sendChunk("<td>" + getNum("sigma_N",from) + "</td><td>" + getNum("sigma_E",from) + "</td><td>" + getNum("sigma_U",from) + "</td>");
+      sendChunk("<td>" + rtk + "</td><td>" + getNum("n_samples",from) + "</td>");
+      sendChunk("<td><button class='btn btn-small btn-danger' onclick=\"delPoint('" + activeSid + "','" + pid + "')\">X</button></td>");
+      sendChunk("</tr>");
+      pos = featureEnd + 1;
     }
     sendChunk("</tbody></table></div>");
   }
@@ -5961,8 +5968,6 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
   
   // CSS and API
   _server->on("/css", HTTP_GET, handleCSS);
-  _server->on("/assets/leaflet.css", HTTP_GET, handleLeafletCSS);
-  _server->on("/assets/leaflet.js",  HTTP_GET, handleLeafletJS);
   _server->on("/api/status", HTTP_GET, handleApiStatus);
   _server->on("/api/position", HTTP_GET, handleApiPosition);
   _server->on("/api/rtcm", HTTP_GET, handleApiRtcm);
@@ -5975,6 +5980,7 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
   _server->on("/api/config/export", HTTP_GET, handleConfigExport);
   _server->on("/api/config/import", HTTP_POST, handleConfigImport);
   _server->on("/api/config/sync",   HTTP_GET, handleConfigSync);
+  _server->on("/api/factory-reset", HTTP_GET, handleFactoryReset);
   
   // Survey API (base position averaging — existing)
   _server->on("/api/survey/start", HTTP_GET, handleSurveyStart);

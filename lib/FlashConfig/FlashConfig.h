@@ -37,6 +37,11 @@ namespace FlashConfig {
 
   // Check if migration has been done
   bool isMigrated();
+
+  // Factory Reset: wipe all LittleFS data. Optionally wipe SD config too.
+  // After calling this, the ESP32 should be rebooted.
+  // Returns true if LittleFS was formatted successfully.
+  bool factoryReset(SdFat& sd, SemaphoreHandle_t sdMutex, bool wipeSD = false);
 }
 
 #endif
