@@ -16,10 +16,11 @@ permissions:
   contents: write
   pages: write
   id-token: write
+  actions: read        # needed to list/delete artifacts
 
 concurrency:
   group: "pages"
-  cancel-in-progress: false
+  cancel-in-progress: true    # cancel stale runs to avoid duplicate artifacts
 
 jobs:
   deploy-web-flasher:
@@ -59,7 +60,12 @@ jobs:
           gh release download "${TAG}" --pattern "*.zip" --dir /tmp/
           unzip -o "/tmp/${ASSET_NAME}" -d /tmp/release-files/
 
-          RELEASE_DIR=$(find /tmp/release-files -maxdepth 1 -type d | tail -1)
+          RELEASE_DIR=$(find /tmp/release-files -mindepth 1 -maxdepth 1 -type d | head -1)
+
+          if [ -z "$RELEASE_DIR" ]; then
+            echo "No subdirectory found, binaries may be at root level"
+            RELEASE_DIR="/tmp/release-files"
+          fi
 
           cp "${RELEASE_DIR}/bootloader.bin"  "${FLASHER_DIR}/bootloader.bin"
           cp "${RELEASE_DIR}/partitions.bin"  "${FLASHER_DIR}/partitions.bin"
@@ -91,6 +97,20 @@ jobs:
           TAG="${{ steps.tag.outputs.tag }}"
           cd docs/web-flasher
           sed -i "s|v[0-9]\+\.[0-9]\+\.[0-9]\+[^<]*|${TAG} — LOLIN S3 Pro|g" index.html
+
+      # Clean up stale "github-pages" artifacts from previous/re-run attempts.
+      # This prevents the "Multiple artifacts named github-pages" error.
+      - name: Delete stale Pages artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Checking for existing github-pages artifacts in this run..."
+          ARTIFACTS=$(gh api "/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+            --jq '.artifacts[] | select(.name == "github-pages") | .id' 2>/dev/null || true)
+          for AID in $ARTIFACTS; do
+            echo "Deleting stale artifact ${AID}..."
+            gh api --method DELETE "/repos/${{ github.repository }}/actions/artifacts/${AID}" || true
+          done
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

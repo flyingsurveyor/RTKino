@@ -2,11 +2,11 @@ name: Build Firmware
 
 on:
   push:
-    branches: [ multiboard ]
+    branches: [ main ]
     tags-ignore:
       - 'v*'            # Tag builds are handled by release.yml
   pull_request:
-    branches: [ multiboard ]
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:

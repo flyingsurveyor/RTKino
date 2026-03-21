@@ -163,7 +163,7 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
           name: "RTKino ${{ github.event.inputs.tag_name || github.ref_name }}"
-          draft: true
+          draft: false
           prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
           generate_release_notes: true
           files: |
