@@ -32,6 +32,7 @@
 #include "SystemLog.h"
 #include "OTAManager.h"
 #include "BLESerial.h"
+#include "BleRtcmClient.h"
 #include "FlashConfig.h"
 #include "SurveyPoints.h"
 #include "PointCodes.h"
@@ -87,6 +88,12 @@ bool g_bleEnabled = false;
 char g_bleDeviceName[21] = "RTKino";
 // BLE pairing PIN (persistent, saved to SD)
 uint32_t g_blePasskey = 123456;  // Default PIN
+
+// ===== BLE RTCM input (correction source from rtcm-lora radio) =====
+BleRtcmClient g_bleRtcm;
+bool g_bleRtcmEnabled = false;
+char g_bleRtcmTargetName[21] = "rtcm-lora";
+uint32_t g_bleRtcmPasskey = 123456;
 
 // AP-mode boot time (for offline TIMEUTC sync gating)
 volatile uint32_t g_apStartMillis = 0;
@@ -616,6 +623,10 @@ void nmeaReaderTask(void* pvParameters) {
       if (g_baseTcpOn && RtcmStreamer::active()) {
         RtcmStreamer::broadcast(buffer, len);
       }
+      // BLE RTCM output (base mode: send RTCM to rtcm-lora via BLE NUS)
+      if (g_bleRtcmEnabled && g_bleRtcm.isConnected()) {
+        g_bleRtcm.writeRtcm(buffer, len);
+      }
       // Extract GGA only if we detect NMEA (rover)
       for (int i = 0; i < len; i++) {
         uint8_t b = buffer[i];
@@ -985,6 +996,10 @@ void uartReaderTask(void* pvParameters) {
 
 // ---------------- Controls & utils ----------------
 
+// Forward declarations for BLE RTCM (defined further below)
+bool startBleRtcm(const String& targetName, uint32_t passkey);
+void stopBleRtcm();
+
 // (PATCH) Mutual exclusion: enabling NTRIP disables TCP-IN and vice versa
 // === FIX: Thread-safe version with mutex ===
 void toggleNtrip(bool enable) {
@@ -992,6 +1007,7 @@ void toggleNtrip(bool enable) {
     // This is done BEFORE taking the NTRIP lock to avoid unlock/relock
     if (enable) {
         toggleTcpIn(false);
+        if (g_bleRtcmEnabled) stopBleRtcm();
     }
     if (! ntripLock(500)) {
         oledPrintln("[NTRIP] busy, try again");
@@ -1031,8 +1047,9 @@ void toggleNtrip(bool enable) {
 }
 
 bool startTcpIn(const String& host, int port) {
-  // Stop NTRIP if active (mutual exclusion)
+  // Stop NTRIP and BLE RTCM if active (mutual exclusion)
   toggleNtrip(false);
+  if (g_bleRtcmEnabled) stopBleRtcm();
   if (! tcpInLock(1000)) {
     oledPrintln("[LAN IN] busy, try again");
     return false;
@@ -1083,6 +1100,59 @@ void toggleTcpIn(bool enable) {
     // Only if actually active, to avoid unnecessary locks
     if (tcpInEnabled || g_tcpIn) {
       stopTcpIn();
+    }
+  }
+}
+
+// ---- BLE RTCM IN (correction source from rtcm-lora radio) ----
+
+bool startBleRtcm(const String& targetName, uint32_t passkey) {
+  // Mutual exclusion: disable other correction sources
+  toggleNtrip(false);
+  toggleTcpIn(false);
+
+  strncpy(g_bleRtcmTargetName, targetName.c_str(), sizeof(g_bleRtcmTargetName) - 1);
+  g_bleRtcmTargetName[sizeof(g_bleRtcmTargetName) - 1] = '\0';
+  g_bleRtcmPasskey = passkey;
+
+  g_bleRtcm.setRxCallback([](const uint8_t* data, size_t len) {
+    if (len > 0) RTCMSerial.write(data, len);
+  });
+
+  if (!g_bleRtcm.begin(g_bleRtcmTargetName, g_bleRtcmPasskey)) {
+    oledPrintln("[BLE-RTCM] Start failed");
+    return false;
+  }
+
+  g_bleRtcmEnabled = true;
+  oledPrintln(String("[BLE-RTCM] -> ") + g_bleRtcmTargetName);
+
+  // Save config to flash
+  FlashConfig::writeFile("/config/ble_rtcm_target.txt", String(g_bleRtcmTargetName));
+  char pinBuf[8]; snprintf(pinBuf, sizeof(pinBuf), "%06u", g_bleRtcmPasskey);
+  FlashConfig::writeFile("/config/ble_rtcm_pin.txt", String(pinBuf));
+  FlashConfig::writeFile("/config/ble_rtcm_enabled.txt", "1");
+
+  return true;
+}
+
+void stopBleRtcm() {
+  g_bleRtcm.stop();  // sends STOP command before disconnecting
+  g_bleRtcmEnabled = false;
+  FlashConfig::writeFile("/config/ble_rtcm_enabled.txt", "0");
+  oledPrintln("[BLE-RTCM] Stopped");
+}
+
+void toggleBleRtcm(bool enable) {
+  if (enable) {
+    if (String(g_bleRtcmTargetName).length() > 0) {
+      startBleRtcm(String(g_bleRtcmTargetName), g_bleRtcmPasskey);
+    } else {
+      oledPrintln("[BLE-RTCM] Target not set");
+    }
+  } else {
+    if (g_bleRtcmEnabled) {
+      stopBleRtcm();
     }
   }
 }
@@ -2383,6 +2453,23 @@ void setup() {
   });
   Serial.printf("[BLE] Started at boot: %s (PIN: %06u)\n", g_bleDeviceName, g_blePasskey);
 
+  // ===== Load BLE RTCM config (target device name, PIN, enable state) =====
+  {
+    String tgt = FlashConfig::readFile("/config/ble_rtcm_target.txt");
+    tgt.trim();
+    if (tgt.length() > 0 && tgt.length() <= 20) {
+      strncpy(g_bleRtcmTargetName, tgt.c_str(), sizeof(g_bleRtcmTargetName) - 1);
+      g_bleRtcmTargetName[sizeof(g_bleRtcmTargetName) - 1] = '\0';
+    }
+    String pin = FlashConfig::readFile("/config/ble_rtcm_pin.txt");
+    pin.trim();
+    if (pin.length() == 6) {
+      g_bleRtcmPasskey = (uint32_t)atoi(pin.c_str());
+    }
+    Serial.printf("[BLE-RTCM] Config: target='%s' pin=%06u\n",
+                  g_bleRtcmTargetName, g_bleRtcmPasskey);
+  }
+
 
   // UARTs
   GNSSSerial.setRxBufferSize(8192);
@@ -2481,6 +2568,16 @@ void setup() {
     // No network: start AP for offline use
     startApMode();
   }
+
+  // Auto-start BLE RTCM if previously enabled (works with or without WiFi)
+  {
+    String en = FlashConfig::readFile("/config/ble_rtcm_enabled.txt");
+    en.trim();
+    if (en == "1" && !ntripEnabled && !tcpInEnabled) {
+      Serial.printf("[BLE-RTCM] Auto-start: target='%s'\n", g_bleRtcmTargetName);
+      startBleRtcm(String(g_bleRtcmTargetName), g_bleRtcmPasskey);
+    }
+  }
 }
 
 void loop() {
@@ -2504,6 +2601,11 @@ void loop() {
         }
         tcpInUnlock();
       }
+    }
+
+    // BLE RTCM IN (rover, from rtcm-lora radio)
+    if (g_bleRtcmEnabled) {
+      g_bleRtcm.loop();
     }
 
     // Caster OUT - protected with mutex
