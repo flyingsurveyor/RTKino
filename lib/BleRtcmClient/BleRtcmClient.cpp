@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // BLE Central client for rtcm-lora: RTCM receive (rover) + RTCM send (base)
+// Coexists with BLESerial (Peripheral) for simultaneous smartphone + radio link.
 
 #include "BleRtcmClient.h"
+#include "BLESerial.h"  // to check if smartphone just connected
 
 BleRtcmClient* BleRtcmClient::_instance = nullptr;
 
@@ -12,21 +14,15 @@ void BleRtcmClient::ScanCB::onResult(NimBLEAdvertisedDevice* dev) {
 
     String advName = dev->getName().c_str();
 
-    // Match by target name (primary) or NUS UUID (fallback).
-    // RTCM custom UUID is not advertised; discovered after connection.
-    bool nameMatch = false;
-    if (parent->_targetName.length() > 0 && advName.length() > 0) {
-        nameMatch = (advName == parent->_targetName);
-    }
-
+    // Match by target name (primary) or NUS UUID (fallback)
+    bool nameMatch = (parent->_targetName.length() > 0 && advName.length() > 0 &&
+                      advName == parent->_targetName);
     bool nusMatch = dev->isAdvertisingService(NimBLEUUID(BLE_NUS_SERVICE_UUID));
 
     if (!nameMatch && !nusMatch) return;
     if (!nameMatch && nusMatch && parent->_targetName.length() > 0) return;
 
-    Serial.printf("[BLE-RTCM] Found: '%s' addr=%s rssi=%d\n",
-                  advName.c_str(), dev->getAddress().toString().c_str(), dev->getRSSI());
-
+    Serial.printf("[BLE-RTCM] Found: '%s' rssi=%d\n", advName.c_str(), dev->getRSSI());
     parent->onDeviceFound(dev);
 }
 
@@ -35,18 +31,34 @@ void BleRtcmClient::ScanCB::onResult(NimBLEAdvertisedDevice* dev) {
 void BleRtcmClient::ClientCB::onConnect(NimBLEClient* c) {
     if (!parent) return;
     parent->_connected = true;
+    parent->_reconnectCount = 0;  // reset backoff on successful connect
     Serial.println("[BLE-RTCM] Connected");
 }
 
 void BleRtcmClient::ClientCB::onDisconnect(NimBLEClient* c) {
     if (!parent) return;
+    bool wasStreaming = parent->_streaming;
     parent->_connected = false;
     parent->_streaming = false;
     parent->_pTxRemote = nullptr;
     parent->_pRxRemote = nullptr;
     parent->_pNusRxRemote = nullptr;
     parent->_haveTarget = false;
-    Serial.println("[BLE-RTCM] Disconnected");
+
+    // Schedule auto-reconnect if we were enabled (not user-stopped)
+    if (parent->_enabled) {
+        parent->_needsReconnect = true;
+        // Backoff: 2s, 4s, 8s, max 15s
+        uint32_t backoff = 2000 * (1 << min((int)parent->_reconnectCount, 3));
+        if (backoff > 15000) backoff = 15000;
+        parent->_reconnectAfterMs = millis() + backoff;
+        parent->_reconnectCount++;
+        Serial.printf("[BLE-RTCM] Disconnected (was%s streaming). Reconnect in %lums\n",
+                      wasStreaming ? "" : " not", (unsigned long)backoff);
+    } else {
+        parent->_needsReconnect = false;
+        Serial.println("[BLE-RTCM] Disconnected (stopped)");
+    }
 }
 
 uint32_t BleRtcmClient::ClientCB::onPassKeyRequest() {
@@ -86,6 +98,8 @@ bool BleRtcmClient::begin(const char* targetName, uint32_t passkey) {
     _connected = false;
     _streaming = false;
     _haveTarget = false;
+    _needsReconnect = false;
+    _reconnectCount = 0;
     _lastScanMs = 0;
     resetStats();
 
@@ -95,9 +109,6 @@ bool BleRtcmClient::begin(const char* targetName, uint32_t passkey) {
     if (!NimBLEDevice::getInitialized()) {
         NimBLEDevice::init("");
     }
-    // Do NOT override security settings here — BLESerial has already
-    // configured them for smartphone pairing. The passkey for connecting
-    // to rtcm-lora is handled by ClientCB::onPassKeyRequest().
 
     Serial.printf("[BLE-RTCM] Started, target='%s'\n",
                   _targetName.length() ? _targetName.c_str() : "(any)");
@@ -105,13 +116,16 @@ bool BleRtcmClient::begin(const char* targetName, uint32_t passkey) {
 }
 
 void BleRtcmClient::stop() {
+    _enabled = false;
+
     if (_streaming && _connected && _pRxRemote) {
         sendStop();
         delay(50);
     }
-    _enabled = false;
     _streaming = false;
+    _needsReconnect = false;
 
+    // Stop any running scan
     NimBLEScan* pScan = NimBLEDevice::getScan();
     if (pScan && pScan->isScanning()) pScan->stop();
     _scanning = false;
@@ -134,13 +148,39 @@ void BleRtcmClient::stop() {
 
 void BleRtcmClient::loop() {
     if (!_enabled) return;
+
+    // If connected, nothing to do
     if (_connected) return;
 
+    // Auto-reconnect with backoff
+    if (_needsReconnect) {
+        if ((int32_t)(millis() - _reconnectAfterMs) < 0) return;  // wait for backoff
+        _needsReconnect = false;
+        _haveTarget = false;
+        _lastScanMs = 0;  // force immediate scan
+        Serial.println("[BLE-RTCM] Auto-reconnecting...");
+    }
+
+    // If we found a target, try connecting
     if (_haveTarget) {
         if (doConnect()) return;
         _haveTarget = false;
     }
 
+    // Don't scan if BLESerial just had a connection event (give Peripheral priority)
+    // This prevents Central scanning from disrupting smartphone pairing
+    static uint32_t lastPeripheralCheck = 0;
+    static bool lastPeripheralState = false;
+    bool peripheralNow = BLESerial::isConnected();
+    if (peripheralNow != lastPeripheralState) {
+        lastPeripheralState = peripheralNow;
+        lastPeripheralCheck = millis();
+        // Give 3s grace period after peripheral state change
+        return;
+    }
+    if (millis() - lastPeripheralCheck < 3000) return;
+
+    // Periodic scan — short and infrequent to not interfere with Peripheral
     uint32_t now = millis();
     if (now - _lastScanMs < SCAN_INTERVAL_MS) return;
     _lastScanMs = now;
@@ -150,7 +190,7 @@ void BleRtcmClient::loop() {
 
     pScan->setAdvertisedDeviceCallbacks(&_scanCB, false);
     pScan->setActiveScan(true);
-    pScan->setInterval(100);
+    pScan->setInterval(160);   // wider interval = less aggressive
     pScan->setWindow(80);
 
     _scanning = true;
@@ -172,14 +212,12 @@ bool BleRtcmClient::sendCommand(uint8_t cmd) {
 size_t BleRtcmClient::writeRtcm(const uint8_t* data, size_t len) {
     if (!_connected || !_pNusRxRemote || len == 0) return 0;
 
-    // Write in chunks that fit BLE MTU (NUS RX is write-no-response)
-    const size_t CHUNK = 240;  // safe for MTU 256 (256 - 3 ATT - some margin)
+    const size_t CHUNK = 240;
     size_t sent = 0;
 
     while (sent < len) {
         size_t remaining = len - sent;
         size_t chunk = (remaining > CHUNK) ? CHUNK : remaining;
-
         if (!_pNusRxRemote->writeValue(&data[sent], chunk, false)) {
             Serial.println("[BLE-RTCM] NUS write failed");
             break;
@@ -187,9 +225,16 @@ size_t BleRtcmClient::writeRtcm(const uint8_t* data, size_t len) {
         sent += chunk;
         _txChunks++;
     }
-
     _txBytes += sent;
     return sent;
+}
+
+// ---- Scan trigger (called from WebUI) ----
+void BleRtcmClient::triggerScan() {
+    if (!_enabled || _connected) return;
+    _lastScanMs = 0;  // force next loop() to scan immediately
+    _haveTarget = false;
+    Serial.println("[BLE-RTCM] Manual scan triggered");
 }
 
 // ---- Internal ----
@@ -223,45 +268,34 @@ bool BleRtcmClient::doConnect() {
         return false;
     }
 
-    // Discover RTCM custom service (for rover: notifications + commands)
+    // Discover RTCM custom service (rover: notifications + commands)
     NimBLERemoteService* pRtcmSvc = _pClient->getService(BLE_RTCM_SERVICE_UUID);
     if (pRtcmSvc) {
         _pTxRemote = pRtcmSvc->getCharacteristic(BLE_RTCM_TX_CHAR_UUID);
         _pRxRemote = pRtcmSvc->getCharacteristic(BLE_RTCM_RX_CHAR_UUID);
-
-        // Subscribe to RTCM notifications (rover mode)
         if (_pTxRemote) {
             _pTxRemote->subscribe(true, notifyCB);
-            Serial.println("[BLE-RTCM] Subscribed to RTCM notifications");
+            Serial.println("[BLE-RTCM] RTCM notify subscribed");
         }
-        if (_pRxRemote) {
-            Serial.println("[BLE-RTCM] RTCM command channel ready");
-        }
-    } else {
-        Serial.println("[BLE-RTCM] RTCM service not found (OK for base-only use)");
+        if (_pRxRemote) Serial.println("[BLE-RTCM] RTCM cmd channel ready");
     }
 
-    // Discover NUS service (for base: write RTCM data to rtcm-lora)
+    // Discover NUS service (base: write RTCM data to rtcm-lora)
     NimBLERemoteService* pNusSvc = _pClient->getService(BLE_NUS_SERVICE_UUID);
     if (pNusSvc) {
         _pNusRxRemote = pNusSvc->getCharacteristic(BLE_NUS_RX_CHAR_UUID);
-        if (_pNusRxRemote) {
-            Serial.println("[BLE-RTCM] NUS write channel ready (base RTCM output)");
-        }
-    } else {
-        Serial.println("[BLE-RTCM] NUS service not found");
+        if (_pNusRxRemote) Serial.println("[BLE-RTCM] NUS write channel ready");
     }
 
-    // Need at least one usable service
     if (!_pTxRemote && !_pNusRxRemote) {
-        Serial.println("[BLE-RTCM] No usable services found, disconnecting");
+        Serial.println("[BLE-RTCM] No usable services, disconnecting");
         _pClient->disconnect();
         NimBLEDevice::deleteClient(_pClient);
         _pClient = nullptr;
         return false;
     }
 
-    Serial.printf("[BLE-RTCM] Connected to '%s' [RTCM:%s NUS:%s]\n",
+    Serial.printf("[BLE-RTCM] OK '%s' [RTCM:%s NUS:%s]\n",
                   _foundName.c_str(),
                   _pTxRemote ? "yes" : "no",
                   _pNusRxRemote ? "yes" : "no");

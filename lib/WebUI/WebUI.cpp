@@ -1379,18 +1379,21 @@ static void handleRoot() {
   if (g_bleRtcmEnabled && g_bleRtcm.isConnected()) {
     bleRtcmStat += "led-on'></span><strong>BLE RTCM:</strong> ";
     bleRtcmStat += g_bleRtcm.isStreaming() ? "Streaming" : "Connected";
+    bleRtcmStat += " (" + htmlEscape(g_bleRtcm.connectedName()) + ")";
   } else {
     bleRtcmStat += g_bleRtcmEnabled ? "led-off" : "led-off";
     bleRtcmStat += "'></span><strong>BLE RTCM:</strong> ";
     if (g_bleRtcmEnabled) {
-      bleRtcmStat += g_bleRtcm.isScanning() ? "Scanning..." : "Waiting";
+      if (g_bleRtcm.isReconnecting()) bleRtcmStat += "Reconnecting...";
+      else if (g_bleRtcm.isScanning()) bleRtcmStat += "Scanning...";
+      else bleRtcmStat += "Waiting";
     } else {
       bleRtcmStat += "Inactive";
     }
   }
   bleRtcmStat += "<span style='float:right;'>";
-  bleRtcmStat += "<button onclick='bleRtcmStart()' style='background-color:#2ecc71;color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;margin-left:4px;font-size:0.9em;' title='Start BLE RTCM'>&#x25B6;</button>";
-  bleRtcmStat += "<button onclick='bleRtcmStop()' style='background-color:#e74c3c;color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;margin-left:4px;font-size:0.9em;' title='Stop BLE RTCM'>&#x25A0;</button>";
+  bleRtcmStat += "<button onclick='bleRtcmStart()' style='background-color:#2ecc71;color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;margin-left:4px;font-size:0.9em;' title='Start RTCM stream'>&#x25B6;</button>";
+  bleRtcmStat += "<button onclick='bleRtcmStop()' style='background-color:#e74c3c;color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;margin-left:4px;font-size:0.9em;' title='Stop RTCM stream'>&#x25A0;</button>";
   bleRtcmStat += "</span></div>";
   sendChunk(bleRtcmStat);
 
@@ -2327,6 +2330,16 @@ static void renderBleRtcmCard() {
   sendChunk("<button type='submit' class='btn btn-primary' style='margin-top:15px'>Apply BLE RTCM Settings</button>");
   sendChunk("</form>");
 
+  // Scan / Refresh button
+  sendChunk("<div style='margin-top:12px'>");
+  sendChunk("<button onclick='bleRtcmScan()' class='btn' style='margin-right:8px'>&#x1F50D; Scan for device</button>");
+  sendChunk("<button onclick='bleRtcmDisconnect()' class='btn btn-danger'>Disconnect</button>");
+  sendChunk("</div>");
+  sendChunk("<script>");
+  sendChunk("function bleRtcmScan(){fetch('/api/blertcm/scan').then(r=>r.text()).then(t=>{alert(t);setTimeout(()=>location.reload(),3000);}).catch(err=>{alert('Error: '+err);})}");
+  sendChunk("function bleRtcmDisconnect(){fetch('/api/blertcm/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+err);})}");
+  sendChunk("</script>");
+
   // Status display
   if (g_bleRtcmEnabled) {
     sendChunk("<div style='margin-top:15px; padding:10px; background:#d4edda; border-left:4px solid #28a745; border-radius:4px;'>");
@@ -2334,17 +2347,20 @@ static void renderBleRtcmCard() {
     sendChunk("Target: <strong>" + htmlEscape(String(g_bleRtcmTargetName)) + "</strong><br>");
     sendChunk("Status: ");
     if (g_bleRtcm.isConnected()) {
-      sendChunk("<span style='color:green;'>Connected");
+      sendChunk("<span style='color:green;'>Connected to " + htmlEscape(g_bleRtcm.connectedName()) + "");
       if (g_bleRtcm.isStreaming()) sendChunk(" &mdash; Streaming");
       sendChunk("</span><br>");
-      char buf[64];
-      snprintf(buf, sizeof(buf), "RX: %lu bytes (%lu chunks)",
-               (unsigned long)g_bleRtcm.getRxBytes(), (unsigned long)g_bleRtcm.getRxChunks());
+      char buf[96];
+      snprintf(buf, sizeof(buf), "RX: %lu B (%lu chunks) &bull; TX: %lu B (%lu chunks)",
+               (unsigned long)g_bleRtcm.getRxBytes(), (unsigned long)g_bleRtcm.getRxChunks(),
+               (unsigned long)g_bleRtcm.getTxBytes(), (unsigned long)g_bleRtcm.getTxChunks());
       sendChunk(buf);
+    } else if (g_bleRtcm.isReconnecting()) {
+      sendChunk("<span style='color:orange;'>Reconnecting...</span>");
     } else if (g_bleRtcm.isScanning()) {
       sendChunk("<span style='color:orange;'>Scanning...</span>");
     } else {
-      sendChunk("<span style='color:orange;'>Waiting</span>");
+      sendChunk("<span style='color:orange;'>Waiting for next scan</span>");
     }
     sendChunk("</div>");
   }
@@ -6324,11 +6340,29 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
     json += (g_bleRtcmEnabled && g_bleRtcm.isStreaming()) ? "true" : "false";
     json += ",\"scanning\":";
     json += (g_bleRtcmEnabled && g_bleRtcm.isScanning()) ? "true" : "false";
+    json += ",\"reconnecting\":";
+    json += (g_bleRtcmEnabled && g_bleRtcm.isReconnecting()) ? "true" : "false";
     json += ",\"target\":\"" + htmlEscape(String(g_bleRtcmTargetName)) + "\"";
+    json += ",\"connected_name\":\"" + htmlEscape(g_bleRtcm.connectedName()) + "\"";
     json += ",\"rx_bytes\":" + String((unsigned long)g_bleRtcm.getRxBytes());
     json += ",\"rx_chunks\":" + String((unsigned long)g_bleRtcm.getRxChunks());
+    json += ",\"tx_bytes\":" + String((unsigned long)g_bleRtcm.getTxBytes());
+    json += ",\"tx_chunks\":" + String((unsigned long)g_bleRtcm.getTxChunks());
     json += "}";
     _server->send(200, "application/json", json);
+  });
+
+  _server->on("/api/blertcm/scan", HTTP_GET, []() {
+    if (!g_bleRtcmEnabled) {
+      _server->send(400, "text/plain", "BLE RTCM not enabled");
+      return;
+    }
+    if (g_bleRtcm.isConnected()) {
+      _server->send(200, "text/plain", "Already connected to " + g_bleRtcm.connectedName());
+      return;
+    }
+    g_bleRtcm.triggerScan();
+    _server->send(200, "text/plain", "Scan triggered, please wait...");
   });
 
   // NTRIP IN CRUD
