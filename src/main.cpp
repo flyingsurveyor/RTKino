@@ -1022,9 +1022,9 @@ void toggleNtrip(bool enable) {
             oledPrintln("[NTRIP] Enabled");
             // Reset RTCM stats on profile change
             resetRtcmStats();
-            // Log NTRIP connection
+            // Log NTRIP arm/activation
             if (g_systemLog) {
-                g_systemLog->logEvent("NTRIP", String("Connecting to ") + ntrip_host + ":" + ntrip_port);
+                g_systemLog->logEvent("NTRIP", String("Enabled profile ") + mountpoint + " @ " + ntrip_host + ":" + ntrip_port);
             }
         } else {
             oledPrintln("[NTRIP] Client not configured");
@@ -1661,11 +1661,8 @@ void switchToRover() {
     TcpStreamer::enable(true);
   }
   
-  // 11. Re-enable NTRIP IN if configured
-  if (ntripClient) {
-    delay(500); // Give ZED time to stabilize
-    toggleNtrip(true);
-  }
+  // 11. Do NOT auto re-enable NTRIP IN here.
+  // NTRIP remains manual after a return to rover mode.
   
   Serial.println("[SWITCH] Transition complete");
   oledPrintln("[MODE] Switched to Rover");
@@ -1817,14 +1814,9 @@ bool getSurveyResults(SurveyResults& out) {
 // Force all network services to reconnect (called after WiFi recovery)
 void forceReconnectAllServices() {
   Serial.println("[NET] WiFi back online, forcing service reconnection...");
-    // Force NtripClient reconnect
-  if (ntripLock(100)) {
-    if (ntripClient) {
-      ntripClient->forceReconnect();
-    }
-    ntripUnlock();
-  }
-    // Force NtripPusher reconnect  
+  // NTRIP stays manual: when WiFi comes back we do NOT auto-reconnect to the caster here.
+  // This protects WebUI/local services from bad caster settings or unstable WAN links.
+  // Force NtripPusher reconnect  
   if (pusherLock(100)) {
     if (g_pusher) {
       g_pusher->forceReconnect();
@@ -2554,12 +2546,12 @@ void setup() {
 
     } else {
       if (ntripLock(1000)) {
-        ntripClient = new NtripClient(ntrip_host. c_str(), ntrip_port, mountpoint. c_str(), ntrip_user.c_str(), ntrip_pass.c_str());
+        ntripClient = new NtripClient(ntrip_host.c_str(), ntrip_port, mountpoint.c_str(), ntrip_user.c_str(), ntrip_pass.c_str());
         ntripClient->setGgaMinPeriodMs(5000);
-        ntripClient->begin(RTCMSerial);
-        ntripEnabled = true;
+        // Manual policy: load profile, but do NOT auto-start NTRIP at boot.
+        ntripEnabled = false;
         ntripUnlock();
-        oledSetNtrip(true);
+        oledSetNtrip(false);
       }
     }
 
@@ -2588,6 +2580,13 @@ void loop() {
       if (ntripLock(5)) {
         if (ntripClient) {
           ntripClient->loop();
+          if (!ntripClient->isActive()) {
+            ntripEnabled = false;
+            oledSetNtrip(false);
+            if (g_systemLog) {
+              g_systemLog->logEvent("NTRIP", "Stopped after connection failures");
+            }
+          }
         }
         ntripUnlock();
       }

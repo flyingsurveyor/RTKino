@@ -3731,9 +3731,10 @@ static void handleNtripSelect() {
   ntrip_pass = n.pass;
   String profileName = n.name;  // Save name for logging later
 
-  // FIRST: disable flag (other tasks will stop using ntripClient)
+  // FIRST: disable flag so the currently active session, if any, is stopped.
+  // Selecting a profile must NOT auto-activate NTRIP.
   ntripEnabled = false;
-  
+
   // Small pause to let other tasks see the change
   vTaskDelay(pdMS_TO_TICKS(50));
 
@@ -3747,22 +3748,18 @@ static void handleNtripSelect() {
   // Reset RTCM statistics when changing profile
   resetRtcmStats();
 
-  // Create new client using global variables
+  // Create new client using global variables, but keep it INACTIVE.
   // Remove leading slash from mountpoint if present
   if (mountpoint.startsWith("/")) mountpoint.remove(0, 1);
 
   ntripClient = new NtripClient(ntrip_host.c_str(), ntrip_port, mountpoint.c_str(), ntrip_user.c_str(), ntrip_pass.c_str());
   ntripClient->setGgaMinPeriodMs(5000);
-  ntripClient->begin(RTCMSerial);
-  
-  // AFTER: re-enable flag
-  ntripEnabled = true;
 
   ntripUnlock();
   // === END LOCK ===
 
-  oledSetNtrip(true);
-  oledPrintln(String("[NTRIP] Active profile: ") + profileName);
+  oledSetNtrip(false);
+  oledPrintln(String("[NTRIP] Profile selected: ") + profileName);
 
   // Try to save LAST, but don't fail the operation if save fails
   // System is already working from RAM variables set above
