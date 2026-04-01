@@ -187,8 +187,8 @@ bool SystemLog::openNewLogFile() {
     // Ensure /gnss directory exists
     m_sd->mkdir("/gnss");
     
-    // Find next available log file number
-    int logNum = 1;
+    // Find next available log file number (-1 means no free slot found)
+    int logNum = -1;
     for (int i = 1; i <= SYSTEM_LOG_MAX_FILES; i++) {
         char filename[32];
         snprintf(filename, sizeof(filename), "/gnss/system_log_%02d.txt", i);
@@ -198,8 +198,8 @@ bool SystemLog::openNewLogFile() {
         }
     }
     
-    // If all slots are used, rotate (delete oldest)
-    if (logNum > SYSTEM_LOG_MAX_FILES) {
+    // If all slots are used, rotate (delete oldest) and use last slot
+    if (logNum < 0) {
         rotateLogFiles();
         logNum = SYSTEM_LOG_MAX_FILES;
     }

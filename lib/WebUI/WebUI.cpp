@@ -3752,7 +3752,13 @@ static void handleNtripSelect() {
   // Remove leading slash from mountpoint if present
   if (mountpoint.startsWith("/")) mountpoint.remove(0, 1);
 
-  ntripClient = new NtripClient(ntrip_host.c_str(), ntrip_port, mountpoint.c_str(), ntrip_user.c_str(), ntrip_pass.c_str());
+  ntripClient = new (std::nothrow) NtripClient(ntrip_host.c_str(), ntrip_port, mountpoint.c_str(), ntrip_user.c_str(), ntrip_pass.c_str());
+  if (!ntripClient) {
+    ntripEnabled = false;
+    ntripUnlock();
+    _server->send(500, "text/plain", "Out of memory");
+    return;
+  }
   ntripClient->setGgaMinPeriodMs(5000);
 
   ntripUnlock();
