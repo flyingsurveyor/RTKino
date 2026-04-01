@@ -614,7 +614,7 @@ StakeoutStatus getStatus() {
     st.roverCarrSoln   = carrSoln;
     st.roverFixQuality = fixQuality;
 
-    if (rLat == 0.0 && rLon == 0.0) return st;  // no fix yet
+    if (fixQuality == 0) return st;  // no valid fix
 
     // Get active target point
     StakeoutPoint tpt;
