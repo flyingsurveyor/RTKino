@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2025-2026 FlyingSurveyor
 #include "WebUI.h"
-#include "LeafletAssets.h"
+
 
 // OTA Manager
 #include "OTAManager.h"
@@ -428,23 +428,6 @@ static void sendChunk(const char* str) {
 
 static void sendChunk(const String& str) {
   _server->sendContent(str);
-}
-
-// Send PROGMEM string in 512-byte chunks to avoid large heap allocations.
-// On ESP32 flash is memory-mapped, but strlen_P/memcpy_P are used for
-// correctness and forward compatibility with AVR-style PROGMEM targets.
-static void sendChunkPROGMEM(const char* pgm_ptr) {
-  const size_t CHUNK = 512;
-  size_t len = strlen_P(pgm_ptr);
-  size_t offset = 0;
-  while (offset < len) {
-    size_t n = (CHUNK < len - offset) ? CHUNK : (len - offset);
-    char buf[CHUNK + 1];
-    memcpy_P(buf, pgm_ptr + offset, n);
-    buf[n] = '\0';
-    _server->sendContent(buf);
-    offset += n;
-  }
 }
 
 // Time source name helper
@@ -4958,7 +4941,7 @@ static void handlePtsQuality() {
 static void handleSurveyPage() {
   sendHeader("Survey", "survey");
 
-  // ---- Inline styles for quality modal ----
+  // ---- Inline styles ----
   sendChunk("<style>");
   sendChunk(".modal-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:1000;justify-content:center;align-items:center;}");
   sendChunk(".modal-overlay.active{display:flex;}");
@@ -4968,8 +4951,21 @@ static void handleSurveyPage() {
   sendChunk(".modal-actions{display:flex;gap:10px;margin-top:16px;justify-content:flex-end;}");
   sendChunk(".btn-force{background:#e67e22;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;}");
   sendChunk(".btn-cancel-modal{background:#95a5a6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;}");
-  sendChunk(".prog-bar{height:8px;background:#ecf0f1;border-radius:4px;margin:8px 0;}");
-  sendChunk(".prog-fill{height:100%;background:#2ecc71;border-radius:4px;transition:width 0.3s;}");
+  sendChunk(".prog-bar{height:14px;background:#ecf0f1;border-radius:7px;margin:8px 0;overflow:hidden;}");
+  sendChunk(".prog-fill{height:100%;background:#2ecc71;border-radius:7px;transition:width 0.3s,background 0.5s;}");
+  sendChunk(".form-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;}");
+  sendChunk(".form-grid label{display:block;font-size:0.82em;color:#555;margin-bottom:2px;}");
+  sendChunk(".form-grid input,.form-grid select{width:100%;box-sizing:border-box;}");
+  sendChunk(".form-full{grid-column:1/-1;}");
+  sendChunk(".sv-card{border:1px solid #dce1e7;border-radius:6px;padding:10px 12px;margin:6px 0;background:#fff;}");
+  sendChunk(".sv-card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;}");
+  sendChunk(".sv-card-title{font-weight:bold;font-size:1em;}");
+  sendChunk(".rtk-badge{display:inline-block;padding:2px 7px;border-radius:10px;font-size:0.78em;font-weight:bold;color:#fff;}");
+  sendChunk(".rtk-fix{background:#27ae60;}.rtk-float{background:#f39c12;}.rtk-none{background:#e74c3c;}");
+  sendChunk(".sv-card-meta{font-size:0.83em;color:#555;margin:2px 0;}");
+  sendChunk(".sv-dl-row{display:flex;gap:10px;margin-top:6px;}");
+  sendChunk(".sv-dl-row a{flex:1;text-align:center;padding:10px 0;border-radius:5px;font-size:0.95em;font-weight:bold;text-decoration:none;background:#2980b9;color:#fff;}");
+  sendChunk(".sv-dl-row a:last-child{background:#16a085;}");
   sendChunk("</style>");
 
   // ---- Quality warning modal ----
@@ -4994,14 +4990,22 @@ static void handleSurveyPage() {
   sendChunk("    fetch('/api/pts/measure/status').then(function(r){return r.json();}).then(function(d){");
   sendChunk("      var bar=document.getElementById('meas-bar');");
   sendChunk("      var st=document.getElementById('meas-status');");
-  sendChunk("      if(bar)bar.style.width=d.pct+'%';");
+  sendChunk("      if(bar){bar.style.width=d.pct+'%';");
+  sendChunk("        var h=d.curHAcc;var bg=h<0.02?'#27ae60':h<0.05?'#f39c12':'#e74c3c';");
+  sendChunk("        bar.style.background=bg;}");
   sendChunk("      if(st)st.innerHTML=d.pct+'% | '+d.nSamples+' camp. | hAcc:'+d.curHAcc.toFixed(4)+'m | '+d.elapsed.toFixed(1)+'s';");
   sendChunk("      if(d.status==='done'||d.status==='error'){");
   sendChunk("        var res=document.getElementById('meas-result');");
   sendChunk("        if(res){res.style.display='';");
   sendChunk("          res.innerHTML=d.status==='done'?'<b style=color:green>&#10003; Saved: '+d.lastPointId+'</b>':'<span style=color:red>&#9888; Error: '+d.errorMsg+'</span>';}");
   sendChunk("        document.getElementById('btn-misura').disabled=false;");
-  sendChunk("        if(d.status==='done')setTimeout(function(){location.reload();},2000);");
+  sendChunk("        if(d.status==='done'){autoIncrementName();");
+  sendChunk("          setTimeout(function(){");
+  sendChunk("            var r2=document.getElementById('meas-result');if(r2)r2.style.display='none';");
+  sendChunk("            var b2=document.getElementById('meas-bar');if(b2){b2.style.width='0%';b2.style.background='#2ecc71';}");
+  sendChunk("            var s2=document.getElementById('meas-status');if(s2)s2.innerHTML='';");
+  sendChunk("          },3000);");
+  sendChunk("        }");
   sendChunk("      } else if(Date.now()<_measureDeadline){");
   sendChunk("        _measureTimeout=setTimeout(poll,500);");
   sendChunk("      } else {");
@@ -5013,7 +5017,7 @@ static void handleSurveyPage() {
   sendChunk("      if(Date.now()<_measureDeadline)_measureTimeout=setTimeout(poll,1000);");
   sendChunk("    });");
   sendChunk("  })();");
-  sendChunk("}");
+  sendChunk("}")
 
   // doMeasure: check quality first, then show modal or proceed
   sendChunk("var _pendingForce=false;");
@@ -5062,15 +5066,23 @@ static void handleSurveyPage() {
   sendChunk("}");
   sendChunk("loadCodes();");
 
+  sendChunk("function autoIncrementName(){");
+  sendChunk("  var n=document.getElementById('pt-name');if(!n)return;");
+  sendChunk("  var m=n.value.match(/^(.*?)(\\d+)$/);");
+  sendChunk("  if(m){var num=parseInt(m[2],10)+1;var pad=m[2].length;");
+  sendChunk("    n.value=m[1]+(''+num).padStart(pad,'0');}");
+  sendChunk("}");
+
   sendChunk("function startMeasureRequest(force){");
   sendChunk("  var name=document.getElementById('pt-name').value;");
   sendChunk("  var codice=document.getElementById('pt-codice').value;");
   sendChunk("  var dur=document.getElementById('pt-dur').value||10;");
+  sendChunk("  var interval=document.getElementById('pt-rate').value||0.5;");
   sendChunk("  document.getElementById('btn-misura').disabled=true;");
   sendChunk("  var st=document.getElementById('meas-status');if(st)st.innerHTML='Avvio...';");
   sendChunk("  var res=document.getElementById('meas-result');if(res)res.style.display='none';");
-  sendChunk("  var bar=document.getElementById('meas-bar');if(bar)bar.style.width='0%';");
-  sendChunk("  fetch('/api/pts/measure?name='+encodeURIComponent(name)+'&codice='+encodeURIComponent(codice)+'&duration='+dur+'&force='+(force?1:0))");
+  sendChunk("  var bar=document.getElementById('meas-bar');if(bar){bar.style.width='0%';bar.style.background='#2ecc71';}");
+  sendChunk("  fetch('/api/pts/measure?name='+encodeURIComponent(name)+'&codice='+encodeURIComponent(codice)+'&duration='+dur+'&interval='+interval+'&force='+(force?1:0))");
   sendChunk("    .then(function(r){return r.json();}).then(function(d){");
   sendChunk("      if(d.error){");
   sendChunk("        var res=document.getElementById('meas-result');");
@@ -5109,11 +5121,10 @@ static void handleSurveyPage() {
   sendChunk("  fetch('/api/pts/point/delete?sid='+sid+'&pid='+pid,{method:'POST'}).then(function(r){return r.json();})");
   sendChunk("    .then(function(d){");
   sendChunk("      if(d.ok){");
-  sendChunk("        var tr=document.querySelector('tr[data-pid=\"'+pid+'\"]');");
-  sendChunk("        if(tr)tr.remove();");
+  sendChunk("        var el=document.querySelector('[data-pid=\"'+pid+'\"]');");
+  sendChunk("        if(el)el.remove();");
   sendChunk("        var cnt=document.getElementById('active-pts-count');");
   sendChunk("        if(cnt){var n=parseInt(cnt.textContent,10);if(!isNaN(n))cnt.textContent=n-1;}");
-  sendChunk("        refreshSurveyMap();");
   sendChunk("      }else{alert('Error: '+(d.error||'unknown'));}");
   sendChunk("    })");
   sendChunk("    .catch(function(e){alert('Network error: '+e);});");
@@ -5125,46 +5136,50 @@ static void handleSurveyPage() {
 
   // ---- Active survey banner ----
   String activeSid = SurveyPoints::getActiveSurveyId();
-  sendChunk("<div class='card'><h2>&#128205; Point Survey</h2>");
+  sendChunk("<div class='card'><h2>&#127919; Survey</h2>");
   if (activeSid.isEmpty()) {
     sendChunk("<div style='background:#fadbd8;color:#922b21;padding:12px;border-radius:4px;margin-bottom:12px;'>");
-    sendChunk("&#9888; No active survey. Create a new survey or select one from the list.</div>");
+    sendChunk("&#9888; No active survey. Create a new survey or select one from the list below.</div>");
   } else {
     String json  = SurveyPoints::loadSurveyJSON(activeSid);
     String title = activeSid;
     int ti = json.indexOf("\"title\":\"");
     if (ti >= 0) { int ts=ti+9, te=json.indexOf("\"",ts); if(te>ts) title=json.substring(ts,te); }
     int pts = SurveyPoints::getSurveyPointCount(activeSid);
-    sendChunk("<div id='active-banner' data-sid='" + activeSid + "' style='background:#2ecc71;color:white;padding:10px;border-radius:4px;margin-bottom:12px'>");
-    sendChunk("<b>Active survey: " + title + "</b> &nbsp;|&nbsp; Points: <span id='active-pts-count'>" + String(pts) + "</span> &nbsp;|&nbsp; ID: " + activeSid);
-    sendChunk("</div>");
-    // Measure form
-    sendChunk("<h3>Measure point</h3>");
-    sendChunk("<label>Point name</label><input id='pt-name' type='text' placeholder='automatic' style='max-width:200px'>");
-    sendChunk("<label>Category</label><select id='pt-cat' onchange='updateCodici(this.value)' style='max-width:220px'><option value=''>-- choose --</option></select>");
-    sendChunk("<label>Code</label><select id='pt-codice' style='max-width:220px'><option value=''>-- choose --</option></select>");
-    sendChunk("<label>Duration (s)</label><input id='pt-dur' type='number' value='10' min='1' max='120' style='max-width:100px'>");
-    sendChunk("<br><button id='btn-misura' onclick='doMeasure()'>&#9654; Measure</button>");
     String extintChecked = g_extintMarkerEnabled ? " checked" : "";
-    sendChunk("<label style='display:inline-flex;align-items:center;gap:6px;margin-left:12px;font-size:0.9em;cursor:pointer;'><input type='checkbox' id='chk-extint'" + extintChecked + " onchange='toggleExtint(this.checked)'> PPK marker (EXTINT)</label>");
-    sendChunk("<div class='prog-bar'><div id='meas-bar' class='prog-fill' style='width:0%'></div></div>");
-    sendChunk("<div id='meas-status' style='margin:4px 0;font-family:monospace;font-size:0.9em;color:#555'></div>");
+    sendChunk("<div id='active-banner' data-sid='" + activeSid + "' style='background:#2ecc71;color:white;padding:10px;border-radius:4px;margin-bottom:12px'>");
+    sendChunk("<b>&#128205; " + title + "</b> &nbsp;|&nbsp; ");
+    sendChunk("<span id='active-pts-count'>" + String(pts) + "</span> pts &nbsp;|&nbsp; ");
+    sendChunk("&#128225; EXTINT: <label style='cursor:pointer;display:inline-flex;align-items:center;gap:4px;'>");
+    sendChunk("<input type='checkbox' id='chk-extint'" + extintChecked + " onchange='toggleExtint(this.checked)'> PPK marker</label>");
+    sendChunk("</div>");
+    // ---- Compact 2-column measure form ----
+    sendChunk("<h3 style='margin:0 0 8px'>&#128208; Nuova Misura</h3>");
+    sendChunk("<div class='form-grid'>");
+    sendChunk("<div><label>Nome punto</label><input id='pt-name' type='text' placeholder='P001' autocomplete='off'></div>");
+    sendChunk("<div><label>Categoria</label><select id='pt-cat' onchange='updateCodici(this.value)'><option value=''>-- choose --</option></select></div>");
+    sendChunk("<div class='form-full'><label>Codice</label><select id='pt-codice'><option value=''>-- choose --</option></select></div>");
+    sendChunk("<div><label>Durata (s)</label><input id='pt-dur' type='number' value='10' min='1' max='120'></div>");
+    sendChunk("<div><label>Intervallo (s)</label><input id='pt-rate' type='number' value='0.5' min='0.1' max='10' step='0.1'></div>");
+    sendChunk("</div>");
+    sendChunk("<button id='btn-misura' onclick='doMeasure()' style='width:100%;padding:12px;font-size:1.1em;background:#27ae60;color:white;border:none;border-radius:6px;cursor:pointer;margin-top:4px'>&#128994; MISURA</button>");
+    sendChunk("<div class='prog-bar' style='margin-top:10px'><div id='meas-bar' class='prog-fill' style='width:0%'></div></div>");
+    sendChunk("<div id='meas-status' style='margin:4px 0;font-family:monospace;font-size:0.85em;color:#555'></div>");
     sendChunk("<div id='meas-result' style='display:none;margin:8px 0;padding:8px;background:#ecf0f1;border-radius:4px'></div>");
   }
   sendChunk("</div>");
 
   // ---- Survey list ----
-  sendChunk("<div class='card'><h2>Elenco Rilievi</h2>");
-  sendChunk("<h3>New survey</h3>");
-  sendChunk("<form method='POST' action='/api/pts/create' style='display:flex;gap:8px;flex-wrap:wrap'>");
-  sendChunk("<input name='title' type='text' placeholder='Survey name' required style='max-width:300px'>");
-  sendChunk("<input name='desc' type='text' placeholder='Descrizione (opzionale)' style='max-width:300px'>");
-  sendChunk("<button type='submit'>+ Create</button></form><br>");
+  sendChunk("<div class='card'><h2>&#128193; Elenco Rilievi</h2>");
+  sendChunk("<form method='POST' action='/api/pts/create' style='display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px'>");
+  sendChunk("<input name='title' type='text' placeholder='Nome rilievo' required style='flex:1;min-width:160px'>");
+  sendChunk("<input name='desc' type='text' placeholder='Descrizione (opzionale)' style='flex:2;min-width:160px'>");
+  sendChunk("<button type='submit' style='white-space:nowrap'>&#10133; Crea</button></form>");
 
   std::vector<String> ids;
   SurveyPoints::listSurveyIds(ids);
   if (ids.empty()) {
-    sendChunk("<p>No surveys found.</p>");
+    sendChunk("<p style='color:#888'>Nessun rilievo trovato.</p>");
   } else {
     for (const String& sid : ids) {
       String json  = SurveyPoints::loadSurveyJSON(sid);
@@ -5177,442 +5192,100 @@ static void handleSurveyPage() {
       int pts = SurveyPoints::getSurveyPointCount(sid);
       bool isActive = (sid == activeSid);
 
-      sendChunk("<div data-sid='" + sid + "' style='border:1px solid #ddd;border-radius:4px;padding:10px;margin:6px 0;background:" + String(isActive?"#eafaf1":"white") + "'>");
-      sendChunk("<b>" + String(isActive ? "(*) " : "") + title + "</b> &nbsp;");
-      sendChunk("<span style='color:#7f8c8d'>Punti: " + String(pts) + " | " + created + " | ID: " + sid + "</span><br>");
+      sendChunk("<div data-sid='" + sid + "' style='border:1px solid " + String(isActive?"#27ae60":"#ddd") + ";border-radius:4px;padding:10px;margin:6px 0;background:" + String(isActive?"#eafaf1":"white") + "'>");
+      sendChunk("<b>" + String(isActive ? "&#10003; " : "") + title + "</b> &nbsp;");
+      sendChunk("<span style='color:#7f8c8d;font-size:0.85em'>&#128197; " + created + " | " + String(pts) + " pt | <code>" + sid + "</code></span><br style='margin-bottom:4px'>");
       if (!isActive) {
-        sendChunk("<button class='btn-small' onclick=\"setActive('" + sid + "')\">Set active</button> ");
+        sendChunk("<button class='btn-small' onclick=\"setActive('" + sid + "')\">&#128257; Attiva</button> ");
       }
-      sendChunk("<a class='btn btn-small' href='/api/pts/download?sid=" + sid + "' download='" + sid + ".geojson'>GeoJSON</a> ");
-      sendChunk("<a class='btn btn-small' href='/api/pts/download/csv?sid=" + sid + "' download='" + sid + ".csv'>CSV</a> ");
-      sendChunk("<button class='btn btn-small btn-danger' onclick=\"delSurvey('" + sid + "')\">Delete</button>");
+      sendChunk("<button class='btn btn-small btn-danger' onclick=\"delSurvey('" + sid + "')\">&#128465; Elimina</button>");
       sendChunk("</div>");
     }
   }
-  sendChunk("<br><button class='btn-secondary' onclick='doSync()'>Sync &rarr; SD</button>");
+  sendChunk("<button class='btn-secondary' style='margin-top:6px' onclick='doSync()'>Sync &#8594; SD</button>");
   sendChunk("</div>");
 
-  // ---- Interactive map of active survey points (with measure tool + osnap) ----
+  // ---- Card-based point list for active survey ----
   if (!activeSid.isEmpty()) {
-    sendChunk("<div class='card'>");
-    sendChunk("<h2>&#128205; Active survey map</h2>");
+    sendChunk("<div class='card'><h2>&#128203; Punti rilevati</h2>");
 
-    // ---- CSS for map + measurement UI ----
-    sendChunk("<style>");
-    sendChunk("#survey-map{height:420px;background:#fff;border-radius:4px;position:relative;}");
-    sendChunk("#survey-map.measure-mode{cursor:crosshair;}");
-    // toolbar
-    sendChunk(".map-toolbar{display:flex;gap:6px;margin-top:8px;align-items:center;flex-wrap:wrap;}");
-    sendChunk(".map-toolbar button{font-size:13px;padding:6px 12px;}");
-    sendChunk(".map-toolbar .active{background:#e67e22;color:white;}");
-    // measurement panel
-    sendChunk("#meas-panel{margin-top:10px;display:none;}");
-    sendChunk("#meas-panel table{width:100%;font-size:0.85em;border-collapse:collapse;}");
-    sendChunk("#meas-panel th{background:#34495e;color:white;padding:6px 8px;text-align:left;font-size:0.8em;}");
-    sendChunk("#meas-panel td{padding:5px 8px;border-bottom:1px solid #ecf0f1;font-family:monospace;font-size:0.85em;}");
-    sendChunk("#meas-panel tr:hover{background:#f7f9fa;}");
-    // snap ring
-    sendChunk(".snap-ring{border:2px solid #e67e22;background:rgba(230,126,34,0.15);}");
-    // info bar
-    sendChunk(".map-info-bar{display:flex;gap:12px;margin-top:6px;font-size:0.8em;color:#7f8c8d;font-family:monospace;}");
-    // cross icon (divIcon SVG)
-    sendChunk(".survey-cross-icon{background:none!important;border:none!important;}");
-    sendChunk("</style>");
+    int ptCount = SurveyPoints::getSurveyPointCount(activeSid);
+    if (ptCount == 0) {
+      sendChunk("<p style='color:#888;font-size:0.9em'>Nessun punto ancora rilevato.</p>");
+    } else {
+      String json = SurveyPoints::loadSurveyJSON(activeSid);
+      int pos = 0;
+      while (true) {
+        int fi = json.indexOf("\"type\":\"Feature\"", pos);
+        if (fi < 0) break;
+        int featureStart = -1;
+        for (int i = fi; i >= 1; i--) { if (json[i] == '{') { featureStart = i; break; } }
+        if (featureStart < 0) { pos = fi+1; continue; }
+        int depth=0, featureEnd=-1;
+        for (int i=featureStart; i<(int)json.length(); i++) {
+          if (json[i]=='{') depth++;
+          else if (json[i]=='}') { if(--depth==0){featureEnd=i;break;} }
+        }
+        if (featureEnd<0) break;
 
-    // ---- Leaflet CSS + JS ----
-    sendChunk("<style>");
-    sendChunkPROGMEM(LEAFLET_CSS);
-    sendChunk("</style>");
-    sendChunk("<script>");
-    sendChunkPROGMEM(LEAFLET_JS);
-    sendChunk("</script>");
+        auto getStr=[&](const String& key, int from)->String{
+          String nd="\""+key+"\":\""; int ki=json.indexOf(nd,from); if(ki<0)return "";
+          int vs=ki+nd.length(), ve=json.indexOf("\"",vs); return ve>vs?json.substring(vs,ve):"";
+        };
+        auto getNum=[&](const String& key, int from)->String{
+          String nd="\""+key+"\":"; int ki=json.indexOf(nd,from); if(ki<0)return "0";
+          int vs=ki+nd.length(); while(vs<(int)json.length()&&json[vs]==' ')vs++;
+          int ve=vs; while(ve<(int)json.length()&&(isdigit(json[ve])||json[ve]=='.'||json[ve]=='-'||json[ve]=='e'||json[ve]=='E'))ve++;
+          return json.substring(vs,ve);
+        };
 
-    // ---- Map container ----
-    sendChunk("<div id='survey-map'></div>");
+        String pid    = getStr("id",    featureStart);
+        String name   = getStr("name",  featureStart);
+        String codice = getStr("codice",featureStart);
+        String rtk    = getStr("rtk",   featureStart);
+        int propsPos  = json.indexOf("\"properties\":", featureStart);
+        int from      = propsPos>0 ? propsPos : featureStart;
 
-    // ---- Toolbar ----
-    sendChunk("<div class='map-toolbar'>");
-    sendChunk("<button onclick='refreshSurveyMap()' class='btn-secondary' title='Reload points'>&#x1F504; Refresh</button>");
-    sendChunk("<button id='btn-measure' onclick='toggleMeasure()' class='btn-secondary' title='Measure distance between points (click on 2 points)'>&#128207; Measure</button>");
-    sendChunk("<label style='display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;'><input type='checkbox' id='chk-osnap' checked onchange='toggleOsnap(this.checked)'> OSnap</label>");
-    sendChunk("<button id='btn-clear-meas' onclick='clearMeasurements()' class='btn-secondary' style='display:none' title='Clear all measurements'>&#128465; Clear measurements</button>");
-    sendChunk("<span id='map-status' style='margin-left:auto;font-size:0.85em;color:#666'></span>");
-    sendChunk("</div>");
+        int geomPos   = json.indexOf("\"coordinates\":", featureStart);
+        String lat_s="0", lon_s="0", alt_s="0";
+        if (geomPos>0) {
+          int bp=json.indexOf("[",geomPos);
+          if(bp>0){int eb=json.indexOf("]",bp); String coords=json.substring(bp+1,eb);
+            int c1=coords.indexOf(","); int c2=coords.indexOf(",",c1+1);
+            lon_s=coords.substring(0,c1); lat_s=coords.substring(c1+1,c2>0?c2:coords.length());
+            if(c2>0) alt_s=coords.substring(c2+1); lat_s.trim(); lon_s.trim(); alt_s.trim();}
+        }
 
-    // ---- Info bar (zoom, cursor hint) ----
-    sendChunk("<div class='map-info-bar'>");
-    sendChunk("<span id='info-zoom'>Zoom: -</span>");
-    sendChunk("<span id='info-cursor'></span>");
-    sendChunk("<span id='info-snap' style='color:#e67e22;font-weight:bold'></span>");
-    sendChunk("</div>");
+        // RTK badge: compute class and label in a single pass
+        String rtkLower = rtk; rtkLower.toLowerCase();
+        bool isFix   = rtkLower.indexOf("fix")   >= 0;
+        bool isFloat = rtkLower.indexOf("float") >= 0;
+        String badgeClass = isFix ? "rtk-fix" : isFloat ? "rtk-float" : "rtk-none";
+        String rtkLabel   = isFix ? "FIX &#10003;" : isFloat ? "FLOAT ~" : "NO RTK";
 
-    // ---- Measurement results panel ----
-    sendChunk("<div id='meas-panel'>");
-    sendChunk("<h3 style='margin:8px 0 4px;font-size:14px;color:#34495e'>&#128207; Measurements</h3>");
-    sendChunk("<table><thead><tr>");
-    sendChunk("<th>#</th><th>Da</th><th>A</th><th>Dist 2D</th><th>Dist 3D</th><th>&Delta;H</th><th>Azimut</th><th>Pendenza</th>");
-    sendChunk("</tr></thead><tbody id='meas-tbody'></tbody></table>");
-    sendChunk("</div>");
+        String hacc_s = getNum("hAcc", from);
+        String nSamp  = getNum("n_samples", from);
 
-    // ======== JAVASCRIPT ========
-    sendChunk("<script>");
-
-    // --- State ---
-    sendChunk("var _surveyMap=null,_markersLayer=null,_zoomHandler=null;");
-    sendChunk("var _measMode=false,_measLayer=null,_snapLayer=null;");
-    sendChunk("var _snapRing=null,_snappedPt=null,_measPtA=null;");
-    sendChunk("var _measLine=null,_measCount=0;");
-    sendChunk("var _pointsIndex=[];"); // [{name,lat,lon,alt,marker}]
-    sendChunk("var _snapEnabled=true;"); // OSnap active by default
-
-    // --- Utility: RTK color ---
-    sendChunk("function rtkColor(s){var r=String(s).toLowerCase();if(r.indexOf('fixed')>=0)return'#27ae60';if(r.indexOf('float')>=0)return'#f39c12';return'#e74c3c';}");
-
-    // --- Cross icon helpers ---
-    sendChunk("function getCrossSize(z){if(z>=20)return 18;if(z>=17)return 14;return 12;}");
-    sendChunk("function makeCrossIcon(color,sizePx){");
-    sendChunk("  var s=sizePx||14;");
-    sendChunk("  var svg='<svg width=\"'+s+'\" height=\"'+s+'\" viewBox=\"0 0 '+s+' '+s+'\" xmlns=\"http://www.w3.org/2000/svg\">'");
-    sendChunk("    +'<line x1=\"'+(s/2)+'\" y1=\"0\" x2=\"'+(s/2)+'\" y2=\"'+s+'\" stroke=\"'+color+'\" stroke-width=\"2\"/>'");
-    sendChunk("    +'<line x1=\"0\" y1=\"'+(s/2)+'\" x2=\"'+s+'\" y2=\"'+(s/2)+'\" stroke=\"'+color+'\" stroke-width=\"2\"/>'");
-    sendChunk("    +'</svg>';");
-    sendChunk("  return L.divIcon({className:'survey-cross-icon',html:svg,iconSize:[s,s],iconAnchor:[s/2,s/2],popupAnchor:[0,-s/2]});}");
-
-    // --- Geodetic calculations ---
-    // Haversine for 2D distance (metres)
-    sendChunk("function haversine(lat1,lon1,lat2,lon2){");
-    sendChunk("  var R=6378137,dLat=(lat2-lat1)*Math.PI/180,dLon=(lon2-lon1)*Math.PI/180;");
-    sendChunk("  var a=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)*Math.sin(dLon/2);");
-    sendChunk("  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));}");
-    // Azimuth (degrees)
-    sendChunk("function azimuth(lat1,lon1,lat2,lon2){");
-    sendChunk("  var dLon=(lon2-lon1)*Math.PI/180;var y=Math.sin(dLon)*Math.cos(lat2*Math.PI/180);");
-    sendChunk("  var x=Math.cos(lat1*Math.PI/180)*Math.sin(lat2*Math.PI/180)-Math.sin(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.cos(dLon);");
-    sendChunk("  return(Math.atan2(y,x)*180/Math.PI+360)%360;}");
-    // Format distance with adaptive units
-    sendChunk("function fmtDist(m){if(m>=1000)return(m/1000).toFixed(3)+' km';if(m>=1)return m.toFixed(3)+' m';return(m*100).toFixed(1)+' cm';}");
-    // Format angle DMS
-    sendChunk("function fmtAz(deg){var d=Math.floor(deg);var mm=(deg-d)*60;var m=Math.floor(mm);var s=((mm-m)*60).toFixed(1);return d+'\\u00b0'+('0'+m).slice(-2)+\"'\"+('0'+s).slice(-4)+'\"';}");
-
-    // --- Snap engine (osnap) ---
-    sendChunk("var SNAP_RADIUS_PX=18;"); // snap tolerance in pixels
-    sendChunk("function findSnap(latlng){");
-    sendChunk("  if(!_surveyMap||_pointsIndex.length===0)return null;");
-    sendChunk("  var best=null,bestDist=Infinity;");
-    sendChunk("  var pt=_surveyMap.latLngToContainerPoint(latlng);");
-    sendChunk("  for(var i=0;i<_pointsIndex.length;i++){");
-    sendChunk("    var pp=_surveyMap.latLngToContainerPoint(L.latLng(_pointsIndex[i].lat,_pointsIndex[i].lon));");
-    sendChunk("    var dx=pt.x-pp.x,dy=pt.y-pp.y,d=Math.sqrt(dx*dx+dy*dy);");
-    sendChunk("    if(d<SNAP_RADIUS_PX&&d<bestDist){bestDist=d;best=_pointsIndex[i];}");
-    sendChunk("  }");
-    sendChunk("  return best;}");
-
-    // --- Show/hide snap ring ---
-    sendChunk("function showSnapRing(pt){");
-    sendChunk("  if(!_snapLayer)return;");
-    sendChunk("  if(_snapRing){_snapLayer.removeLayer(_snapRing);}");
-    sendChunk("  if(pt){");
-    sendChunk("    _snapRing=L.circleMarker([pt.lat,pt.lon],{radius:12,className:'snap-ring',fillOpacity:0,weight:2,color:'#e67e22'});");
-    sendChunk("    _snapRing.addTo(_snapLayer);");
-    sendChunk("    document.getElementById('info-snap').textContent='\\u25CE SNAP: '+pt.name;");
-    sendChunk("  }else{");
-    sendChunk("    _snapRing=null;");
-    sendChunk("    document.getElementById('info-snap').textContent='';");
-    sendChunk("  }");
-    sendChunk("  _snappedPt=pt;}");
-
-    // --- Measurement live line (rubber band) ---
-    sendChunk("var _rubberLine=null;");
-    sendChunk("function updateRubber(latlng){");
-    sendChunk("  if(!_measPtA||!_measLayer)return;");
-    sendChunk("  var target=_snappedPt?L.latLng(_snappedPt.lat,_snappedPt.lon):latlng;");
-    sendChunk("  if(_rubberLine){_rubberLine.setLatLngs([L.latLng(_measPtA.lat,_measPtA.lon),target]);}");
-    sendChunk("  else{_rubberLine=L.polyline([L.latLng(_measPtA.lat,_measPtA.lon),target],{color:'#e67e22',weight:2,dashArray:'6,4'}).addTo(_measLayer);}");
-    // live distance in info-cursor
-    sendChunk("  var d2=haversine(_measPtA.lat,_measPtA.lon,target.lat,target.lng);");
-    sendChunk("  document.getElementById('info-cursor').textContent='Dist: '+fmtDist(d2);}");
-
-    // --- Toggle measurement mode ---
-    sendChunk("function toggleMeasure(){");
-    sendChunk("  _measMode=!_measMode;");
-    sendChunk("  var btn=document.getElementById('btn-measure');");
-    sendChunk("  btn.classList.toggle('active',_measMode);");
-    sendChunk("  document.getElementById('survey-map').classList.toggle('measure-mode',_measMode);");
-    sendChunk("  if(_measMode){");
-    sendChunk("    if(!_measLayer){_measLayer=L.layerGroup().addTo(_surveyMap);}");
-    sendChunk("    if(!_snapLayer){_snapLayer=L.layerGroup().addTo(_surveyMap);}");
-    sendChunk("    _measPtA=null;_rubberLine=null;");
-    sendChunk("    document.getElementById('info-cursor').textContent='Click point A';");
-    sendChunk("  }else{");
-    sendChunk("    if(_rubberLine&&_measLayer){_measLayer.removeLayer(_rubberLine);_rubberLine=null;}");
-    sendChunk("    showSnapRing(null);_measPtA=null;");
-    sendChunk("    document.getElementById('info-cursor').textContent='';");
-    sendChunk("  }}");
-
-    // --- Map click handler for measurement ---
-    sendChunk("function onMapClickMeas(e){");
-    sendChunk("  if(!_measMode)return;");
-    sendChunk("  if(e.originalEvent&&e.originalEvent._measHandled)return;"); // skip map click when marker already handled it
-    // Determine point to use: prefer explicit _pt (from marker click), else snap if enabled, else virtual from click coords
-    sendChunk("  var pt=e._pt||null;");
-    sendChunk("  if(!pt){");
-    sendChunk("    if(_snapEnabled){");
-    sendChunk("      pt=_snappedPt;");
-    sendChunk("      if(!pt){document.getElementById('info-cursor').textContent='\\u26A0 Move closer to a point to snap!';return;}");
-    sendChunk("    }else{");
-    sendChunk("      pt={name:'('+e.latlng.lat.toFixed(6)+','+e.latlng.lng.toFixed(6)+')',lat:e.latlng.lat,lon:e.latlng.lng,alt:0};");
-    sendChunk("    }");
-    sendChunk("  }");
-    sendChunk("  if(!_measPtA){");
-    // First point selected
-    sendChunk("    _measPtA=pt;");
-    sendChunk("    document.getElementById('info-cursor').textContent='A: '+pt.name+' \\u2014 now click point B';");
-    sendChunk("    L.circleMarker([pt.lat,pt.lon],{radius:8,color:'#e67e22',fillColor:'#e67e22',fillOpacity:0.6,weight:2}).addTo(_measLayer);");
-    sendChunk("  }else{");
-    // Second point -> compute and display measurement
-    sendChunk("    var ptB=pt;");
-    sendChunk("    var d2=haversine(_measPtA.lat,_measPtA.lon,ptB.lat,ptB.lon);");
-    sendChunk("    var dH=ptB.alt-_measPtA.alt;");
-    sendChunk("    var d3=Math.sqrt(d2*d2+dH*dH);");
-    sendChunk("    var az=azimuth(_measPtA.lat,_measPtA.lon,ptB.lat,ptB.lon);");
-    sendChunk("    var slope=(d2>0.001)?Math.atan2(Math.abs(dH),d2)*180/Math.PI:0;");
-    // Draw final measurement line
-    sendChunk("    if(_rubberLine){_measLayer.removeLayer(_rubberLine);_rubberLine=null;}");
-    sendChunk("    var line=L.polyline([[_measPtA.lat,_measPtA.lon],[ptB.lat,ptB.lon]],{color:'#c0392b',weight:2.5,opacity:0.9});");
-    sendChunk("    line.addTo(_measLayer);");
-    // Midpoint label
-    sendChunk("    var midLat=(_measPtA.lat+ptB.lat)/2,midLon=(_measPtA.lon+ptB.lon)/2;");
-    sendChunk("    var lbl=L.divIcon({className:'',html:'<div style=\"background:rgba(192,57,43,0.9);color:white;padding:2px 6px;border-radius:3px;font-size:11px;font-family:monospace;white-space:nowrap;transform:translate(-50%,-50%)\">'+fmtDist(d2)+'</div>',iconAnchor:[0,0]});");
-    sendChunk("    L.marker([midLat,midLon],{icon:lbl,interactive:false}).addTo(_measLayer);");
-    // B marker
-    sendChunk("    L.circleMarker([ptB.lat,ptB.lon],{radius:8,color:'#c0392b',fillColor:'#c0392b',fillOpacity:0.6,weight:2}).addTo(_measLayer);");
-    // Popup on line
-    sendChunk("    line.bindPopup('<b>'+_measPtA.name+' \\u2192 '+ptB.name+'</b><br>2D: '+fmtDist(d2)+'<br>3D: '+fmtDist(d3)+'<br>\\u0394H: '+(dH>=0?'+':'')+dH.toFixed(3)+' m<br>Az: '+fmtAz(az)+'<br>Pendenza: '+slope.toFixed(2)+'\\u00b0').openPopup();");
-    // Add row to table
-    sendChunk("    _measCount++;");
-    sendChunk("    var tbody=document.getElementById('meas-tbody');");
-    sendChunk("    var tr=document.createElement('tr');");
-    sendChunk("    tr.innerHTML='<td>'+_measCount+'</td><td>'+_measPtA.name+'</td><td>'+ptB.name+'</td><td>'+fmtDist(d2)+'</td><td>'+fmtDist(d3)+'</td><td>'+(dH>=0?'+':'')+dH.toFixed(3)+' m</td><td>'+fmtAz(az)+'</td><td>'+slope.toFixed(2)+'\\u00b0</td>';");
-    sendChunk("    tbody.appendChild(tr);");
-    sendChunk("    document.getElementById('meas-panel').style.display='block';");
-    sendChunk("    document.getElementById('btn-clear-meas').style.display='';");
-    // Reset for next measurement
-    sendChunk("    _measPtA=null;");
-    sendChunk("    document.getElementById('info-cursor').textContent='Click point A for new measurement';");
-    sendChunk("  }}");
-
-    // --- Mouse move handler for snap ---
-    sendChunk("function onMapMoveMeas(e){");
-    sendChunk("  if(!_measMode)return;");
-    sendChunk("  var snap=_snapEnabled?findSnap(e.latlng):null;");
-    sendChunk("  showSnapRing(snap);");
-    sendChunk("  if(_measPtA)updateRubber(e.latlng);}");
-
-    // --- Clear all measurements ---
-    sendChunk("function clearMeasurements(){");
-    sendChunk("  if(_measLayer){_measLayer.clearLayers();}");
-    sendChunk("  _measPtA=null;_rubberLine=null;_measCount=0;");
-    sendChunk("  document.getElementById('meas-tbody').innerHTML='';");
-    sendChunk("  document.getElementById('meas-panel').style.display='none';");
-    sendChunk("  document.getElementById('btn-clear-meas').style.display='none';");
-    sendChunk("  document.getElementById('info-cursor').textContent=_measMode?'Click point A':'';}");
-
-    // --- Toggle OSnap ---
-    sendChunk("function toggleOsnap(val){");
-    sendChunk("  _snapEnabled=val;");
-    sendChunk("  if(!_snapEnabled){showSnapRing(null);_snappedPt=null;}");
-    sendChunk("}");
-
-    // --- Update info bar on zoom/move ---
-    sendChunk("function updateInfoBar(){");
-    sendChunk("  if(!_surveyMap)return;");
-    sendChunk("  var z=_surveyMap.getZoom();");
-    sendChunk("  document.getElementById('info-zoom').textContent='Zoom: '+z.toFixed(1);}");
-
-    // --- Main map init ---
-    sendChunk("function initSurveyMap(geojson){");
-    sendChunk("  var features=geojson.features||[];");
-    sendChunk("  if(features.length===0){document.getElementById('map-status').textContent='No points';return;}");
-    sendChunk("  if(!_surveyMap){");
-    sendChunk("    _surveyMap=L.map('survey-map',{zoomControl:true,attributionControl:false,scrollWheelZoom:true,zoomSnap:0.25,zoomDelta:0.5,touchZoom:true,maxZoom:28,minZoom:1}).setView([42.5,12.5],6);");
-    sendChunk("    setTimeout(function(){if(_surveyMap){_surveyMap.invalidateSize();}},200);");
-    sendChunk("    document.getElementById('survey-map').style.background='#ffffff';");
-
-    // --- Custom scale bar (improved with ticks + dual readout) ---
-    sendChunk("    var CustomScale=L.Control.extend({options:{position:'bottomleft'},");
-    sendChunk("      onAdd:function(map){this._map=map;this._container=L.DomUtil.create('div','leaflet-control');");
-    sendChunk("        this._container.style.cssText='background:rgba(255,255,255,0.92);padding:4px 10px 2px;border-radius:4px;font-size:11px;font-family:monospace;box-shadow:0 1px 5px rgba(0,0,0,0.35);pointer-events:none';");
-    sendChunk("        map.on('zoom move',this._update,this);this._update();return this._container;},");
-    sendChunk("      onRemove:function(map){map.off('zoom move',this._update,this);},");
-    sendChunk("      _update:function(){var map=this._map;var lat=map.getBounds().getCenter().lat;");
-    sendChunk("        var mpp=40075016.686*Math.abs(Math.cos(lat*Math.PI/180))/Math.pow(2,map.getZoom()+8);");
-    sendChunk("        var raw=mpp*150,val,unit,px;");
-    sendChunk("        if(raw>=1000){val=[1,2,5,10,20,50,100,200,500,1000].find(function(v){return v>=raw/1000;})||1000;unit='km';px=(val*1000)/mpp;}");
-    sendChunk("        else if(raw>=1){val=[1,2,5,10,20,50,100,200,500].find(function(v){return v>=raw;})||500;unit='m';px=val/mpp;}");
-    sendChunk("        else{var cm=raw*100;val=[1,2,5,10,20,50].find(function(v){return v>=cm;})||50;unit='cm';px=(val/100)/mpp;}");
-    // Improved scale bar with 4 ticks
-    sendChunk("        var h='<svg width=\"'+(px+4)+'\" height=\"14\" style=\"display:block\"><line x1=\"2\" y1=\"10\" x2=\"'+(px+2)+'\" y2=\"10\" stroke=\"#333\" stroke-width=\"2\"/>';");
-    sendChunk("        for(var t=0;t<=4;t++){var tx=2+px*t/4;h+='<line x1=\"'+tx+'\" y1=\"6\" x2=\"'+tx+'\" y2=\"14\" stroke=\"#333\" stroke-width=\"1.5\"/>';}");
-    sendChunk("        h+='</svg><div style=\"display:flex;justify-content:space-between;width:'+(px+4)+'px;color:#333;font-weight:bold;font-size:10px\"><span>0</span><span>'+val+' '+unit+'</span></div>';");
-    sendChunk("        this._container.innerHTML=h;}");
-    sendChunk("    });");
-    sendChunk("    new CustomScale().addTo(_surveyMap);");
-
-    // --- Zoom level indicator (top-right) ---
-    sendChunk("    var ZoomInfo=L.Control.extend({options:{position:'topright'},");
-    sendChunk("      onAdd:function(map){this._map=map;this._el=L.DomUtil.create('div','leaflet-control');");
-    sendChunk("        this._el.style.cssText='background:rgba(44,62,80,0.85);color:white;padding:3px 8px;border-radius:4px;font:bold 11px monospace;pointer-events:none';");
-    sendChunk("        map.on('zoom',this._upd,this);this._upd();return this._el;},");
-    sendChunk("      onRemove:function(map){map.off('zoom',this._upd,this);},");
-    sendChunk("      _upd:function(){this._el.textContent='Z'+this._map.getZoom().toFixed(1);}");
-    sendChunk("    });");
-    sendChunk("    new ZoomInfo().addTo(_surveyMap);");
-
-    // --- Event listeners ---
-    sendChunk("    _surveyMap.on('click',onMapClickMeas);");
-    sendChunk("    _surveyMap.on('mousemove',onMapMoveMeas);");
-    sendChunk("    _surveyMap.on('zoom move',updateInfoBar);");
-
-    sendChunk("  }"); // end if(!_surveyMap)
-
-    // --- Reset layers ---
-    sendChunk("  if(_zoomHandler){_surveyMap.off('zoomend',_zoomHandler);_zoomHandler=null;}");
-    sendChunk("  if(_markersLayer){_markersLayer.clearLayers();}else{_markersLayer=L.layerGroup().addTo(_surveyMap);}");
-    sendChunk("  _pointsIndex=[];");
-
-    // --- Add markers ---
-    sendChunk("  var latlngs=[],markers=[];");
-    sendChunk("  features.forEach(function(f){");
-    sendChunk("    var c=f.geometry.coordinates;var lat=c[1],lon=c[0];");
-    sendChunk("    var props=f.properties||{};");
-    sendChunk("    var name=props.name||f.id||'P';");
-    sendChunk("    var codice=props.codice||'';");
-    sendChunk("    var tpv=props.TPV||{};var hp=props.HPPOSLLH||{};");
-    sendChunk("    var rtkRaw=tpv.rtk||props.rtk||'No RTK';");
-    sendChunk("    var altHAE=hp.altHAE||c[2]||0;");
-    sendChunk("    var altMSL=hp.altMSL||c[2]||0;");
-    sendChunk("    var crossColor=rtkColor(rtkRaw);");
-    sendChunk("    var m=L.marker([lat,lon],{icon:makeCrossIcon(crossColor,getCrossSize(_surveyMap.getZoom())),interactive:true});");
-    // Enhanced popup with more info
-    sendChunk("    var popupContent='<b>'+name+'</b>'+(codice?' <span style=color:#7f8c8d>('+codice+')</span>':'')+'<br>Lat: '+lat.toFixed(8)+'<br>Lon: '+lon.toFixed(8)+'<br>Alt HAE: '+parseFloat(altHAE).toFixed(3)+' m<br>Alt MSL: '+parseFloat(altMSL).toFixed(3)+' m<br>RTK: <b>'+rtkRaw+'</b>';");
-    sendChunk("    m.bindPopup(popupContent);");
-    sendChunk("    (function(marker,mLat,mLon,mAlt,mName){");
-    sendChunk("      marker.on('click',function(e){");
-    sendChunk("        if(_measMode){");
-    sendChunk("          marker.closePopup();");
-    sendChunk("          if(e.originalEvent){e.originalEvent.stopPropagation();e.originalEvent._measHandled=true;}");
-    sendChunk("          var usePt=(_snapEnabled&&_snappedPt)?_snappedPt:{name:mName,lat:mLat,lon:mLon,alt:mAlt};");
-    sendChunk("          onMapClickMeas({latlng:L.latLng(usePt.lat,usePt.lon),_pt:usePt});");
-    sendChunk("        }");
-    sendChunk("      });");
-    sendChunk("    })(m,lat,lon,parseFloat(altHAE)||0,name);");
-    sendChunk("    m.addTo(_markersLayer);markers.push(m);latlngs.push([lat,lon]);");
-    // Index for snap
-    sendChunk("    _pointsIndex.push({name:name,lat:lat,lon:lon,alt:parseFloat(altHAE)||0,marker:m});");
-    sendChunk("  });");
-
-    // --- Zoom handler ---
-    sendChunk("  _zoomHandler=function(){");
-    sendChunk("    var sz=getCrossSize(_surveyMap.getZoom());");
-    sendChunk("    markers.forEach(function(mk){");
-    sendChunk("      var h=mk.options.icon.options.html||'';");
-    sendChunk("      var colorMatch=h.match(/stroke=\"([^\"]+)\"/);");
-    sendChunk("      var col=colorMatch?colorMatch[1]:'#e74c3c';");
-    sendChunk("      mk.setIcon(makeCrossIcon(col,sz));");
-    sendChunk("    });");
-    sendChunk("  };");
-    sendChunk("  _surveyMap.on('zoomend',_zoomHandler);");
-
-    // --- Fit bounds ---
-    sendChunk("  if(latlngs.length>0){_surveyMap.fitBounds(L.latLngBounds(latlngs),{padding:[30,30]});}");
-    sendChunk("  document.getElementById('map-status').textContent=features.length+' points';");
-    sendChunk("  updateInfoBar();");
-    sendChunk("}"); // end initSurveyMap
-
-    // --- Refresh ---
-    sendChunk("function refreshSurveyMap(){");
-    sendChunk("  if(_surveyMap){_surveyMap.invalidateSize();}");
-    sendChunk("  document.getElementById('map-status').textContent='Loading...';");
-    sendChunk("  fetch('/api/pts/download').then(function(r){return r.json();}).then(function(g){initSurveyMap(g);}).catch(function(e){document.getElementById('map-status').textContent='Error: '+e;});");
-    sendChunk("}");
-    sendChunk("(function(){");
-    sendChunk("  var mapDiv=document.getElementById('survey-map');");
-    sendChunk("  if(!mapDiv)return;");
-    sendChunk("  if('IntersectionObserver' in window){");
-    sendChunk("    var obs=new IntersectionObserver(function(entries){");
-    sendChunk("      if(entries[0].isIntersecting){obs.disconnect();refreshSurveyMap();}");
-    sendChunk("    },{threshold:0.1});");
-    sendChunk("    obs.observe(mapDiv);");
-    sendChunk("  } else {");
-    sendChunk("    refreshSurveyMap();");
-    sendChunk("  }");
-    sendChunk("})();");
-
-    sendChunk("</script>");
-    sendChunk("</div>");
-  }
-
-  // ---- Point table for active survey ----
-  if (!activeSid.isEmpty() && SurveyPoints::getSurveyPointCount(activeSid) > 0) {
-    sendChunk("<div class='card'><h2>Active survey points</h2>");
-    sendChunk("<table><thead><tr>");
-    sendChunk("<th>ID</th><th>Name</th><th>Code</th><th>Lat</th><th>Lon</th><th>AltHAE</th>");
-    sendChunk("<th>PDOP</th><th>HDOP</th><th>VDOP</th><th>&sigma;N(m)</th><th>&sigma;E(m)</th><th>&sigma;U(m)</th><th>RTK</th><th>Samples</th><th>Actions</th>");
-    sendChunk("</tr></thead><tbody>");
-
-    String json = SurveyPoints::loadSurveyJSON(activeSid);
-    int pos = 0;
-    while (true) {
-      int fi = json.indexOf("\"type\":\"Feature\"", pos);
-      if (fi < 0) break;
-      int featureStart = -1;
-      for (int i = fi; i >= 1; i--) { if (json[i] == '{') { featureStart = i; break; } }
-      if (featureStart < 0) { pos = fi+1; continue; }
-      int depth=0, featureEnd=-1;
-      for (int i=featureStart; i<(int)json.length(); i++) {
-        if (json[i]=='{') depth++;
-        else if (json[i]=='}') { if(--depth==0){featureEnd=i;break;} }
+        sendChunk("<div class='sv-card' data-pid='" + pid + "'>");
+        sendChunk("<div class='sv-card-header'>");
+        sendChunk("<span class='sv-card-title'>" + name + (codice.isEmpty() ? "" : " &mdash; " + codice) + "</span>");
+        sendChunk("<span class='rtk-badge " + badgeClass + "'>" + rtkLabel + "</span>");
+        sendChunk("</div>");
+        sendChunk("<div class='sv-card-meta'>&#127757; " + lat_s + "&#176; &nbsp; " + lon_s + "&#176;</div>");
+        sendChunk("<div class='sv-card-meta'>H: " + alt_s + " m &nbsp;|&nbsp; hAcc: " + hacc_s + " m &nbsp;|&nbsp; " + nSamp + " camp.</div>");
+        sendChunk("<div style='text-align:right;margin-top:4px'>");
+        sendChunk("<button class='btn btn-small btn-danger' onclick=\"delPoint('" + activeSid + "','" + pid + "')\">&#128465;</button>");
+        sendChunk("</div></div>");
+        pos = featureEnd + 1;
       }
-      if (featureEnd<0) break;
-
-      auto getStr=[&](const String& key, int from)->String{
-        String nd="\""+key+"\":\""; int ki=json.indexOf(nd,from); if(ki<0)return "";
-        int vs=ki+nd.length(), ve=json.indexOf("\"",vs); return ve>vs?json.substring(vs,ve):"";
-      };
-      auto getNum=[&](const String& key, int from)->String{
-        String nd="\""+key+"\":"; int ki=json.indexOf(nd,from); if(ki<0)return "0";
-        int vs=ki+nd.length(); while(vs<(int)json.length()&&json[vs]==' ')vs++;
-        int ve=vs; while(ve<(int)json.length()&&(isdigit(json[ve])||json[ve]=='.'||json[ve]=='-'||json[ve]=='e'||json[ve]=='E'))ve++;
-        return json.substring(vs,ve);
-      };
-
-      String pid    = getStr("id",    featureStart);
-      String name   = getStr("name",  featureStart);
-      String codice = getStr("codice",featureStart);
-      String rtk    = getStr("rtk",   featureStart);
-      int propsPos  = json.indexOf("\"properties\":", featureStart);
-      int from      = propsPos>0 ? propsPos : featureStart;
-
-      int geomPos   = json.indexOf("\"coordinates\":", featureStart);
-      String lat_s="0", lon_s="0", alt_s="0";
-      if (geomPos>0) {
-        int bp=json.indexOf("[",geomPos);
-        if(bp>0){int eb=json.indexOf("]",bp); String coords=json.substring(bp+1,eb);
-          int c1=coords.indexOf(","); int c2=coords.indexOf(",",c1+1);
-          lon_s=coords.substring(0,c1); lat_s=coords.substring(c1+1,c2>0?c2:coords.length());
-          if(c2>0) alt_s=coords.substring(c2+1); lat_s.trim(); lon_s.trim(); alt_s.trim();}
-      }
-
-      sendChunk("<tr data-pid='" + pid + "'><td>" + pid + "</td><td>" + name + "</td><td>" + codice + "</td>");
-      sendChunk("<td>" + lat_s + "</td><td>" + lon_s + "</td><td>" + alt_s + "</td>");
-      sendChunk("<td>" + getNum("pdop",from) + "</td><td>" + getNum("hdop",from) + "</td><td>" + getNum("vdop",from) + "</td>");
-      sendChunk("<td>" + getNum("sigma_N",from) + "</td><td>" + getNum("sigma_E",from) + "</td><td>" + getNum("sigma_U",from) + "</td>");
-      sendChunk("<td>" + rtk + "</td><td>" + getNum("n_samples",from) + "</td>");
-      sendChunk("<td><button class='btn btn-small btn-danger' onclick=\"delPoint('" + activeSid + "','" + pid + "')\">X</button></td>");
-      sendChunk("</tr>");
-      pos = featureEnd + 1;
     }
-    sendChunk("</tbody></table></div>");
+
+    // ---- Download buttons ----
+    sendChunk("<div class='sv-dl-row' style='margin-top:10px'>");
+    sendChunk("<a href='/api/pts/download?sid=" + activeSid + "' download='" + activeSid + ".geojson'>&#11015; GeoJSON</a>");
+    sendChunk("<a href='/api/pts/download/csv?sid=" + activeSid + "' download='" + activeSid + ".csv'>&#11015; CSV</a>");
+    sendChunk("</div>");
+    sendChunk("</div>");
   }
 
   sendFooter();
