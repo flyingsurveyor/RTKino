@@ -33,6 +33,7 @@
   
   // GPIO Pins
   #define BUZZER_GPIO 5         // Buzzer PWM output
+  #define EXTINT_GPIO 6         // ZED-F9P EXTINT — PPK event marker (TIM-TM2)
   
   // SD Card (integrated slot on SPI bus - NOT SDMMC)
   // TF_CS = GPIO 46 per board variant
