@@ -2,6 +2,7 @@
 // Copyright (C) 2025-2026 FlyingSurveyor
 #include "SurveyPoints.h"
 #include "FlashConfig.h"
+#include "config.h"
 #include <LittleFS.h>
 #include <math.h>
 #include <time.h>
@@ -35,6 +36,9 @@ static MeasureProgress   g_measureProg;
 static MeasureParams     g_measureParams;
 static TaskHandle_t      g_measureTask  = nullptr;
 static uint32_t          g_lastSyncMs   = 0;
+
+// EXTINT marker flag defined in main.cpp
+extern volatile bool g_extintMarkerEnabled;
 
 // ============================================================
 // Static helpers
@@ -961,6 +965,9 @@ static void measureTask(void* pvParam) {
         xSemaphoreGive(g_measureMutex);
     }
 
+    // Snapshot the marker flag once — avoids races with WebUI toggling mid-task
+    const bool markerEnabled = g_extintMarkerEnabled;
+
     // Quality gate
     if (!params.forceQuality) {
         QualityWarning w = SurveyPoints::checkQuality();
@@ -994,6 +1001,9 @@ static void measureTask(void* pvParam) {
 
     // ---- Sampling loop ----
     int      nCollected  = 0;
+    if (markerEnabled) {
+        digitalWrite(EXTINT_GPIO, HIGH);  // Rising edge → TIM-TM2 start marker
+    }
     uint32_t startMs     = millis();
     uint32_t durationMs  = (uint32_t)(params.durationSec * 1000.0f);
     uint32_t intervalMs  = (uint32_t)(params.intervalSec * 1000.0f);
@@ -1020,6 +1030,9 @@ static void measureTask(void* pvParam) {
     }
 
     // ---- Average and save ----
+    if (markerEnabled) {
+        digitalWrite(EXTINT_GPIO, LOW);   // Falling edge → TIM-TM2 end marker
+    }
     bool ok = buildAndSavePoint(params, snaps, nCollected);
     free(snaps);
 

@@ -297,6 +297,9 @@ SystemLog* g_systemLog = nullptr;
 static uint8_t g_lastCarrSoln = 0;  // Track RTK fix state changes
 static uint32_t g_lastHeapCheck = 0;  // For periodic heap monitoring
 
+// EXTINT marker flag — toggled from WebUI; drives GPIO6 HIGH/LOW around sampling
+volatile bool g_extintMarkerEnabled = false;
+
 // ---------------- ZED helpers (reading/CFG-RATE legacy via I2C) ----------------
 void readCfgRateFromZED() {
   const uint8_t pollRate[] = { 0xB5,0x62,0x06,0x08,0x00,0x00,0x0E,0x30 };
@@ -2409,6 +2412,10 @@ void setup() {
   } else {
     Serial.println("[Buzzer] Failed to initialize");
   }
+
+  // EXTINT GPIO init (ZED-F9P external interrupt for PPK event marking)
+  pinMode(EXTINT_GPIO, OUTPUT);
+  digitalWrite(EXTINT_GPIO, LOW);
 
   // SystemLog init (requires SD)
   if (sdOK) {

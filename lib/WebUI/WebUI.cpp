@@ -61,6 +61,9 @@ extern bool getSurveyResults(SurveyResults& out);
 // SurveyPoints (point survey feature — primary storage on flash)
 #include "SurveyPoints.h"
 
+// EXTINT marker flag (defined in main.cpp) — PPK event marking via GPIO6
+extern volatile bool g_extintMarkerEnabled;
+
 // PointCodes (point code/category library)
 #include "PointCodes.h"
 
@@ -5117,6 +5120,7 @@ static void handleSurveyPage() {
   sendChunk("}");
 
   sendChunk("function doSync(){fetch('/api/pts/sync').then(function(r){return r.text();}).then(function(t){alert(t);}).catch(function(e){alert('Sync error: '+e);});}");
+  sendChunk("function toggleExtint(en){fetch('/api/pts/extint?enable='+(en?1:0)).then(function(r){return r.json();}).then(function(d){var c=document.getElementById('chk-extint');if(c)c.checked=d.extintMarker;}).catch(function(e){console.error('EXTINT toggle error:',e);});}");
   sendChunk("</script>");
 
   // ---- Active survey banner ----
@@ -5141,6 +5145,8 @@ static void handleSurveyPage() {
     sendChunk("<label>Code</label><select id='pt-codice' style='max-width:220px'><option value=''>-- choose --</option></select>");
     sendChunk("<label>Duration (s)</label><input id='pt-dur' type='number' value='10' min='1' max='120' style='max-width:100px'>");
     sendChunk("<br><button id='btn-misura' onclick='doMeasure()'>&#9654; Measure</button>");
+    String extintChecked = g_extintMarkerEnabled ? " checked" : "";
+    sendChunk("<label style='display:inline-flex;align-items:center;gap:6px;margin-left:12px;font-size:0.9em;cursor:pointer;'><input type='checkbox' id='chk-extint'" + extintChecked + " onchange='toggleExtint(this.checked)'> PPK marker (EXTINT)</label>");
     sendChunk("<div class='prog-bar'><div id='meas-bar' class='prog-fill' style='width:0%'></div></div>");
     sendChunk("<div id='meas-status' style='margin:4px 0;font-family:monospace;font-size:0.9em;color:#555'></div>");
     sendChunk("<div id='meas-result' style='display:none;margin:8px 0;padding:8px;background:#ecf0f1;border-radius:4px'></div>");
@@ -5742,6 +5748,17 @@ static void handlePtsSync() {
   _server->send(200, "text/plain", "Survey sync to SD completed");
 }
 
+// ---- Survey API: toggle EXTINT marker (PPK event marking) ----
+static void handlePtsExtint() {
+  if (_server->hasArg("enable")) {
+    g_extintMarkerEnabled = (_server->arg("enable") == "1");
+  }
+  String json = "{\"extintMarker\":";
+  json += g_extintMarkerEnabled ? "true" : "false";
+  json += "}";
+  _server->send(200, "application/json", json);
+}
+
 // ========================================================================
 // STAKEOUT PAGE AND API HANDLERS
 // ========================================================================
@@ -6238,6 +6255,7 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
   _server->on("/api/pts/download",        HTTP_GET,  handlePtsDownload);
   _server->on("/api/pts/download/csv",    HTTP_GET,  handlePtsDownloadCSV);
   _server->on("/api/pts/sync",            HTTP_GET,  handlePtsSync);
+  _server->on("/api/pts/extint",          HTTP_GET,  handlePtsExtint);
 
   // Stakeout API
   _server->on("/api/stakeout/files",       HTTP_GET,  handleStakeoutFiles);
