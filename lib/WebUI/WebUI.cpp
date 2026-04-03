@@ -5474,7 +5474,7 @@ static void handleStakeoutPage() {
   sendChunk("    var btn=document.getElementById('skImuBtn');if(btn)btn.style.display='block';");
   sendChunk("  } else {");
   sendChunk("    window.addEventListener('deviceorientation',onSkOri,true);");
-  sendChunk("    setTimeout(function(){if(_devHdg===null)_imuOk=false;},2000);");
+  sendChunk("    setTimeout(function(){_imuOk=(_devHdg!==null);},2000);");
   sendChunk("  }");
   sendChunk("}");
   // iOS permission button handler
@@ -5535,6 +5535,7 @@ static void handleStakeoutPage() {
   sendChunk("  var ar=r-34;");
   sendChunk("  ctx.save();ctx.translate(cx,cy);ctx.rotate(angle);");
   sendChunk("  ctx.beginPath();");
+  // Arrow triangle: tip at top, base at ~42% radius, waist at ~18% (width ±11px)
   sendChunk("  ctx.moveTo(0,-ar);ctx.lineTo(11,ar*0.42);ctx.lineTo(0,ar*0.18);ctx.lineTo(-11,ar*0.42);");
   sendChunk("  ctx.closePath();ctx.fillStyle='#e74c3c';ctx.fill();");
   sendChunk("  ctx.restore();");
@@ -5591,6 +5592,7 @@ static void handleStakeoutPage() {
   sendChunk("      +'<p>&#x1F9ED; Az: <b>'+d.az.toFixed(1)+'&deg;</b></p>';");
   sendChunk("    _skData={az:d.az,d2d:d.d2d,dH:d.dH};");
   sendChunk("    skUpdateInfo(d.az,cs);");
+  // Arrival threshold: 5cm D2D; vibration: 200ms on, 100ms off, 200ms on
   sendChunk("    if(d.d2d<0.05&&navigator.vibrate)navigator.vibrate([200,100,200]);");
   sendChunk("  }).catch(function(){});");
   sendChunk("}");
