@@ -5017,7 +5017,7 @@ static void handleSurveyPage() {
   sendChunk("      if(Date.now()<_measureDeadline)_measureTimeout=setTimeout(poll,1000);");
   sendChunk("    });");
   sendChunk("  })();");
-  sendChunk("}")
+  sendChunk("}");
 
   // doMeasure: check quality first, then show modal or proceed
   sendChunk("var _pendingForce=false;");
