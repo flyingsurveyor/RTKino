@@ -5456,17 +5456,131 @@ static void handleStakeoutPage() {
   sendChunk(".sk-status p{margin:4px 0;font-size:15px;}");
   sendChunk(".sk-badge-fix{padding:2px 8px;border-radius:10px;font-size:11px;margin-left:6px;}");
   sendChunk(".fix-fixed{background:#2ecc71;color:#000;}.fix-float{background:#f39c12;color:#fff;}.fix-none{background:#7f8c8d;color:#fff;}");
+  sendChunk(".sk-canvas-wrap{text-align:center;margin:10px 0;}");
+  sendChunk("#skCanvas{display:block;margin:0 auto;background:#1a252f;border-radius:50%;border:2px solid #34495e;}");
+  sendChunk(".sk-imu-btn{display:none;margin:8px auto;padding:10px 20px;background:#2980b9;color:#fff;");
+  sendChunk("border:none;border-radius:6px;font-size:15px;cursor:pointer;width:100%;max-width:280px;}");
+  sendChunk(".sk-info-row{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:10px;font-family:monospace;font-size:13px;}");
+  sendChunk(".sk-info-item{background:#34495e;color:#ecf0f1;padding:4px 10px;border-radius:4px;}");
   sendChunk("</style>");
 
   sendChunk("<script>");
+  // IMU state variables
+  sendChunk("var _devHdg=null,_imuOk=false,_skData=null;");
+  // requestIMU: auto on Android, prompt on iOS
+  sendChunk("function requestIMU(){");
+  sendChunk("  if(typeof DeviceOrientationEvent==='undefined')return;");
+  sendChunk("  if(typeof DeviceOrientationEvent.requestPermission==='function'){");
+  sendChunk("    var btn=document.getElementById('skImuBtn');if(btn)btn.style.display='block';");
+  sendChunk("  } else {");
+  sendChunk("    window.addEventListener('deviceorientation',onSkOri,true);");
+  sendChunk("    setTimeout(function(){_imuOk=(_devHdg!==null);},2000);");
+  sendChunk("  }");
+  sendChunk("}");
+  // iOS permission button handler
+  sendChunk("function askImuPerm(){");
+  sendChunk("  DeviceOrientationEvent.requestPermission().then(function(r){");
+  sendChunk("    if(r==='granted'){");
+  sendChunk("      window.addEventListener('deviceorientation',onSkOri,true);");
+  sendChunk("      _imuOk=true;");
+  sendChunk("    }");
+  sendChunk("    document.getElementById('skImuBtn').style.display='none';");
+  sendChunk("  }).catch(function(){});");
+  sendChunk("}");
+  // orientation event handler
+  sendChunk("function onSkOri(e){");
+  sendChunk("  if(e.webkitCompassHeading!=null){");
+  sendChunk("    _devHdg=e.webkitCompassHeading;");
+  sendChunk("  } else if(e.alpha!=null){");
+  sendChunk("    _devHdg=(360-e.alpha)%360;");
+  sendChunk("  }");
+  sendChunk("  _imuOk=true;");
+  sendChunk("}");
+  // drawCompass: draws compass rose and heading-relative arrow on canvas
+  sendChunk("function drawCompass(az,d2d,dH){");
+  sendChunk("  var c=document.getElementById('skCanvas');if(!c)return;");
+  sendChunk("  var ctx=c.getContext('2d');");
+  sendChunk("  var w=c.width,h=c.height,cx=w/2,cy=h/2;");
+  sendChunk("  var r=Math.min(cx,cy)-16;");
+  sendChunk("  ctx.clearRect(0,0,w,h);");
+  // outer ring
+  sendChunk("  ctx.beginPath();ctx.arc(cx,cy,r,0,2*Math.PI);");
+  sendChunk("  ctx.strokeStyle='#5d6d7e';ctx.lineWidth=3;ctx.stroke();");
+  // tick marks
+  sendChunk("  for(var t=0;t<360;t+=30){");
+  sendChunk("    var rot=(_imuOk&&_devHdg!=null)?(_devHdg*Math.PI/180):0;");
+  sendChunk("    var ta=(t*Math.PI/180)-rot;");
+  sendChunk("    var tlen=(t%90===0)?12:6;");
+  sendChunk("    ctx.beginPath();");
+  sendChunk("    ctx.moveTo(cx+(r-tlen)*Math.sin(ta),cy-(r-tlen)*Math.cos(ta));");
+  sendChunk("    ctx.lineTo(cx+r*Math.sin(ta),cy-r*Math.cos(ta));");
+  sendChunk("    ctx.strokeStyle='#7f8c8d';ctx.lineWidth=(t%90===0)?2:1;ctx.stroke();");
+  sendChunk("  }");
+  // cardinal labels (rotate with heading so they stay geo-fixed)
+  sendChunk("  var cards=[['N',0,'#e74c3c'],['E',90,'#bdc3c7'],['S',180,'#bdc3c7'],['O',270,'#bdc3c7']];");
+  sendChunk("  ctx.font='bold 14px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';");
+  sendChunk("  var hdgRot=(_imuOk&&_devHdg!=null)?(_devHdg*Math.PI/180):0;");
+  sendChunk("  cards.forEach(function(cv){");
+  sendChunk("    var ca=(cv[1]*Math.PI/180)-hdgRot;");
+  sendChunk("    var lx=cx+(r-14)*Math.sin(ca),ly=cy-(r-14)*Math.cos(ca);");
+  sendChunk("    ctx.fillStyle=cv[2];ctx.fillText(cv[0],lx,ly);");
+  sendChunk("  });");
+  // arrow pointing to target
+  sendChunk("  var angle;");
+  sendChunk("  if(_imuOk&&_devHdg!=null){");
+  sendChunk("    angle=((az-_devHdg+360)%360)*Math.PI/180;");
+  sendChunk("  } else {");
+  sendChunk("    angle=az*Math.PI/180;");
+  sendChunk("  }");
+  sendChunk("  var ar=r-34;");
+  sendChunk("  ctx.save();ctx.translate(cx,cy);ctx.rotate(angle);");
+  sendChunk("  ctx.beginPath();");
+  // Arrow triangle: tip at top, base at ~42% radius, waist at ~18% (width ±11px)
+  sendChunk("  ctx.moveTo(0,-ar);ctx.lineTo(11,ar*0.42);ctx.lineTo(0,ar*0.18);ctx.lineTo(-11,ar*0.42);");
+  sendChunk("  ctx.closePath();ctx.fillStyle='#e74c3c';ctx.fill();");
+  sendChunk("  ctx.restore();");
+  // center dot
+  sendChunk("  ctx.beginPath();ctx.arc(cx,cy,5,0,2*Math.PI);ctx.fillStyle='#ecf0f1';ctx.fill();");
+  // distance label
+  sendChunk("  ctx.font='bold 15px monospace';ctx.textAlign='center';ctx.textBaseline='middle';");
+  sendChunk("  ctx.fillStyle='#ecf0f1';ctx.fillText(d2d.toFixed(3)+' m',cx,cy+r*0.52);");
+  // dH label
+  sendChunk("  var dhs=(dH===null||dH===undefined)?'dH: N/A':'dH: '+(dH>=0?'+':'')+dH.toFixed(2)+'m';");
+  sendChunk("  ctx.font='12px monospace';ctx.fillStyle='#95a5a6';ctx.fillText(dhs,cx,cy+r*0.68);");
+  // fallback label when no IMU
+  sendChunk("  if(!_imuOk||_devHdg===null){");
+  sendChunk("    ctx.font='10px sans-serif';ctx.fillStyle='#7f8c8d';");
+  sendChunk("    ctx.fillText('Nord-up (bussola N/D)',cx,cy+r*0.84);");
+  sendChunk("  }");
+  sendChunk("}");
+  // RAF animation loop - smooth redraw with latest IMU heading
+  sendChunk("function skFrame(){");
+  sendChunk("  if(_skData)drawCompass(_skData.az,_skData.d2d,_skData.dH);");
+  sendChunk("  requestAnimationFrame(skFrame);");
+  sendChunk("}");
+  // update info row labels
+  sendChunk("function skUpdateInfo(az,cs){");
+  sendChunk("  var fc={'2':'fix-fixed','1':'fix-float','0':'fix-none'};");
+  sendChunk("  var fl={'2':'RTK FIX','1':'FLOAT','0':'NO FIX'};");
+  sendChunk("  var bi=document.getElementById('sk-bearing');");
+  sendChunk("  if(bi)bi.textContent='Bearing: '+az.toFixed(1)+'\\u00b0';");
+  sendChunk("  var hi=document.getElementById('sk-heading');");
+  sendChunk("  if(hi)hi.textContent='Heading: '+(_devHdg!=null?_devHdg.toFixed(1)+'\\u00b0':'--');");
+  sendChunk("  var fi=document.getElementById('sk-fixbadge');");
+  sendChunk("  if(fi){fi.textContent=fl[cs]||'NO FIX';fi.className='sk-badge-fix '+(fc[cs]||'fix-none');}");
+  sendChunk("}");
   // Poll /api/stakeout/status every 2 seconds
   sendChunk("var _skTimer=null;");
-  sendChunk("function skStart(){_skTimer=setInterval(skPoll,2000);skPoll();}");
+  sendChunk("function skStart(){");
+  sendChunk("  requestIMU();");
+  sendChunk("  requestAnimationFrame(skFrame);");
+  sendChunk("  _skTimer=setInterval(skPoll,2000);skPoll();");
+  sendChunk("}");
   sendChunk("function skPoll(){");
   sendChunk("  fetch('/api/stakeout/status').then(function(r){return r.json();}).then(function(d){");
   sendChunk("    var el=document.getElementById('sk-status');");
   sendChunk("    if(!el)return;");
-  sendChunk("    if(!d.valid){el.innerHTML='<p>No active target or no GNSS fix.</p>';return;}");
+  sendChunk("    if(!d.valid){el.innerHTML='<p>No active target or no GNSS fix.</p>';_skData=null;return;}");
   sendChunk("    var fc={'2':'fix-fixed','1':'fix-float','0':'fix-none'};");
   sendChunk("    var fl={'2':'RTK FIX','1':'FLOAT','0':'NO FIX'};");
   sendChunk("    var cs=String(d.roverCarrSoln||0);");
@@ -5476,6 +5590,10 @@ static void handleStakeoutPage() {
   sendChunk("      +'<p>&#x2B06; dH: <b>'+(d.dH===null?'N/A':((d.dH>=0?'+':'')+d.dH.toFixed(3)+' m'))+'</b></p>'");
   sendChunk("      +'<p>&#x1F4CF; Quota HAE: <b>'+(d.targetH===null?'N/A':d.targetH.toFixed(3)+' m')+'</b></p>'");
   sendChunk("      +'<p>&#x1F9ED; Az: <b>'+d.az.toFixed(1)+'&deg;</b></p>';");
+  sendChunk("    _skData={az:d.az,d2d:d.d2d,dH:d.dH};");
+  sendChunk("    skUpdateInfo(d.az,cs);");
+  // Arrival threshold: 5cm D2D; vibration: 200ms on, 100ms off, 200ms on
+  sendChunk("    if(d.d2d<0.05&&navigator.vibrate)navigator.vibrate([200,100,200]);");
   sendChunk("  }).catch(function(){});");
   sendChunk("}");
   // setActive: file+point
@@ -5504,6 +5622,21 @@ static void handleStakeoutPage() {
 
   // --- Live status card ---
   sendChunk("<div class='card'><h2>&#127987; Active navigation</h2>");
+  // Canvas compass
+  sendChunk("<div class='sk-canvas-wrap'>");
+  sendChunk("<canvas id='skCanvas' width='220' height='220'></canvas>");
+  sendChunk("</div>");
+  // iOS IMU permission button (hidden by default, shown by JS on iOS)
+  sendChunk("<div style='text-align:center'>");
+  sendChunk("<button id='skImuBtn' class='sk-imu-btn' onclick='askImuPerm()'>&#x1F9ED; Attiva bussola</button>");
+  sendChunk("</div>");
+  // Info row: bearing, heading, fix
+  sendChunk("<div class='sk-info-row'>");
+  sendChunk("<span class='sk-info-item' id='sk-bearing'>Bearing: --</span>");
+  sendChunk("<span class='sk-info-item' id='sk-heading'>Heading: --</span>");
+  sendChunk("<span id='sk-fixbadge' class='sk-badge-fix fix-none'>NO FIX</span>");
+  sendChunk("</div>");
+  // Text status (target, D2D, dH, HAE, Az)
   sendChunk("<div id='sk-status' class='sk-status'><p>Loading...</p></div>");
   sendChunk("</div>");
 
