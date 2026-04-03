@@ -2,7 +2,7 @@
 // Copyright (C) 2025-2026 FlyingSurveyor
 #include "TcpStreamer.h"
 
-WiFiServer TcpStreamer::server(1234);
+WiFiServer TcpStreamer::server(7856);
 WiFiClient TcpStreamer::client;
 volatile bool TcpStreamer:: active = false;
 SemaphoreHandle_t TcpStreamer::mutex = nullptr;
