@@ -1050,9 +1050,6 @@ void toggleNtrip(bool enable) {
 }
 
 bool startTcpIn(const String& host, int port) {
-  // Stop NTRIP and BLE RTCM if active (mutual exclusion)
-  toggleNtrip(false);
-  if (g_bleRtcmEnabled) stopBleRtcm();
   if (! tcpInLock(1000)) {
     oledPrintln("[LAN IN] busy, try again");
     return false;
@@ -1094,6 +1091,10 @@ void stopTcpIn() {
 
 void toggleTcpIn(bool enable) {
   if (enable) {
+    // Mutual exclusion: stop competing sources BEFORE acquiring tcpInMutex
+    // (canonical lock order: always stop competitor before taking own mutex)
+    toggleNtrip(false);
+    if (g_bleRtcmEnabled) stopBleRtcm();
     if (tcpin_host.length() && tcpin_port > 0) {
       startTcpIn(tcpin_host, tcpin_port);
     } else {
@@ -1857,6 +1858,7 @@ void onWiFiEvent(WiFiEvent_t event) {
         g_systemLog->logEvent("WIFI", String("Reconnected - IP: ") + WiFi.localIP().toString());
       }
       forceReconnectAllServices();
+      applyMdnsHostname(g_mdnsName);  // restart mDNS after WiFi reconnect
       break;
       
     default:
@@ -2582,6 +2584,7 @@ void setup() {
 void loop() {
   if (wifiAvailable) {
     server.handleClient();
+    taskYIELD();  // yield to other FreeRTOS tasks after potentially blocking handleClient
     // NTRIP client (rover IN) - protected with mutex
     if (ntripEnabled) {
       if (ntripLock(5)) {
