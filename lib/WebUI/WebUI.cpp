@@ -1341,8 +1341,8 @@ static void handleRoot() {
   }
   // Inline control buttons
   ntripStat += "<span style='float:right;'>";
-  ntripStat += "<button onclick='toggleNtrip(1)' style='background-color:#2ecc71;color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;margin-left:4px;font-size:0.9em;' title='Enable NTRIP' aria-label='Enable NTRIP'>✓</button>";
-  ntripStat += "<button onclick='toggleNtrip(0)' style='background-color:#e74c3c;color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;margin-left:4px;font-size:0.9em;' title='Disable NTRIP' aria-label='Disable NTRIP'>✕</button>";
+  ntripStat += "<button onclick='toggleNtrip(1)' style='background-color:#2ecc71;color:white;border:none;padding:7.2px 14.4px;border-radius:4px;cursor:pointer;margin-left:4px;font-size:1.08em;' title='Enable NTRIP' aria-label='Enable NTRIP'>✓</button>";
+  ntripStat += "<button onclick='toggleNtrip(0)' style='background-color:#e74c3c;color:white;border:none;padding:7.2px 14.4px;border-radius:4px;cursor:pointer;margin-left:4px;font-size:1.08em;' title='Disable NTRIP' aria-label='Disable NTRIP'>✕</button>";
   ntripStat += "</span>";
   ntripStat += "</div>";
   sendChunk(ntripStat);
@@ -1354,8 +1354,8 @@ static void handleRoot() {
   tcpInStat += tcpInEnabled ? "Active" : "Inactive";
   // Inline control buttons
   tcpInStat += "<span style='float:right;'>";
-  tcpInStat += "<button onclick='startTcpIn()' style='background-color:#2ecc71;color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;margin-left:4px;font-size:0.9em;' title='Start TCP IN' aria-label='Start TCP IN'>✓</button>";
-  tcpInStat += "<button onclick='stopTcpIn()' style='background-color:#e74c3c;color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;margin-left:4px;font-size:0.9em;' title='Stop TCP IN' aria-label='Stop TCP IN'>✕</button>";
+  tcpInStat += "<button onclick='startTcpIn()' style='background-color:#2ecc71;color:white;border:none;padding:7.2px 14.4px;border-radius:4px;cursor:pointer;margin-left:4px;font-size:1.08em;' title='Start TCP IN' aria-label='Start TCP IN'>✓</button>";
+  tcpInStat += "<button onclick='stopTcpIn()' style='background-color:#e74c3c;color:white;border:none;padding:7.2px 14.4px;border-radius:4px;cursor:pointer;margin-left:4px;font-size:1.08em;' title='Stop TCP IN' aria-label='Stop TCP IN'>✕</button>";
   tcpInStat += "</span>";
   tcpInStat += "</div>";
   sendChunk(tcpInStat);
@@ -1378,8 +1378,8 @@ static void handleRoot() {
     }
   }
   bleRtcmStat += "<span style='float:right;'>";
-  bleRtcmStat += "<button onclick='bleRtcmStart()' style='background-color:#2ecc71;color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;margin-left:4px;font-size:0.9em;' title='Start RTCM stream'>&#x25B6;</button>";
-  bleRtcmStat += "<button onclick='bleRtcmStop()' style='background-color:#e74c3c;color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;margin-left:4px;font-size:0.9em;' title='Stop RTCM stream'>&#x25A0;</button>";
+  bleRtcmStat += "<button onclick='bleRtcmStart()' style='background-color:#2ecc71;color:white;border:none;padding:7.2px 14.4px;border-radius:4px;cursor:pointer;margin-left:4px;font-size:1.08em;' title='Start RTCM stream'>&#x25B6;</button>";
+  bleRtcmStat += "<button onclick='bleRtcmStop()' style='background-color:#e74c3c;color:white;border:none;padding:7.2px 14.4px;border-radius:4px;cursor:pointer;margin-left:4px;font-size:1.08em;' title='Stop RTCM stream'>&#x25A0;</button>";
   bleRtcmStat += "</span></div>";
   sendChunk(bleRtcmStat);
 
@@ -1390,18 +1390,12 @@ static void handleRoot() {
   logStat += loggingActive ? "Recording" : "Stopped";
   // Inline control buttons
   logStat += "<span style='float:right;'>";
-  logStat += "<button onclick='startLog()' style='background-color:#2ecc71;color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;margin-left:4px;font-size:0.9em;' title='Start Log' aria-label='Start Log'>✓</button>";
-  logStat += "<button onclick='stopLog()' style='background-color:#e74c3c;color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;margin-left:4px;font-size:0.9em;' title='Stop Log' aria-label='Stop Log'>✕</button>";
-  logStat += "<button onclick='location.href=\"/logs\"' class='btn-secondary' style='padding:6px 12px;border-radius:4px;cursor:pointer;margin-left:4px;font-size:0.9em;' title='View Log Files' aria-label='View Log Files'>📁 Logs</button>";
+  logStat += "<button onclick='startLog()' style='background-color:#2ecc71;color:white;border:none;padding:7.2px 14.4px;border-radius:4px;cursor:pointer;margin-left:4px;font-size:1.08em;' title='Start Log' aria-label='Start Log'>✓</button>";
+  logStat += "<button onclick='stopLog()' style='background-color:#e74c3c;color:white;border:none;padding:7.2px 14.4px;border-radius:4px;cursor:pointer;margin-left:4px;font-size:1.08em;' title='Stop Log' aria-label='Stop Log'>✕</button>";
+  logStat += "<button onclick='location.href=\"/logs\"' class='btn-secondary' style='padding:7.2px 14.4px;border-radius:4px;cursor:pointer;margin-left:4px;font-size:1.08em;' title='View Log Files' aria-label='View Log Files'>📁 Logs</button>";
   logStat += "</span>";
   logStat += "</div>";
   sendChunk(logStat);
-  
-  // TCP Stream Mode status
-  String streamStat = "<div class='status-row'><strong>TCP Stream:</strong> ";
-  streamStat += String(getStreamModeName());
-  streamStat += "</div>";
-  sendChunk(streamStat);
   
   // NTP Time status
   // g_timeSource values: 0=TIME_SRC_NONE, 1=TIME_SRC_NTP, 2=TIME_SRC_TIMEUTC
@@ -1415,7 +1409,7 @@ static void handleRoot() {
   } else if (g_timeSource == 2) {
     sendChunk("<span style='color:#2ecc71'>GPS Time</span>");
   }
-  sendChunk("<span onclick=\"syncNtp()\" style=\"cursor:pointer;margin-left:8px;\" title=\"Sync NTP Now\" aria-label=\"Sync NTP\">🔄</span>");
+  sendChunk("<button onclick=\"syncNtp()\" style=\"background:none;border:1px solid #95a5a6;border-radius:4px;cursor:pointer;margin-left:8px;padding:7.2px 14.4px;font-size:1.08em;\" title=\"Sync NTP Now\" aria-label=\"Sync NTP\">🔄</button>");
   sendChunk("</div>");
   
   // ZED-F9P TMODE status
@@ -1435,16 +1429,16 @@ static void handleRoot() {
     }
     uint32_t age = (millis() - tmode.lastCheck) / 1000;
     sendChunk("<br><span style='font-size:0.85em;color:#95a5a6'>Last check: " + String(age) + "s ago</span>");
-    sendChunk("<span onclick=\"refreshTmode()\" style=\"cursor:pointer;margin-left:8px;\" title=\"Refresh\" aria-label=\"Refresh TMODE status\">🔄</span>");
+    sendChunk("<button onclick=\"refreshTmode()\" style=\"background:none;border:1px solid #95a5a6;border-radius:4px;cursor:pointer;margin-left:8px;padding:7.2px 14.4px;font-size:1.08em;\" title=\"Refresh\" aria-label=\"Refresh TMODE status\">🔄</button>");
     // Add "Switch to Rover" button only in BASE mode
     if (tmode.mode == 2) {
-      sendChunk("<button onclick=\"switchToRover()\" style=\"margin-left:8px;background-color:#f39c12;color:white;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;\" title=\"Switch to Rover Mode\">Rover</button>");
+      sendChunk("<button onclick=\"switchToRover()\" style=\"margin-left:8px;background-color:#f39c12;color:white;border:none;padding:7.2px 14.4px;border-radius:4px;cursor:pointer;font-size:1.08em;\" title=\"Switch to Rover Mode\">Rover</button>");
     }
     sendChunk("</div>");
   } else {
     sendChunk("<div class='status-row'><strong>ZED-F9P Mode:</strong> ");
     sendChunk("<span style='color:#95a5a6'>Unknown</span>");
-    sendChunk("<span onclick=\"refreshTmode()\" style=\"cursor:pointer;margin-left:8px;\" title=\"Refresh\" aria-label=\"Refresh TMODE status\">🔄</span>");
+    sendChunk("<button onclick=\"refreshTmode()\" style=\"background:none;border:1px solid #95a5a6;border-radius:4px;cursor:pointer;margin-left:8px;padding:7.2px 14.4px;font-size:1.08em;\" title=\"Refresh\" aria-label=\"Refresh TMODE status\">🔄</button>");
     sendChunk("</div>");
   }
   
@@ -1464,14 +1458,6 @@ static void handleRoot() {
   sendChunk("<div id='rtcm-status'>");
   sendChunk("<p>Loading...</p>");
   sendChunk("</div>");
-  sendChunk("</div>");
-  
-  // TCP Stream Mode (Viewer) - moved from Settings
-  sendChunk("<div class='card'><h2>TCP Stream Mode (Viewer)</h2>");
-  sendChunk("<p><strong>Current mode:</strong> " + String(getStreamModeName()) + "</p>");
-  sendChunk("<button onclick='setMode(\"nmea\")'>NMEA+UBX/RTCM</button> ");
-  sendChunk("<button onclick='setMode(\"raw\")'>RAW (UBX)</button>");
-  sendChunk("<script>function setMode(m){fetch('/stream?mode='+m).then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error changing mode: '+(err.message||err));})}</script>");
   sendChunk("</div>");
   
   // JavaScript for position auto-refresh
@@ -3040,6 +3026,15 @@ static void handleSettingsPage() {
   
   sendChunk("</script>");
   
+  sendChunk("</div>");
+  
+  // TCP Stream Mode (Viewer) card
+  sendChunk("<div class='card'><h2>📡 TCP Stream Mode (Viewer)</h2>");
+  sendChunk("<p>Select the data format sent over TCP stream to connected viewer apps.</p>");
+  sendChunk("<p><strong>Current mode:</strong> " + String(getStreamModeName()) + "</p>");
+  sendChunk("<button onclick='setMode(\"nmea\")' class='btn'>NMEA+UBX/RTCM</button> ");
+  sendChunk("<button onclick='setMode(\"raw\")' class='btn'>RAW (UBX)</button>");
+  sendChunk("<script>function setMode(m){fetch('/stream?mode='+m).then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error changing mode: '+(err.message||err));})}</script>");
   sendChunk("</div>");
   
   sendFooter();
