@@ -1541,58 +1541,139 @@ static void handleRoot() {
 }
 
 // ========================================================================
-// ROVER PAGE (/rover) - NTRIP IN + LAN TCP-IN
+// ROVER PAGE (/rover) - Hub: status summary + quick actions
 // ========================================================================
 
 static void handleRoverPage() {
-  sendHeader("Rover Configuration", "rover");
-  
-  // NTRIP IN section
-  std::vector<NtripIn> ntripList; int ntripLast=-1; 
+  sendHeader("Rover", "rover");
+
+  // Load connection data
+  std::vector<NtripIn> ntripList; int ntripLast=-1;
   loadNtripInList(ntripList, ntripLast);
-  
-  sendChunk("<div class='card'><h2>NTRIP IN Profiles</h2>");
-  
-  // Active profile indicator
-  sendChunk("<p><strong>Active Profile:</strong> ");
+  std::vector<TcpIn> tcpList; int tcpLast=-1;
+  loadTcpInList(tcpList, tcpLast);
+
+  // JavaScript for quick actions
+  sendChunk("<script>");
+  sendChunk("function toggleNtrip(e){fetch('/ntrip/toggle?enable='+e).then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
+  sendChunk("function startTcpIn(){fetch('/lanin/start').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error starting TCP IN: '+(err.message||err));})}");
+  sendChunk("function stopTcpIn(){fetch('/lanin/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error stopping TCP IN: '+(err.message||err));})}");
+  sendChunk("</script>");
+
+  sendChunk("<div class='card'>");
+  sendChunk("<h2>&#x1F4E5; Corrections IN (Rover)</h2>");
+
+  // --- NTRIP IN ---
+  sendChunk("<h3>NTRIP IN</h3>");
+  sendChunk("<p><strong>Selected Profile:</strong> ");
+  if (ntripLast>=0 && ntripLast<(int)ntripList.size()) {
+    const auto& n = ntripList[ntripLast];
+    sendChunk("<span class='badge'>" + htmlEscape(n.name) + "</span>");
+    sendChunk("<br><small style='color:#555'>" + htmlEscape(n.host) + ":" + String(n.port) +
+              " &mdash; Mount: " + htmlEscape(n.mount) +
+              (n.user.length() ? " &mdash; User: " + htmlEscape(n.user) : "") + "</small>");
+  } else {
+    sendChunk("<em>None selected &mdash; go to Manage Connections IN to add/select a profile</em>");
+  }
+  sendChunk("</p>");
+
+  String ntripLedClass = ntripEnabled ? "led-on" : "led-off";
+  String ntripStatusText = ntripEnabled ? "Active" : "Inactive";
+  sendChunk("<div class='status-row'><span class='status-led " + ntripLedClass + "'></span>");
+  sendChunk("<strong>Status:</strong>&nbsp;" + ntripStatusText + "</div>");
+
+  sendChunk("<div style='margin-top:10px;'>");
+  sendChunk("<button onclick='toggleNtrip(1)' class='btn-success' style='min-height:44px;padding:10px 18px;font-size:1em;' aria-label='Enable NTRIP IN'>&#x25BA; Enable NTRIP IN</button> ");
+  sendChunk("<button onclick='toggleNtrip(0)' class='btn-danger' style='min-height:44px;padding:10px 18px;font-size:1em;' aria-label='Disable NTRIP IN'>&#x25A0; Disable NTRIP IN</button>");
+  sendChunk("</div>");
+
+  sendChunk("<hr style='margin:14px 0;border:none;border-top:1px solid #ecf0f1;'>");
+
+  // --- TCP IN ---
+  sendChunk("<h3>TCP IN</h3>");
+  sendChunk("<p><strong>Selected Profile:</strong> ");
+  if (tcpLast>=0 && tcpLast<(int)tcpList.size()) {
+    const auto& t = tcpList[tcpLast];
+    sendChunk("<span class='badge'>" + htmlEscape(t.name) + "</span>");
+    sendChunk("<br><small style='color:#555'>" + htmlEscape(t.host) + ":" + String(t.port) + "</small>");
+  } else {
+    sendChunk("<em>None selected &mdash; go to Manage Connections IN to add/select a profile</em>");
+  }
+  sendChunk("</p>");
+
+  String tcpLedClass = tcpInEnabled ? "led-on" : "led-off";
+  String tcpStatusText = tcpInEnabled ? "Active" : "Inactive";
+  sendChunk("<div class='status-row'><span class='status-led " + tcpLedClass + "'></span>");
+  sendChunk("<strong>Status:</strong>&nbsp;" + tcpStatusText + "</div>");
+
+  sendChunk("<div style='margin-top:10px;'>");
+  sendChunk("<button onclick='startTcpIn()' class='btn-success' style='min-height:44px;padding:10px 18px;font-size:1em;' aria-label='Start TCP IN'>&#x25BA; Start TCP IN</button> ");
+  sendChunk("<button onclick='stopTcpIn()' class='btn-danger' style='min-height:44px;padding:10px 18px;font-size:1em;' aria-label='Stop TCP IN'>&#x25A0; Stop TCP IN</button>");
+  sendChunk("</div>");
+
+  sendChunk("<hr style='margin:14px 0;border:none;border-top:1px solid #ecf0f1;'>");
+
+  // Manage button
+  sendChunk("<a href='/rover/connections' style='display:block;text-align:center;min-height:48px;line-height:48px;font-size:1.05em;background:#3498db;color:white;border-radius:4px;text-decoration:none;margin-top:8px;'>&#x2699; Manage Connections IN</a>");
+
+  sendChunk("</div>"); // end card
+
+  sendFooter();
+}
+
+// ========================================================================
+// ROVER CONNECTIONS PAGE (/rover/connections) - Full IN profile management
+// ========================================================================
+
+static void handleRoverConnectionsPage() {
+  sendHeader("Rover – Connections IN", "rover");
+
+  sendChunk("<p style='margin-bottom:14px;'><a class='btn' href='/rover'>&larr; Back to Rover</a></p>");
+
+  // --- NTRIP IN Profiles ---
+  std::vector<NtripIn> ntripList; int ntripLast=-1;
+  loadNtripInList(ntripList, ntripLast);
+
+  sendChunk("<div class='card'><h2>&#x1F4E5; NTRIP IN Profiles</h2>");
+
+  sendChunk("<p><strong>Selected Profile:</strong> ");
   if (ntripLast>=0 && ntripLast<(int)ntripList.size()) {
     sendChunk("<span class='badge'>" + htmlEscape(ntripList[ntripLast].name) + "</span>");
   } else {
     sendChunk("<em>None</em>");
   }
   sendChunk("</p>");
-  
-  // NTRIP control buttons
-  sendChunk("<button onclick='toggleNtrip(1)' class='btn-success' aria-label='Enable NTRIP client'>Enable NTRIP</button> ");
-  sendChunk("<button onclick='toggleNtrip(0)' class='btn-danger' aria-label='Disable NTRIP client'>Disable NTRIP</button>");
+
+  sendChunk("<button onclick='toggleNtrip(1)' class='btn-success' aria-label='Enable NTRIP IN'>&#x25BA; Enable NTRIP IN</button> ");
+  sendChunk("<button onclick='toggleNtrip(0)' class='btn-danger' aria-label='Disable NTRIP IN'>&#x25A0; Disable NTRIP IN</button>");
   sendChunk("<script>function toggleNtrip(e){fetch('/ntrip/toggle?enable='+e).then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}</script>");
-  
+
   if (!ntripList.empty()) {
     sendChunk("<div class='responsive-table'>");
     sendChunk("<table><tr><th>#</th><th>Name</th><th>Host</th><th>Port</th><th>Mount</th><th>User</th><th>Actions</th></tr>");
     for (size_t i=0;i<ntripList.size();++i){
       const auto& n=ntripList[i];
-      String row = "<tr><td data-label='#'>" + String(i) + "</td>";
+      String sel = (ntripLast==(int)i) ? " style='font-weight:bold;'" : "";
+      String row = "<tr" + sel + "><td data-label='#'>" + String(i) + "</td>";
       row += "<td data-label='Name'>" + htmlEscape(n.name) + "</td>";
       row += "<td data-label='Host'>" + htmlEscape(n.host) + "</td>";
       row += "<td data-label='Port'>" + String(n.port) + "</td>";
       row += "<td data-label='Mount'>" + htmlEscape(n.mount) + "</td>";
       row += "<td data-label='User'>" + htmlEscape(n.user) + "</td>";
       row += "<td data-label='Actions'>";
-      row += "<a href='/ntrip/select?idx=" + String(i) + "' class='btn btn-small'>✓ Select</a> ";
-      row += "<a href='/ntrip/edit?idx=" + String(i) + "' class='btn btn-small'>✏️ Edit</a> ";
-      row += "<a href='/ntrip/del?idx=" + String(i) + "' class='btn btn-small btn-danger' onclick='return confirm(\"Delete " + escapeForOnclick(n.name) + "?\")'>❌ Delete</a>";
+      row += "<a href='/ntrip/select?idx=" + String(i) + "' class='btn btn-small'>&#x2713; Select</a> ";
+      row += "<a href='/ntrip/edit?idx=" + String(i) + "' class='btn btn-small'>&#x270F; Edit</a> ";
+      row += "<a href='/ntrip/del?idx=" + String(i) + "' class='btn btn-small btn-danger' onclick='return confirm(\"Delete " + escapeForOnclick(n.name) + "?\")'>&#x274C; Delete</a>";
       row += "</td></tr>";
       sendChunk(row);
     }
     sendChunk("</table>");
     sendChunk("</div>");
   } else {
-    sendChunk("<p><em>No NTRIP profiles saved.</em></p>");
+    sendChunk("<p><em>No NTRIP IN profiles saved.</em></p>");
   }
-  
-  // Add form
-  sendChunk("<h3>Add NTRIP Profile</h3>");
+
+  sendChunk("<h3>Add NTRIP IN Profile</h3>");
   sendChunk("<form method='POST' action='/ntrip/add'>");
   sendChunk("<label>Name:</label><input name='name' required><br>");
   sendChunk("<label>Host:</label><input name='host' required><br>");
@@ -1600,83 +1681,212 @@ static void handleRoverPage() {
   sendChunk("<label>Mountpoint:</label><input name='mount' required><br>");
   sendChunk("<label>User:</label><input name='user'><br>");
   sendChunk("<label>Password:</label><input name='pwd' type='password'><br>");
-  sendChunk("<button type='submit'>Add Profile</button>");
+  sendChunk("<button type='submit'>Add NTRIP IN Profile</button>");
   sendChunk("</form></div>");
-  
-  // TCP IN section
+
+  // --- TCP IN Profiles ---
   std::vector<TcpIn> tcpList; int tcpLast=-1;
   loadTcpInList(tcpList, tcpLast);
-  
-  sendChunk("<div class='card'><h2>LAN TCP-IN Profiles</h2>");
-  
-  // Active profile indicator
-  sendChunk("<p><strong>Active Profile:</strong> ");
+
+  sendChunk("<div class='card'><h2>&#x1F4E5; TCP IN Profiles</h2>");
+
+  sendChunk("<p><strong>Selected Profile:</strong> ");
   if (tcpLast>=0 && tcpLast<(int)tcpList.size()) {
     sendChunk("<span class='badge'>" + htmlEscape(tcpList[tcpLast].name) + "</span>");
   } else {
     sendChunk("<em>None</em>");
   }
   sendChunk("</p>");
-  
-  // Status and control
-  String tcpStatus = "<p><strong>Status:</strong> ";
-  tcpStatus += tcpInEnabled ? "<span class='badge' style='background:#2ecc71;color:white'>Active</span>" : "<span class='badge'>Inactive</span>";
-  tcpStatus += "</p>";
-  sendChunk(tcpStatus);
-  
+
+  String tcpStatus2 = "<p><strong>Status:</strong> ";
+  tcpStatus2 += tcpInEnabled ? "<span class='badge' style='background:#2ecc71;color:white'>Active</span>" : "<span class='badge'>Inactive</span>";
+  tcpStatus2 += "</p>";
+  sendChunk(tcpStatus2);
+
+  sendChunk("<button onclick='startTcpIn()' class='btn-success' aria-label='Start TCP IN'>&#x25BA; Start TCP IN</button> ");
+  sendChunk("<button onclick='stopTcpIn()' class='btn-danger' aria-label='Stop TCP IN'>&#x25A0; Stop TCP IN</button>");
+  sendChunk("<script>");
+  sendChunk("function startTcpIn(){fetch('/lanin/start').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
+  sendChunk("function stopTcpIn(){fetch('/lanin/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
+  sendChunk("</script>");
+
   if (!tcpList.empty()) {
     sendChunk("<div class='responsive-table'>");
     sendChunk("<table><tr><th>#</th><th>Name</th><th>Host</th><th>Port</th><th>Actions</th></tr>");
     for (size_t i=0;i<tcpList.size();++i){
       const auto& t=tcpList[i];
-      String row = "<tr><td data-label='#'>" + String(i) + "</td>";
+      String sel = (tcpLast==(int)i) ? " style='font-weight:bold;'" : "";
+      String row = "<tr" + sel + "><td data-label='#'>" + String(i) + "</td>";
       row += "<td data-label='Name'>" + htmlEscape(t.name) + "</td>";
       row += "<td data-label='Host'>" + htmlEscape(t.host) + "</td>";
       row += "<td data-label='Port'>" + String(t.port) + "</td>";
       row += "<td data-label='Actions'>";
-      row += "<a href='/lanin/select?idx=" + String(i) + "' class='btn btn-small'>✓ Select</a> ";
-      row += "<a href='/lanin/edit?idx=" + String(i) + "' class='btn btn-small'>✏️ Edit</a> ";
-      row += "<a href='/lanin/del?idx=" + String(i) + "' class='btn btn-small btn-danger' onclick='return confirm(\"Delete " + escapeForOnclick(t.name) + "?\")'>❌ Delete</a> ";
-      row += "<a href='/lanin/start?id=" + String(i) + "' class='btn btn-small btn-success'>▶️ Start</a>";
+      row += "<a href='/lanin/select?idx=" + String(i) + "' class='btn btn-small'>&#x2713; Select</a> ";
+      row += "<a href='/lanin/edit?idx=" + String(i) + "' class='btn btn-small'>&#x270F; Edit</a> ";
+      row += "<a href='/lanin/del?idx=" + String(i) + "' class='btn btn-small btn-danger' onclick='return confirm(\"Delete " + escapeForOnclick(t.name) + "?\")'>&#x274C; Delete</a> ";
+      row += "<a href='/lanin/start?id=" + String(i) + "' class='btn btn-small btn-success'>&#x25BA; Start</a>";
       row += "</td></tr>";
       sendChunk(row);
     }
     sendChunk("</table>");
     sendChunk("</div>");
   } else {
-    sendChunk("<p><em>No TCP-IN profiles saved.</em></p>");
+    sendChunk("<p><em>No TCP IN profiles saved.</em></p>");
   }
-  
-  // Add form
-  sendChunk("<h3>Add TCP-IN Profile</h3>");
+
+  sendChunk("<h3>Add TCP IN Profile</h3>");
   sendChunk("<form method='POST' action='/lanin/add'>");
   sendChunk("<label>Name:</label><input name='name' required><br>");
   sendChunk("<label>Host/IP:</label><input name='host' required><br>");
   sendChunk("<label>Port:</label><input name='port' type='number' value='2103' required><br>");
-  sendChunk("<button type='submit'>Add Profile</button>");
+  sendChunk("<button type='submit'>Add TCP IN Profile</button>");
   sendChunk("</form></div>");
-  
+
   sendFooter();
 }
 
 // ========================================================================
-// BASE PAGE (/base-cfg) - TMODE + Saved Bases + OUT
+// BASE PAGE (/base-cfg) - Hub: status summary + quick actions
 // ========================================================================
 
 static void handleBasePage() {
-  sendHeader("Base Configuration", "base");
-  
-  // TMODE Configuration
-  sendChunk("<div class='card'><h2>Base Mode (TMODE VALSET)</h2>");
-  sendChunk("<p>Configure base with one click (all settings in RAM):</p>");
+  sendHeader("Base", "base");
+
+  // JavaScript for quick actions
+  sendChunk("<script>");
+  sendChunk("function startOut(){fetch('/baseout/start').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
+  sendChunk("function stopOut(){fetch('/baseout/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
+  sendChunk("function startTcpClient(){fetch('/tcpclient/start').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
+  sendChunk("function stopTcpClient(){fetch('/tcpclient/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
+  sendChunk("function startBleOut(){fetch('/api/blertcm/start').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
+  sendChunk("function stopBleOut(){fetch('/api/blertcm/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
+  sendChunk("function stopBase(){fetch('/base/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
+  sendChunk("function switchToRover(){if(confirm('Switch to Rover mode? This will stop RTCM OUT and restart the ZED.')){fetch('/api/switchToRover').then(r=>r.text()).then(t=>{alert(t);setTimeout(()=>location.reload(),1500);}).catch(e=>{alert('Error: '+(e.message||e));})}}");
+  sendChunk("</script>");
+
+  // --- Base Station status card ---
+  sendChunk("<div class='card'>");
+  sendChunk("<h2>&#x1F4FB; Base Station</h2>");
+
+  ZedTmodeState tmode;
+  if (getZedTmode(tmode) && tmode.valid) {
+    sendChunk("<div class='status-row'><span class='status-led ");
+    if (tmode.mode == 2) sendChunk("led-on'></span><strong>ZED-F9P Mode:</strong>&nbsp;<span style='color:#2ecc71'>BASE – Fixed</span>");
+    else if (tmode.mode == 1) sendChunk("led-off'></span><strong>ZED-F9P Mode:</strong>&nbsp;<span style='color:#f39c12'>Survey-In</span>");
+    else sendChunk("led-off'></span><strong>ZED-F9P Mode:</strong>&nbsp;<span style='color:#3498db'>Rover (TMODE disabled)</span>");
+    sendChunk("</div>");
+    if (tmode.mode == 2) {
+      String coords = "<p style='margin:6px 0 0 22px;font-size:0.9em;color:#555;'>";
+      coords += "Lat: " + String(tmode.lat, 8) + "&deg; &nbsp; ";
+      coords += "Lon: " + String(tmode.lon, 8) + "&deg; &nbsp; ";
+      coords += "H: " + String(tmode.height, 3) + " m</p>";
+      sendChunk(coords);
+    }
+    uint32_t age = (millis() - tmode.lastCheck) / 1000;
+    sendChunk("<p style='font-size:0.82em;color:#95a5a6;margin:4px 0 8px 22px;'>Last check: " + String(age) + "s ago &nbsp;");
+    sendChunk("<span onclick=\"location.reload()\" style='cursor:pointer;' title='Refresh'>&#x1F504;</span></p>");
+  } else {
+    sendChunk("<div class='status-row'><span class='status-led led-off'></span><strong>ZED-F9P Mode:</strong>&nbsp;<span style='color:#95a5a6'>Unknown</span></div>");
+  }
+
+  sendChunk("<div style='margin-top:10px;'>");
+  sendChunk("<button onclick='stopBase()' class='btn-danger' style='min-height:44px;padding:10px 18px;font-size:1em;'>&#x25A0; Stop Base</button> ");
+  if (tmode.valid && tmode.mode == 2) {
+    sendChunk("<button onclick='switchToRover()' style='min-height:44px;padding:10px 18px;font-size:1em;background:#f39c12;color:white;border:none;border-radius:4px;cursor:pointer;'>&#x21BA; Switch to Rover</button>");
+  }
+  sendChunk("</div>");
+  sendChunk("<hr style='margin:14px 0;border:none;border-top:1px solid #ecf0f1;'>");
+  sendChunk("<a href='/base/stations' style='display:block;text-align:center;min-height:48px;line-height:48px;font-size:1.05em;background:#3498db;color:white;border-radius:4px;text-decoration:none;'>&#x2699; Manage Base Stations</a>");
+  sendChunk("</div>"); // end Base Station card
+
+  // --- RTCM Outputs card ---
+  std::vector<NtripOut> outList; int outLast=-1;
+  loadNtripOutList(outList, outLast);
+  std::vector<TcpOutClient> tcpClientList; int tcpClientLast=-1;
+  loadTcpOutClientList(tcpClientList, tcpClientLast);
+
+  sendChunk("<div class='card'>");
+  sendChunk("<h2>&#x1F4E4; RTCM Outputs (Base)</h2>");
+
+  // NTRIP OUT
+  sendChunk("<h3>NTRIP OUT</h3>");
+  sendChunk("<p><strong>Selected Profile:</strong> ");
+  if (outLast>=0 && outLast<(int)outList.size()) {
+    const auto& o = outList[outLast];
+    sendChunk("<span class='badge'>" + htmlEscape(o.name) + "</span>");
+    sendChunk("<br><small style='color:#555'>" + htmlEscape(o.host) + ":" + String(o.port) +
+              " &mdash; Mount: " + htmlEscape(o.mount) + "</small>");
+  } else {
+    sendChunk("<em>None selected</em>");
+  }
+  sendChunk("</p>");
+  sendChunk("<div style='margin-top:8px;'>");
+  sendChunk("<button onclick='startOut()' class='btn-success' style='min-height:44px;padding:10px 18px;font-size:1em;'>&#x25BA; Start NTRIP OUT</button> ");
+  sendChunk("<button onclick='stopOut()' class='btn-danger' style='min-height:44px;padding:10px 18px;font-size:1em;'>&#x25A0; Stop NTRIP OUT</button>");
+  sendChunk("</div>");
+
+  sendChunk("<hr style='margin:14px 0;border:none;border-top:1px solid #ecf0f1;'>");
+
+  // TCP Client OUT
+  sendChunk("<h3>TCP Client OUT</h3>");
+  sendChunk("<p><strong>Selected Profile:</strong> ");
+  if (tcpClientLast>=0 && tcpClientLast<(int)tcpClientList.size()) {
+    const auto& tc = tcpClientList[tcpClientLast];
+    sendChunk("<span class='badge'>" + htmlEscape(tc.name) + "</span>");
+    sendChunk("<br><small style='color:#555'>" + htmlEscape(tc.host) + ":" + String(tc.port) + "</small>");
+  } else {
+    sendChunk("<em>None selected</em>");
+  }
+  sendChunk("</p>");
+  sendChunk("<div style='margin-top:8px;'>");
+  sendChunk("<button onclick='startTcpClient()' class='btn-success' style='min-height:44px;padding:10px 18px;font-size:1em;'>&#x25BA; Start TCP Client OUT</button> ");
+  sendChunk("<button onclick='stopTcpClient()' class='btn-danger' style='min-height:44px;padding:10px 18px;font-size:1em;'>&#x25A0; Stop TCP Client OUT</button>");
+  sendChunk("</div>");
+
+  sendChunk("<hr style='margin:14px 0;border:none;border-top:1px solid #ecf0f1;'>");
+
+  // BLE OUT
+  sendChunk("<h3>BLE RTCM OUT</h3>");
+  sendChunk("<div class='status-row'><span class='status-led ");
+  if (g_bleRtcmEnabled && g_bleRtcm.isConnected()) {
+    sendChunk("led-on'></span><strong>Status:</strong>&nbsp;Connected");
+    sendChunk(" (" + htmlEscape(g_bleRtcm.connectedName()) + ")");
+  } else if (g_bleRtcmEnabled) {
+    sendChunk("led-off'></span><strong>Status:</strong>&nbsp;");
+    sendChunk(g_bleRtcm.isScanning() ? "Scanning..." : "Waiting");
+  } else {
+    sendChunk("led-off'></span><strong>Status:</strong>&nbsp;Disabled");
+  }
+  sendChunk("</div>");
+  sendChunk("<div style='margin-top:8px;'>");
+  sendChunk("<button onclick='startBleOut()' class='btn-success' style='min-height:44px;padding:10px 18px;font-size:1em;'>&#x25BA; Start BLE OUT</button> ");
+  sendChunk("<button onclick='stopBleOut()' class='btn-danger' style='min-height:44px;padding:10px 18px;font-size:1em;'>&#x25A0; Stop BLE OUT</button>");
+  sendChunk("</div>");
+
+  sendChunk("<hr style='margin:14px 0;border:none;border-top:1px solid #ecf0f1;'>");
+  sendChunk("<a href='/base/outputs' style='display:block;text-align:center;min-height:48px;line-height:48px;font-size:1.05em;background:#3498db;color:white;border-radius:4px;text-decoration:none;'>&#x2699; Manage RTCM Outputs</a>");
+  sendChunk("</div>"); // end Outputs card
+
+  sendFooter();
+}
+
+// ========================================================================
+// BASE STATIONS PAGE (/base/stations) - Full base station management
+// ========================================================================
+
+static void handleBaseStationsPage() {
+  sendHeader("Base – Stations", "base");
+
+  sendChunk("<p style='margin-bottom:14px;'><a class='btn' href='/base-cfg'>&larr; Back to Base</a></p>");
+
+  // --- TMODE Manual Entry ---
+  sendChunk("<div class='card'><h2>&#x1F4CD; Start Base from Coordinates</h2>");
+  sendChunk("<p>Apply fixed LLH coordinates directly to ZED-F9P (stored in RAM):</p>");
   sendChunk("<ul>");
-  sendChunk("<li>Apply <strong>Station ID</strong> (DF003) before messages</li>");
   sendChunk("<li>TMODE: <strong>FIXED LLH (HP)</strong></li>");
   sendChunk("<li>UART2 TX: <strong>RTCM3 only</strong></li>");
   sendChunk("<li>MSGOUT: 1005/1230 @10s; MSM7 @1s or MSM4 @1s</li>");
   sendChunk("</ul>");
-  
-  sendChunk("<h3>Fixed Coordinates + Station ID</h3>");
   sendChunk("<form method='POST' action='/base/llh'>");
   sendChunk("<label>Latitude [deg]:</label><input name='lat' required><br>");
   sendChunk("<label>Longitude [deg]:</label><input name='lon' required><br>");
@@ -1686,19 +1896,19 @@ static void handleBasePage() {
   sendChunk("<option value='0'>MSM7 - 4 constellations (GPS, GLO, GAL, BDS) @1Hz</option>");
   sendChunk("<option value='1'>MSM4 - 3 constellations (GPS, GLO, GAL) @1Hz</option>");
   sendChunk("</select><br>");
-  sendChunk("<button type='submit'>Start Base</button>");
+  sendChunk("<button type='submit' class='btn-success' style='min-height:44px;padding:10px 18px;font-size:1em;'>&#x25BA; Start Base</button>");
   sendChunk("</form></div>");
   
   // Saved Bases
   std::vector<BaseRec> bases;
   loadBases(bases);
-  
+
   // Load antennas for display
   std::vector<AntennaRec> antennas;
   loadAntennas(antennas);
-  
-  sendChunk("<div class='card'><h2>Saved Base Stations</h2>");
-  
+
+  sendChunk("<div class='card'><h2>&#x1F5FA; Saved Base Stations</h2>");
+
   if (!bases.empty()) {
     sendChunk("<div class='responsive-table'>");
     sendChunk("<table><tr><th>#</th><th>STID</th><th>Name</th><th>Lat</th><th>Lon</th><th>H ground [m]</th><th>H ARP [m]</th><th>Antenna</th><th>RTCM</th><th>Actions</th></tr>");
@@ -1711,22 +1921,17 @@ static void handleBasePage() {
       row += "<td data-label='Lon'>" + String(b.lon,8) + "</td>";
       row += "<td data-label='H ground [m]'>" + String(b.altGround,3) + "</td>";
       row += "<td data-label='H ARP [m]'>" + String(b.hARP,3) + "</td>";
-      
-      // Display antenna name or "None"
       String antennaName = "None";
       if (b.antennaIdx >= 0 && b.antennaIdx < (int)antennas.size()) {
         antennaName = htmlEscape(antennas[b.antennaIdx].name);
       }
       row += "<td data-label='Antenna'>" + antennaName + "</td>";
-      
-      // Display RTCM type
       String rtcmType = (b.rtcmType == 0) ? "MSM7 4c" : "MSM4 3c";
       row += "<td data-label='RTCM'>" + rtcmType + "</td>";
-      
       row += "<td data-label='Actions'>";
-      row += "<button onclick='confirmStartBase(" + String(i) + ")' class='btn btn-small btn-success'>▶️ Start</button> ";
-      row += "<a href='/bases/edit?idx=" + String(i) + "' class='btn btn-small'>✏️ Edit</a> ";
-      row += "<a href='/bases/del?idx=" + String(i) + "' class='btn btn-small btn-danger' onclick='return confirm(\"Delete " + escapeForOnclick(b.name) + "?\")'>❌ Delete</a>";
+      row += "<button onclick='confirmStartBase(" + String(i) + ")' class='btn btn-small btn-success'>&#x25BA; Start</button> ";
+      row += "<a href='/bases/edit?idx=" + String(i) + "' class='btn btn-small'>&#x270F; Edit</a> ";
+      row += "<a href='/bases/del?idx=" + String(i) + "' class='btn btn-small btn-danger' onclick='return confirm(\"Delete " + escapeForOnclick(b.name) + "?\")'>&#x274C; Delete</a>";
       row += "</td></tr>";
       sendChunk(row);
     }
@@ -1735,8 +1940,7 @@ static void handleBasePage() {
   } else {
     sendChunk("<p><em>No saved base stations.</em></p>");
   }
-  
-  // Add form
+
   sendChunk("<h3>Add Base Station</h3>");
   sendChunk("<form method='POST' action='/bases/add'>");
   sendChunk("<label>Name:</label><input name='name' required><br>");
@@ -1756,176 +1960,16 @@ static void handleBasePage() {
   sendChunk("<option value='0'>MSM7 - 4 constellations (GPS, GLO, GAL, BDS) @1Hz</option>");
   sendChunk("<option value='1'>MSM4 - 3 constellations (GPS, GLO, GAL) @1Hz</option>");
   sendChunk("</select><br>");
-  sendChunk("<button type='submit'>Add Base</button>");
-  sendChunk("</form></div>");
-  
-  // OUT Profiles
-  std::vector<NtripOut> outList; int outLast=-1;
-  loadNtripOutList(outList, outLast);
-  
-  sendChunk("<div class='card'><h2>RTCM Output Profiles (NTRIP/TCP)</h2>");
-  
-  // Active profile indicator
-  sendChunk("<p><strong>Active Profile:</strong> ");
-  if (outLast>=0 && outLast<(int)outList.size()) {
-    sendChunk("<span class='badge'>" + htmlEscape(outList[outLast].name) + "</span>");
-  } else {
-    sendChunk("<em>None</em>");
-  }
-  sendChunk("</p>");
-  
-  // Control buttons
-  sendChunk("<button onclick='startOut()' class='btn-success' aria-label='Start RTCM output (NTRIP/TCP)'>Start OUT (active profile)</button> ");
-  sendChunk("<button onclick='stopOut()' class='btn-danger' aria-label='Stop RTCM output'>Stop OUT</button>");
-  sendChunk("<script>");
-  sendChunk("function startOut(){fetch('/baseout/start').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error starting output: '+(err.message||err));})}");
-  sendChunk("function stopOut(){fetch('/baseout/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error stopping output: '+(err.message||err));})}");
-  sendChunk("</script>");
-  
-  if (!outList.empty()) {
-    sendChunk("<div class='responsive-table'>");
-    sendChunk("<table><tr><th>#</th><th>Name</th><th>Host</th><th>Port</th><th>Mount</th><th>TCP Port</th><th>Actions</th></tr>");
-    for (size_t i=0;i<outList.size();++i){
-      const auto& n=outList[i];
-      String row = "<tr><td data-label='#'>" + String(i) + "</td>";
-      row += "<td data-label='Name'>" + htmlEscape(n.name) + "</td>";
-      row += "<td data-label='Host'>" + htmlEscape(n.host) + "</td>";
-      row += "<td data-label='Port'>" + String(n.port) + "</td>";
-      row += "<td data-label='Mount'>" + htmlEscape(n.mount) + "</td>";
-      row += "<td data-label='TCP Port'>" + String(n.tcpPort) + "</td>";
-      row += "<td data-label='Actions'>";
-      row += "<a href='/baseout/select?idx=" + String(i) + "' class='btn btn-small'>✓ Select</a> ";
-      row += "<a href='/baseout/edit?idx=" + String(i) + "' class='btn btn-small'>✏️ Edit</a> ";
-      row += "<a href='/baseout/del?idx=" + String(i) + "' class='btn btn-small btn-danger' onclick='return confirm(\"Delete " + escapeForOnclick(n.name) + "?\")'>❌ Delete</a> ";
-      row += "<a href='/baseout/start?id=" + String(i) + "' class='btn btn-small btn-success'>▶️ Start</a>";
-      row += "</td></tr>";
-      sendChunk(row);
-    }
-    sendChunk("</table>");
-    sendChunk("</div>");
-  } else {
-    sendChunk("<p><em>No output profiles saved.</em></p>");
-  }
-  
-  // Add form
-  sendChunk("<h3>Add Output Profile</h3>");
-  sendChunk("<form method='POST' action='/baseout/add'>");
-  sendChunk("<label>Name:</label><input name='name' required><br>");
-  sendChunk("<label>Host:</label><input name='host' required><br>");
-  sendChunk("<label>Port:</label><input name='port' type='number' value='2101' required><br>");
-  sendChunk("<label>Mountpoint:</label><input name='mount' required><br>");
-  sendChunk("<label>Password:</label><input name='pass' type='password'><br>");
-  sendChunk("<label>TCP Server Port:</label><input name='tcp' type='number' value='2102' required><br>");
-  sendChunk("<button type='submit'>Add Profile</button>");
+  sendChunk("<button type='submit'>Add Base Station</button>");
   sendChunk("</form></div>");
 
-// ============================================================================
-// TCP OUT CLIENT - UI Section for handleBasePage()
-// Da inserire in handleBasePage() dopo la sezione NTRIP OUT (dopo riga 1561)
-// PRIMA della sezione Survey Base Position
-// ============================================================================
-
-  // ===== TCP OUT CLIENT PROFILES =====
-  std::vector<TcpOutClient> tcpClientList; int tcpClientLast=-1;
-  loadTcpOutClientList(tcpClientList, tcpClientLast);
-  
-  sendChunk("<div class='card'><h2>TCP OUT Client Profiles</h2>");
-  sendChunk("<p>Connect to external TCP servers and stream RTCM data.</p>");
-  
-  // Active profile indicator
-  sendChunk("<p><strong>Active Profile:</strong> ");
-  if (tcpClientLast>=0 && tcpClientLast<(int)tcpClientList.size()) {
-    sendChunk("<span class='badge'>" + htmlEscape(tcpClientList[tcpClientLast].name) + "</span>");
-  } else {
-    sendChunk("<em>None</em>");
-  }
-  sendChunk("</p>");
-  
-  // Control buttons
-  sendChunk("<button onclick='startTcpClient()' class='btn-success'>Start TCP Client</button> ");
-  sendChunk("<button onclick='stopTcpClient()' class='btn-danger'>Stop TCP Client</button>");
-  sendChunk("<script>");
-  sendChunk("function startTcpClient(){fetch('/tcpclient/start').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+err);})}");
-  sendChunk("function stopTcpClient(){fetch('/tcpclient/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+err);})}");
-  sendChunk("</script>");
-  
-  if (!tcpClientList.empty()) {
-    sendChunk("<div class='responsive-table'>");
-    sendChunk("<table><tr><th>#</th><th>Name</th><th>Host</th><th>Port</th><th>Actions</th></tr>");
-    for (size_t i=0;i<tcpClientList.size();++i){
-      const auto& t=tcpClientList[i];
-      String row = "<tr><td data-label='#'>" + String(i) + "</td>";
-      row += "<td data-label='Name'>" + htmlEscape(t.name) + "</td>";
-      row += "<td data-label='Host'>" + htmlEscape(t.host) + "</td>";
-      row += "<td data-label='Port'>" + String(t.port) + "</td>";
-      row += "<td data-label='Actions'>";
-      row += "<a href='/tcpclient/select?idx=" + String(i) + "' class='btn btn-small'>✓ Select</a> ";
-      row += "<a href='/tcpclient/edit?idx=" + String(i) + "' class='btn btn-small'>✏️ Edit</a> ";
-      row += "<a href='/tcpclient/del?idx=" + String(i) + "' class='btn btn-small btn-danger' onclick='return confirm(\"Delete " + escapeForOnclick(t.name) + "?\")'>❌ Delete</a> ";
-      row += "<a href='/tcpclient/start?id=" + String(i) + "' class='btn btn-small btn-success'>▶️ Start</a>";
-      row += "</td></tr>";
-      sendChunk(row);
-    }
-    sendChunk("</table>");
-    sendChunk("</div>");
-  } else {
-    sendChunk("<p><em>No TCP client profiles saved.</em></p>");
-  }
-  
-  // Add form
-  sendChunk("<h3>Add TCP Client Profile</h3>");
-  sendChunk("<form method='POST' action='/tcpclient/add'>");
-  sendChunk("<label>Name:</label><input name='name' required><br>");
-  sendChunk("<label>Host:</label><input name='host' required placeholder='192.168.1.100 or rtk.server.com'><br>");
-  sendChunk("<label>Port:</label><input name='port' type='number' value='5000' required><br>");
-  sendChunk("<button type='submit'>Add Profile</button>");
-  sendChunk("</form></div>");
-
-
-  // ===== BLE RTCM OUTPUT (to rtcm-lora via BLE) =====
-  sendChunk("<div class='card'><h2>&#x1F4E1; BLE RTCM Output</h2>");
-  sendChunk("<p>Send RTCM corrections to rtcm-lora Base via Bluetooth LE (replaces TCP/WiFi connection).</p>");
-
-  // Status
-  sendChunk("<div class='status-row'><span class='status-led ");
-  if (g_bleRtcmEnabled && g_bleRtcm.isConnected()) {
-    sendChunk("led-on'></span><strong>BLE RTCM OUT:</strong> Connected");
-    sendChunk(" (" + htmlEscape(g_bleRtcm.connectedName()) + ")");
-    char txBuf[48]; snprintf(txBuf, sizeof(txBuf), " &mdash; TX: %lu B", (unsigned long)g_bleRtcm.getTxBytes());
-    sendChunk(txBuf);
-  } else if (g_bleRtcmEnabled) {
-    sendChunk("led-off'></span><strong>BLE RTCM OUT:</strong> ");
-    sendChunk(g_bleRtcm.isScanning() ? "Scanning..." : "Waiting");
-  } else {
-    sendChunk("led-off'></span><strong>BLE RTCM OUT:</strong> Disabled");
-  }
-  sendChunk("</div>");
-
-  // Control buttons
-  sendChunk("<div style='margin-top:10px'>");
-  sendChunk("<button onclick='startBleOut()' class='btn-success'>Start BLE OUT</button> ");
-  sendChunk("<button onclick='stopBleOut()' class='btn-danger'>Stop BLE OUT</button>");
-  sendChunk("</div>");
-  sendChunk("<script>");
-  sendChunk("function startBleOut(){fetch('/api/blertcm/start').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+err);})}");
-  sendChunk("function stopBleOut(){fetch('/api/blertcm/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+err);})}");
-  sendChunk("</script>");
-
-  sendChunk("<div style='margin-top:12px; padding:10px; background:#d1ecf1; border-left:4px solid #17a2b8; border-radius:4px; font-size:0.9em;'>");
-  sendChunk("Configure the rtcm-lora device name and PIN in <a href='/settings'>Settings &rarr; BLE RTCM Input</a>.<br>");
-  sendChunk("In base mode, RTCM data is sent to rtcm-lora via BLE NUS instead of TCP.");
-  sendChunk("</div>");
-  sendChunk("</div>");
-
-
-  // Load antennas for dropdown
+  // Survey Base Position
   std::vector<AntennaRec> surveyAntennas;
   loadAntennas(surveyAntennas);
-  
-  sendChunk("<div class='card'><h2>📍 Survey Base Position</h2>");
+
+  sendChunk("<div class='card'><h2>&#x1F4CD; Survey Base Position</h2>");
   sendChunk("<p>Record averaged GNSS positions over time and save as a new base station.</p>");
-  
-  // Configuration form
+
   sendChunk("<h3>Configuration</h3>");
   sendChunk("<form id='surveyForm' onsubmit='startSurvey(event)'>");
   sendChunk("<label>Duration:</label>");
@@ -1936,27 +1980,22 @@ static void handleBasePage() {
   sendChunk("<option value='180'>180 seconds</option>");
   sendChunk("<option value='300'>300 seconds</option>");
   sendChunk("</select><br>");
-  
   sendChunk("<label>H antenna ARP [m]:</label>");
   sendChunk("<input id='instrHeight' type='number' step='0.001' value='1.500' required> (ground to ARP)<br>");
-  
   sendChunk("<label>Antenna model:</label>");
   sendChunk("<select id='antennaIdx' onchange='updateArpFromAntenna()'>");
   sendChunk("<option value='-1' data-offset='0.000'>None / Manual (0.000m)</option>");
   for (size_t i = 0; i < surveyAntennas.size(); i++) {
-    sendChunk("<option value='" + String(i) + "' data-offset='" + String(surveyAntennas[i].offset, 3) + "'>" + 
+    sendChunk("<option value='" + String(i) + "' data-offset='" + String(surveyAntennas[i].offset, 3) + "'>" +
               htmlEscape(surveyAntennas[i].name) + " (" + String(surveyAntennas[i].offset, 3) + "m)</option>");
   }
   sendChunk("</select><br>");
-  
   sendChunk("<label>ARP Offset [m]:</label>");
   sendChunk("<input id='arpOffset' type='number' step='0.001' value='0.000' required readonly> (auto from antenna)<br>");
-  
-  sendChunk("<button type='submit' class='btn-success' id='startBtn'>🟢 Start Survey</button> ");
-  sendChunk("<button type='button' class='btn-danger' id='stopBtn' onclick='stopSurvey()' style='display:none'>🔴 Stop Survey</button>");
+  sendChunk("<button type='submit' class='btn-success' id='startBtn'>&#x1F7E2; Start Survey</button> ");
+  sendChunk("<button type='button' class='btn-danger' id='stopBtn' onclick='stopSurvey()' style='display:none'>&#x1F534; Stop Survey</button>");
   sendChunk("</form>");
-  
-  // Progress display
+
   sendChunk("<div id='surveyProgress' style='display:none; margin-top:20px'>");
   sendChunk("<h3>Progress</h3>");
   sendChunk("<div style='background:#ecf0f1; border-radius:4px; height:30px; overflow:hidden; margin:10px 0'>");
@@ -1966,43 +2005,38 @@ static void handleBasePage() {
   sendChunk("<p><strong>Samples:</strong> <span id='sampleCount'>0</span></p>");
   sendChunk("<h3>Current Average:</h3>");
   sendChunk("<table style='width:100%'>");
-  sendChunk("<tr><td><b>Lat:</b></td><td><span id='currLat'>-</span>°</td><td><b>σ:</b></td><td><span id='stdLat'>-</span>°</td></tr>");
-  sendChunk("<tr><td><b>Lon:</b></td><td><span id='currLon'>-</span>°</td><td><b>σ:</b></td><td><span id='stdLon'>-</span>°</td></tr>");
-  sendChunk("<tr><td><b>H (ARP):</b></td><td><span id='currAltARP'>-</span> m</td><td><b>σ:</b></td><td><span id='stdAlt'>-</span> m</td></tr>");
+  sendChunk("<tr><td><b>Lat:</b></td><td><span id='currLat'>-</span>&deg;</td><td><b>&sigma;:</b></td><td><span id='stdLat'>-</span>&deg;</td></tr>");
+  sendChunk("<tr><td><b>Lon:</b></td><td><span id='currLon'>-</span>&deg;</td><td><b>&sigma;:</b></td><td><span id='stdLon'>-</span>&deg;</td></tr>");
+  sendChunk("<tr><td><b>H (ARP):</b></td><td><span id='currAltARP'>-</span> m</td><td><b>&sigma;:</b></td><td><span id='stdAlt'>-</span> m</td></tr>");
   sendChunk("<tr><td><b>H (Ground):</b></td><td colspan='3'><span id='currAltGround'>-</span> m</td></tr>");
   sendChunk("</table>");
   sendChunk("</div>");
-  
-  // Results display
+
   sendChunk("<div id='surveyResults' style='display:none; margin-top:20px'>");
-  sendChunk("<h3>✅ Survey Complete!</h3>");
+  sendChunk("<h3>&#x2705; Survey Complete!</h3>");
   sendChunk("<h4>Final Position (ground point):</h4>");
   sendChunk("<table style='width:100%'>");
-  sendChunk("<tr><td><b>Latitude:</b></td><td><span id='finalLat'>-</span>°</td></tr>");
-  sendChunk("<tr><td><b>Longitude:</b></td><td><span id='finalLon'>-</span>°</td></tr>");
+  sendChunk("<tr><td><b>Latitude:</b></td><td><span id='finalLat'>-</span>&deg;</td></tr>");
+  sendChunk("<tr><td><b>Longitude:</b></td><td><span id='finalLon'>-</span>&deg;</td></tr>");
   sendChunk("<tr><td><b>H (ellips):</b></td><td><span id='finalAlt'>-</span> m</td></tr>");
   sendChunk("<tr><td><b>Std Dev:</b></td><td><span id='finalStd'>-</span> m (horizontal)</td></tr>");
   sendChunk("</table>");
-  
   sendChunk("<h4>Save as Base Station:</h4>");
   sendChunk("<form onsubmit='saveSurvey(event)'>");
   sendChunk("<label>Name:</label><input id='saveName' type='text' placeholder='e.g. Benchmark Via Roma' required><br>");
   sendChunk("<label>Station ID:</label><input id='saveStid' type='number' min='1' max='4095' value='1' required><br>");
-  sendChunk("<button type='submit' class='btn-success'>💾 Save Base Station</button>");
+  sendChunk("<button type='submit' class='btn-success'>&#x1F4BE; Save Base Station</button>");
   sendChunk("</form>");
   sendChunk("</div>");
-  
-  // JavaScript for survey control and polling
+
   sendChunk("<script>");
   sendChunk("let surveyPollInterval = null;");
-  
   sendChunk("function updateArpFromAntenna() {");
   sendChunk("  const select = document.getElementById('antennaIdx');");
   sendChunk("  const option = select.options[select.selectedIndex];");
   sendChunk("  const offset = option.getAttribute('data-offset');");
   sendChunk("  document.getElementById('arpOffset').value = offset;");
   sendChunk("}");
-  
   sendChunk("function startSurvey(e) {");
   sendChunk("  e.preventDefault();");
   sendChunk("  const duration = document.getElementById('duration').value;");
@@ -2021,7 +2055,6 @@ static void handleBasePage() {
   sendChunk("  })");
   sendChunk("  .catch(e => alert('Error: ' + e));");
   sendChunk("}");
-  
   sendChunk("function stopSurvey() {");
   sendChunk("  fetch('/api/survey/stop')");
   sendChunk("  .then(r => r.json())");
@@ -2033,7 +2066,6 @@ static void handleBasePage() {
   sendChunk("    document.getElementById('surveyResults').style.display = 'none';");
   sendChunk("  });");
   sendChunk("}");
-  
   sendChunk("function updateSurvey() {");
   sendChunk("  fetch('/api/survey/status')");
   sendChunk("  .then(r => r.json())");
@@ -2072,7 +2104,6 @@ static void handleBasePage() {
   sendChunk("  })");
   sendChunk("  .catch(e => console.error('Survey update error:', e));");
   sendChunk("}");
-  
   sendChunk("function saveSurvey(e) {");
   sendChunk("  e.preventDefault();");
   sendChunk("  const name = document.getElementById('saveName').value;");
@@ -2094,8 +2125,8 @@ static void handleBasePage() {
   sendChunk("  })");
   sendChunk("  .catch(e => alert('Error saving: ' + e));");
   sendChunk("}");
-  
-  // ===== Base Start Confirmation Modal =====
+
+  // Base Start Confirmation Modal
   sendChunk("function confirmStartBase(idx) {");
   sendChunk("  Promise.all([");
   sendChunk("    fetch('/api/bases?idx=' + idx).then(r => r.json()),");
@@ -2104,19 +2135,17 @@ static void handleBasePage() {
   sendChunk("    showStartBaseModal(base, antData.antennas, idx);");
   sendChunk("  }).catch(e => alert('Error loading base data: ' + e));");
   sendChunk("}");
-  
   sendChunk("function showStartBaseModal(base, antennas, idx) {");
   sendChunk("  let modal = document.createElement('div');");
   sendChunk("  modal.id = 'startBaseModal';");
   sendChunk("  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1000;';");
-  
   sendChunk("  let content = `");
   sendChunk("  <div style='background:white;padding:24px;border-radius:8px;max-width:500px;width:90%;max-height:90vh;overflow:auto;'>");
-  sendChunk("    <h2 style='margin-bottom:16px;'>⚠️ Confirm Base Station Start</h2>");
+  sendChunk("    <h2 style='margin-bottom:16px;'>&#x26A0; Confirm Base Station Start</h2>");
   sendChunk("    <p><strong>Base:</strong> ${base.name}</p>");
   sendChunk("    <h4>Ground coordinates:</h4>");
-  sendChunk("    <p>Lat: ${base.lat.toFixed(8)}°<br>");
-  sendChunk("       Lon: ${base.lon.toFixed(8)}°<br>");
+  sendChunk("    <p>Lat: ${base.lat.toFixed(8)}&deg;<br>");
+  sendChunk("       Lon: ${base.lon.toFixed(8)}&deg;<br>");
   sendChunk("       H ground: ${base.altGround.toFixed(3)} m</p>");
   sendChunk("    <hr style='margin:16px 0;'>");
   sendChunk("    <label>Antenna:</label>");
@@ -2128,46 +2157,38 @@ static void handleBasePage() {
   sendChunk("    <input type='number' id='modalHarp' value='${base.hARP.toFixed(3)}' step='0.001' style='width:100%;padding:8px;margin:4px 0 12px;'>");
   sendChunk("    <hr style='margin:16px 0;'>");
   sendChunk("    <div id='calcDisplay' style='background:#f5f5f5;padding:12px;border-radius:4px;'>");
-  sendChunk("      <strong>📐 H to send to ZED-F9P:</strong><br>");
+  sendChunk("      <strong>&#x1F4D0; H to send to ZED-F9P:</strong><br>");
   sendChunk("      <span id='calcFormula'></span>");
   sendChunk("    </div>");
   sendChunk("    <div style='margin-top:20px;display:flex;gap:12px;justify-content:flex-end;'>");
-  sendChunk("      <button onclick='closeModal()' style='padding:10px 20px;background:#e74c3c;color:white;border:none;border-radius:4px;cursor:pointer;'>❌ Cancel</button>");
-  sendChunk("      <button onclick='doStartBase(${idx})' style='padding:10px 20px;background:#2ecc71;color:white;border:none;border-radius:4px;cursor:pointer;'>✅ Start Base</button>");
+  sendChunk("      <button onclick='closeModal()' style='padding:10px 20px;background:#e74c3c;color:white;border:none;border-radius:4px;cursor:pointer;'>&#x274C; Cancel</button>");
+  sendChunk("      <button onclick='doStartBase(${idx})' style='padding:10px 20px;background:#2ecc71;color:white;border:none;border-radius:4px;cursor:pointer;'>&#x2705; Start Base</button>");
   sendChunk("    </div>");
   sendChunk("  </div>`;");
-  
   sendChunk("  modal.innerHTML = content;");
   sendChunk("  document.body.appendChild(modal);");
-  
   sendChunk("  window.modalBase = base;");
   sendChunk("  window.modalAntennas = antennas;");
-  
   sendChunk("  document.getElementById('modalAntenna').onchange = updateCalc;");
   sendChunk("  document.getElementById('modalHarp').oninput = updateCalc;");
   sendChunk("  updateCalc();");
   sendChunk("}");
-  
   sendChunk("function updateCalc() {");
   sendChunk("  let hGround = window.modalBase.altGround;");
   sendChunk("  let hArp = parseFloat(document.getElementById('modalHarp').value) || 0;");
   sendChunk("  let antIdx = parseInt(document.getElementById('modalAntenna').value);");
   sendChunk("  let offset = (antIdx >= 0 && window.modalAntennas[antIdx]) ? window.modalAntennas[antIdx].offset : 0;");
   sendChunk("  let hTotal = hGround + hArp + offset;");
-  
   sendChunk("  document.getElementById('calcFormula').innerHTML = ");
   sendChunk("    `${hGround.toFixed(3)} + ${hArp.toFixed(3)} + ${offset.toFixed(3)} = <strong>${hTotal.toFixed(3)} m</strong>`;");
   sendChunk("}");
-  
   sendChunk("function closeModal() {");
   sendChunk("  let modal = document.getElementById('startBaseModal');");
   sendChunk("  if (modal) modal.remove();");
   sendChunk("}");
-  
   sendChunk("function doStartBase(idx) {");
   sendChunk("  let hArp = parseFloat(document.getElementById('modalHarp').value) || 0;");
   sendChunk("  let antIdx = parseInt(document.getElementById('modalAntenna').value);");
-  
   sendChunk("  fetch('/bases/start-confirm', {");
   sendChunk("    method: 'POST',");
   sendChunk("    headers: {'Content-Type': 'application/x-www-form-urlencoded'},");
@@ -2184,10 +2205,165 @@ static void handleBasePage() {
   sendChunk("    alert('Error: ' + e);");
   sendChunk("  });");
   sendChunk("}");
-  
   sendChunk("</script>");
+  sendChunk("</div>"); // end Survey card
+
+  sendFooter();
+}
+
+// ========================================================================
+// BASE OUTPUTS PAGE (/base/outputs) - Full RTCM OUT management
+// ========================================================================
+
+static void handleBaseOutputsPage() {
+  sendHeader("Base – RTCM Outputs", "base");
+
+  sendChunk("<p style='margin-bottom:14px;'><a class='btn' href='/base-cfg'>&larr; Back to Base</a></p>");
+
+  // JavaScript for controls
+  sendChunk("<script>");
+  sendChunk("function startOut(){fetch('/baseout/start').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
+  sendChunk("function stopOut(){fetch('/baseout/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
+  sendChunk("function startTcpClient(){fetch('/tcpclient/start').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
+  sendChunk("function stopTcpClient(){fetch('/tcpclient/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
+  sendChunk("function startBleOut(){fetch('/api/blertcm/start').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
+  sendChunk("function stopBleOut(){fetch('/api/blertcm/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
+  sendChunk("</script>");
+
+  // --- NTRIP OUT Profiles ---
+  std::vector<NtripOut> outList; int outLast=-1;
+  loadNtripOutList(outList, outLast);
+
+  sendChunk("<div class='card'><h2>&#x1F4E4; NTRIP OUT Profiles</h2>");
+  sendChunk("<p><strong>Selected Profile:</strong> ");
+  if (outLast>=0 && outLast<(int)outList.size()) {
+    const auto& o = outList[outLast];
+    sendChunk("<span class='badge'>" + htmlEscape(o.name) + "</span>");
+    sendChunk("<br><small style='color:#555'>" + htmlEscape(o.host) + ":" + String(o.port) +
+              " &mdash; Mount: " + htmlEscape(o.mount) + " &mdash; TCP Port: " + String(o.tcpPort) + "</small>");
+  } else {
+    sendChunk("<em>None</em>");
+  }
+  sendChunk("</p>");
+  sendChunk("<button onclick='startOut()' class='btn-success' aria-label='Start NTRIP OUT'>&#x25BA; Start NTRIP OUT</button> ");
+  sendChunk("<button onclick='stopOut()' class='btn-danger' aria-label='Stop NTRIP OUT'>&#x25A0; Stop NTRIP OUT</button>");
+
+  if (!outList.empty()) {
+    sendChunk("<div class='responsive-table'>");
+    sendChunk("<table><tr><th>#</th><th>Name</th><th>Host</th><th>Port</th><th>Mount</th><th>TCP Port</th><th>Actions</th></tr>");
+    for (size_t i=0;i<outList.size();++i){
+      const auto& n=outList[i];
+      String sel = (outLast==(int)i) ? " style='font-weight:bold;'" : "";
+      String row = "<tr" + sel + "><td data-label='#'>" + String(i) + "</td>";
+      row += "<td data-label='Name'>" + htmlEscape(n.name) + "</td>";
+      row += "<td data-label='Host'>" + htmlEscape(n.host) + "</td>";
+      row += "<td data-label='Port'>" + String(n.port) + "</td>";
+      row += "<td data-label='Mount'>" + htmlEscape(n.mount) + "</td>";
+      row += "<td data-label='TCP Port'>" + String(n.tcpPort) + "</td>";
+      row += "<td data-label='Actions'>";
+      row += "<a href='/baseout/select?idx=" + String(i) + "' class='btn btn-small'>&#x2713; Select</a> ";
+      row += "<a href='/baseout/edit?idx=" + String(i) + "' class='btn btn-small'>&#x270F; Edit</a> ";
+      row += "<a href='/baseout/del?idx=" + String(i) + "' class='btn btn-small btn-danger' onclick='return confirm(\"Delete " + escapeForOnclick(n.name) + "?\")'>&#x274C; Delete</a> ";
+      row += "<a href='/baseout/start?id=" + String(i) + "' class='btn btn-small btn-success'>&#x25BA; Start</a>";
+      row += "</td></tr>";
+      sendChunk(row);
+    }
+    sendChunk("</table>");
+    sendChunk("</div>");
+  } else {
+    sendChunk("<p><em>No NTRIP OUT profiles saved.</em></p>");
+  }
+
+  sendChunk("<h3>Add NTRIP OUT Profile</h3>");
+  sendChunk("<form method='POST' action='/baseout/add'>");
+  sendChunk("<label>Name:</label><input name='name' required><br>");
+  sendChunk("<label>Host:</label><input name='host' required><br>");
+  sendChunk("<label>Port:</label><input name='port' type='number' value='2101' required><br>");
+  sendChunk("<label>Mountpoint:</label><input name='mount' required><br>");
+  sendChunk("<label>Password:</label><input name='pass' type='password'><br>");
+  sendChunk("<label>TCP Server Port:</label><input name='tcp' type='number' value='2102' required><br>");
+  sendChunk("<button type='submit'>Add NTRIP OUT Profile</button>");
+  sendChunk("</form></div>");
+
+  // --- TCP Client OUT Profiles ---
+  std::vector<TcpOutClient> tcpClientList; int tcpClientLast=-1;
+  loadTcpOutClientList(tcpClientList, tcpClientLast);
+
+  sendChunk("<div class='card'><h2>&#x1F4E4; TCP Client OUT Profiles</h2>");
+  sendChunk("<p>Connect to external TCP servers and stream RTCM data.</p>");
+  sendChunk("<p><strong>Selected Profile:</strong> ");
+  if (tcpClientLast>=0 && tcpClientLast<(int)tcpClientList.size()) {
+    const auto& tc = tcpClientList[tcpClientLast];
+    sendChunk("<span class='badge'>" + htmlEscape(tc.name) + "</span>");
+    sendChunk("<br><small style='color:#555'>" + htmlEscape(tc.host) + ":" + String(tc.port) + "</small>");
+  } else {
+    sendChunk("<em>None</em>");
+  }
+  sendChunk("</p>");
+  sendChunk("<button onclick='startTcpClient()' class='btn-success'>&#x25BA; Start TCP Client OUT</button> ");
+  sendChunk("<button onclick='stopTcpClient()' class='btn-danger'>&#x25A0; Stop TCP Client OUT</button>");
+
+  if (!tcpClientList.empty()) {
+    sendChunk("<div class='responsive-table'>");
+    sendChunk("<table><tr><th>#</th><th>Name</th><th>Host</th><th>Port</th><th>Actions</th></tr>");
+    for (size_t i=0;i<tcpClientList.size();++i){
+      const auto& t=tcpClientList[i];
+      String sel = (tcpClientLast==(int)i) ? " style='font-weight:bold;'" : "";
+      String row = "<tr" + sel + "><td data-label='#'>" + String(i) + "</td>";
+      row += "<td data-label='Name'>" + htmlEscape(t.name) + "</td>";
+      row += "<td data-label='Host'>" + htmlEscape(t.host) + "</td>";
+      row += "<td data-label='Port'>" + String(t.port) + "</td>";
+      row += "<td data-label='Actions'>";
+      row += "<a href='/tcpclient/select?idx=" + String(i) + "' class='btn btn-small'>&#x2713; Select</a> ";
+      row += "<a href='/tcpclient/edit?idx=" + String(i) + "' class='btn btn-small'>&#x270F; Edit</a> ";
+      row += "<a href='/tcpclient/del?idx=" + String(i) + "' class='btn btn-small btn-danger' onclick='return confirm(\"Delete " + escapeForOnclick(t.name) + "?\")'>&#x274C; Delete</a> ";
+      row += "<a href='/tcpclient/start?id=" + String(i) + "' class='btn btn-small btn-success'>&#x25BA; Start</a>";
+      row += "</td></tr>";
+      sendChunk(row);
+    }
+    sendChunk("</table>");
+    sendChunk("</div>");
+  } else {
+    sendChunk("<p><em>No TCP Client OUT profiles saved.</em></p>");
+  }
+
+  sendChunk("<h3>Add TCP Client OUT Profile</h3>");
+  sendChunk("<form method='POST' action='/tcpclient/add'>");
+  sendChunk("<label>Name:</label><input name='name' required><br>");
+  sendChunk("<label>Host:</label><input name='host' required placeholder='192.168.1.100 or rtk.server.com'><br>");
+  sendChunk("<label>Port:</label><input name='port' type='number' value='5000' required><br>");
+  sendChunk("<button type='submit'>Add TCP Client OUT Profile</button>");
+  sendChunk("</form></div>");
+
+  // --- BLE RTCM OUT ---
+  sendChunk("<div class='card'><h2>&#x1F4E1; BLE RTCM OUT</h2>");
+  sendChunk("<p>Send RTCM corrections to rtcm-lora Base via Bluetooth LE (replaces TCP/WiFi connection).</p>");
+
+  sendChunk("<div class='status-row'><span class='status-led ");
+  if (g_bleRtcmEnabled && g_bleRtcm.isConnected()) {
+    sendChunk("led-on'></span><strong>BLE RTCM OUT:</strong>&nbsp;Connected");
+    sendChunk(" (" + htmlEscape(g_bleRtcm.connectedName()) + ")");
+    char txBuf[48]; snprintf(txBuf, sizeof(txBuf), " &mdash; TX: %lu B", (unsigned long)g_bleRtcm.getTxBytes());
+    sendChunk(txBuf);
+  } else if (g_bleRtcmEnabled) {
+    sendChunk("led-off'></span><strong>BLE RTCM OUT:</strong>&nbsp;");
+    sendChunk(g_bleRtcm.isScanning() ? "Scanning..." : "Waiting");
+  } else {
+    sendChunk("led-off'></span><strong>BLE RTCM OUT:</strong>&nbsp;Disabled");
+  }
   sendChunk("</div>");
-  
+
+  sendChunk("<div style='margin-top:10px'>");
+  sendChunk("<button onclick='startBleOut()' class='btn-success'>&#x25BA; Start BLE OUT</button> ");
+  sendChunk("<button onclick='stopBleOut()' class='btn-danger'>&#x25A0; Stop BLE OUT</button>");
+  sendChunk("</div>");
+
+  sendChunk("<div style='margin-top:12px; padding:10px; background:#d1ecf1; border-left:4px solid #17a2b8; border-radius:4px; font-size:0.9em;'>");
+  sendChunk("Configure the rtcm-lora device name and PIN in <a href='/settings'>Settings &rarr; BLE RTCM Input</a>.<br>");
+  sendChunk("In base mode, RTCM data is sent to rtcm-lora via BLE NUS instead of TCP.");
+  sendChunk("</div>");
+  sendChunk("</div>"); // end BLE card
+
   sendFooter();
 }
 
@@ -3634,7 +3810,7 @@ static void handleNtripAdd() {
   std::vector<NtripIn> v; int last=-1; loadNtripInList(v,last);
   v.push_back(n); if (last<0) last=0;
   if(!saveNtripInList(v,last)){ _server->send(500,"text/plain","Save failed"); return; }
-  _server->sendHeader("Location","/rover"); _server->send(303);
+  _server->sendHeader("Location","/rover/connections"); _server->send(303);
 }
 
 static void handleNtripDel() {
@@ -3645,7 +3821,7 @@ static void handleNtripDel() {
   v.erase(v.begin()+idx);
   if (last >= (int)v.size()) last = (int)v.size()-1;
   if(!saveNtripInList(v,last)){ _server->send(500,"text/plain","Save failed"); return; }
-  _server->sendHeader("Location","/rover"); _server->send(303);
+  _server->sendHeader("Location","/rover/connections"); _server->send(303);
 }
 
 static void handleNtripEdit() {
@@ -3666,7 +3842,7 @@ static void handleNtripEdit() {
   sendChunk("<label>User:</label><input name='user' value='" + htmlEscape(n.user) + "'><br>");
   sendChunk("<label>Password:</label><input name='pwd' type='password' value='" + htmlEscape(n.pass) + "'><br>");
   sendChunk("<button type='submit'>Save</button> ");
-  sendChunk("<a class='btn' href='/rover'>Cancel</a>");
+  sendChunk("<a class='btn' href='/rover/connections'>Cancel</a>");
   sendChunk("</form></div>");
   sendFooter();
 }
@@ -3685,7 +3861,7 @@ static void handleNtripUpdate() {
   v[idx].user = _server->arg("user");
   v[idx].pass = _server->arg("pwd");
   if(!saveNtripInList(v,last)){ _server->send(500,"text/plain","Save failed"); return; }
-  _server->sendHeader("Location","/rover"); _server->send(303);
+  _server->sendHeader("Location","/rover/connections"); _server->send(303);
 }
 
 static void handleNtripSelect() {
@@ -3761,7 +3937,7 @@ static void handleNtripSelect() {
     oledPrintln("[NTRIP] Warning: Failed to save LAST to SD");
   }
 
-  _server->sendHeader("Location", "/rover");
+  _server->sendHeader("Location", "/rover/connections");
   _server->send(303);
 }
 
@@ -3777,7 +3953,7 @@ static void handleLanInAdd() {
   std::vector<TcpIn> v; int last=-1; loadTcpInList(v,last);
   v.push_back(t); if (last<0) last=0;
   if(!saveTcpInList(v,last)){ _server->send(500,"text/plain","Save failed"); return; }
-  _server->sendHeader("Location","/rover"); _server->send(303);
+  _server->sendHeader("Location","/rover/connections"); _server->send(303);
 }
 
 static void handleLanInDel() {
@@ -3787,7 +3963,7 @@ static void handleLanInDel() {
   v.erase(v.begin()+idx);
   if (last >= (int)v.size()) last = (int)v.size()-1;
   if(!saveTcpInList(v,last)){ _server->send(500,"text/plain","Save failed"); return; }
-  _server->sendHeader("Location","/rover"); _server->send(303);
+  _server->sendHeader("Location","/rover/connections"); _server->send(303);
 }
 
 static void handleLanInEdit() {
@@ -3804,7 +3980,7 @@ static void handleLanInEdit() {
   sendChunk("<label>Host/IP:</label><input name='host' value='" + htmlEscape(t.host) + "' required><br>");
   sendChunk("<label>Port:</label><input name='port' type='number' value='" + String(t.port) + "' required><br>");
   sendChunk("<button type='submit'>Save</button> ");
-  sendChunk("<a class='btn' href='/rover'>Cancel</a>");
+  sendChunk("<a class='btn' href='/rover/connections'>Cancel</a>");
   sendChunk("</form></div>");
   sendFooter();
 }
@@ -3819,7 +3995,7 @@ static void handleLanInUpdate() {
   v[idx].host=_server->arg("host");
   v[idx].port=_server->arg("port").toInt();
   if(!saveTcpInList(v,last)){ _server->send(500,"text/plain","Save failed"); return; }
-  _server->sendHeader("Location","/rover"); _server->send(303);
+  _server->sendHeader("Location","/rover/connections"); _server->send(303);
 }
 
 static void handleLanInSelect() {
@@ -3830,7 +4006,7 @@ static void handleLanInSelect() {
   if(!saveTcpInList(v,last)){ _server->send(500,"text/plain","Save failed"); return; }
   // update global variables for quick-start
   tcpin_host = v[idx].host; tcpin_port = v[idx].port;
-  _server->sendHeader("Location","/rover"); _server->send(303);
+  _server->sendHeader("Location","/rover/connections"); _server->send(303);
 }
 
 static void handleLanInStart() {
@@ -3851,6 +4027,13 @@ static void handleLanInStop() {
 // ========================================================================
 // BASE LLH HANDLER
 // ========================================================================
+
+static void handleBaseStop() {
+  stopBaseMode();
+  stopCasterOut();
+  stopTcpOut();
+  _server->send(200, "text/plain", "Base stopped");
+}
 
 static void handleBaseLLH() {
   if (!_server->hasArg("lat") || !_server->hasArg("lon") || !_server->hasArg("alt")) {
@@ -3891,7 +4074,7 @@ static void handleBasesAdd() {
   std::vector<BaseRec> v; loadBases(v); v.push_back(b);
   std::sort(v.begin(), v.end(), [](const BaseRec&a,const BaseRec&b){return a.stid<b.stid;});
   if(!saveBases(v)){ _server->send(500,"text/plain","Save failed"); return; }
-  _server->sendHeader("Location","/base-cfg"); _server->send(303);
+  _server->sendHeader("Location","/base/stations"); _server->send(303);
 }
 
 static void handleBasesDel() {
@@ -3901,7 +4084,7 @@ static void handleBasesDel() {
   if(idx<0||idx>=(int)v.size()){ _server->send(400,"text/plain","Index out of range"); return; }
   v.erase(v.begin()+idx);
   if(!saveBases(v)){ _server->send(500,"text/plain","Save failed"); return; }
-  _server->sendHeader("Location","/base-cfg"); _server->send(303);
+  _server->sendHeader("Location","/base/stations"); _server->send(303);
 }
 
 static void handleBasesEdit() {
@@ -3935,7 +4118,7 @@ static void handleBasesEdit() {
   sendChunk("<option value='1'" + String(b.rtcmType == 1 ? " selected" : "") + ">MSM4 - 3 constellations (GPS, GLO, GAL) @1Hz</option>");
   sendChunk("</select><br>");
   sendChunk("<button type='submit'>Save</button> ");
-  sendChunk("<a class='btn' href='/base-cfg'>Cancel</a>");
+  sendChunk("<a class='btn' href='/base/stations'>Cancel</a>");
   sendChunk("</form></div>");
   sendFooter();
 }
@@ -3957,7 +4140,7 @@ static void handleBasesUpdate() {
   v[idx]=b;
   std::sort(v.begin(), v.end(), [](const BaseRec&a,const BaseRec&b){return a.stid<b.stid;});
   if(!saveBases(v)){ _server->send(500,"text/plain","Save failed"); return; }
-  _server->sendHeader("Location","/base-cfg"); _server->send(303);
+  _server->sendHeader("Location","/base/stations"); _server->send(303);
 }
 
 static void handleBasesStart() {
@@ -4038,7 +4221,7 @@ static void handleBaseOutAdd() {
   std::vector<NtripOut> v; int last=-1; loadNtripOutList(v,last);
   v.push_back(n); if(last<0) last=0;
   if(!saveNtripOutList(v,last)){ _server->send(500,"text/plain","Save failed"); return; }
-  _server->sendHeader("Location","/base-cfg"); _server->send(303);
+  _server->sendHeader("Location","/base/outputs"); _server->send(303);
 }
 
 static void handleBaseOutDel() {
@@ -4048,7 +4231,7 @@ static void handleBaseOutDel() {
   v.erase(v.begin()+idx);
   if (last >= (int)v.size()) last = (int)v.size()-1;
   if(!saveNtripOutList(v,last)){ _server->send(500,"text/plain","Save failed"); return; }
-  _server->sendHeader("Location","/base-cfg"); _server->send(303);
+  _server->sendHeader("Location","/base/outputs"); _server->send(303);
 }
 
 static void handleBaseOutEdit() {
@@ -4057,8 +4240,8 @@ static void handleBaseOutEdit() {
   if(idx<0||idx>=(int)v.size()){ _server->send(400,"text/plain","Index out of range"); return; }
   const auto& n=v[idx];
   
-  sendHeader("Edit Output Profile", "base");
-  sendChunk("<div class='card'><h2>Edit Output Profile</h2>");
+  sendHeader("Edit NTRIP OUT Profile", "base");
+  sendChunk("<div class='card'><h2>Edit NTRIP OUT Profile</h2>");
   sendChunk("<form method='POST' action='/baseout/update'>");
   sendChunk("<input type='hidden' name='idx' value='" + String(idx) + "'>");
   sendChunk("<label>Name:</label><input name='name' value='" + htmlEscape(n.name) + "' required><br>");
@@ -4068,7 +4251,7 @@ static void handleBaseOutEdit() {
   sendChunk("<label>Password:</label><input name='pass' type='password' value='" + htmlEscape(n.pass) + "'><br>");
   sendChunk("<label>TCP Server Port:</label><input name='tcp' type='number' value='" + String(n.tcpPort) + "' required><br>");
   sendChunk("<button type='submit'>Save</button> ");
-  sendChunk("<a class='btn' href='/base-cfg'>Cancel</a>");
+  sendChunk("<a class='btn' href='/base/outputs'>Cancel</a>");
   sendChunk("</form></div>");
   sendFooter();
 }
@@ -4086,7 +4269,7 @@ static void handleBaseOutUpdate() {
   v[idx].pass=_server->arg("pass");
   v[idx].tcpPort=_server->arg("tcp").toInt();
   if(!saveNtripOutList(v,last)){ _server->send(500,"text/plain","Save failed"); return; }
-  _server->sendHeader("Location","/base-cfg"); _server->send(303);
+  _server->sendHeader("Location","/base/outputs"); _server->send(303);
 }
 
 static void handleBaseOutSelect() {
@@ -4095,7 +4278,7 @@ static void handleBaseOutSelect() {
   if(idx<0||idx>=(int)v.size()){ _server->send(400,"text/plain","Index out of range"); return; }
   last=idx;
   if(!saveNtripOutList(v,last)){ _server->send(500,"text/plain","Save failed"); return; }
-  _server->sendHeader("Location","/base-cfg"); _server->send(303);
+  _server->sendHeader("Location","/base/outputs"); _server->send(303);
 }
 
 static void handleBaseOutStart() {
@@ -4131,7 +4314,7 @@ static void handleTcpClientAdd() {
     _server->send(500,"text/plain","Save failed"); 
     return; 
   }
-  _server->sendHeader("Location","/base-cfg"); 
+  _server->sendHeader("Location","/base/outputs"); 
   _server->send(303);
 }
 
@@ -4147,7 +4330,7 @@ static void handleTcpClientDel() {
     _server->send(500,"text/plain","Save failed"); 
     return; 
   }
-  _server->sendHeader("Location","/base-cfg"); 
+  _server->sendHeader("Location","/base/outputs"); 
   _server->send(303);
 }
 
@@ -4161,14 +4344,14 @@ static void handleTcpClientEditForm() {
   }
   
   const auto& t=v[idx];
-  sendHeader("Edit TCP Client Profile","base");
-  sendChunk("<div class='card'><h2>Edit TCP Client Profile</h2>");
+  sendHeader("Edit TCP Client OUT Profile","base");
+  sendChunk("<div class='card'><h2>Edit TCP Client OUT Profile</h2>");
   sendChunk("<form method='POST' action='/tcpclient/edit?idx="+String(idx)+"'>");
   sendChunk("<label>Name:</label><input name='name' value='"+htmlEscape(t.name)+"' required><br>");
   sendChunk("<label>Host:</label><input name='host' value='"+htmlEscape(t.host)+"' required><br>");
   sendChunk("<label>Port:</label><input name='port' type='number' value='"+String(t.port)+"' required><br>");
   sendChunk("<button type='submit'>Save</button> ");
-  sendChunk("<a class='btn' href='/base-cfg'>Cancel</a>");
+  sendChunk("<a class='btn' href='/base/outputs'>Cancel</a>");
   sendChunk("</form></div>");
   sendFooter();
 }
@@ -4190,7 +4373,7 @@ static void handleTcpClientEditSave() {
     _server->send(500,"text/plain","Save failed"); 
     return; 
   }
-  _server->sendHeader("Location","/base-cfg"); 
+  _server->sendHeader("Location","/base/outputs"); 
   _server->send(303);
 }
 
@@ -4208,7 +4391,7 @@ static void handleTcpClientSelect() {
     _server->send(500,"text/plain","Save failed"); 
     return; 
   }
-  _server->sendHeader("Location","/base-cfg"); 
+  _server->sendHeader("Location","/base/outputs"); 
   _server->send(303);
 }
 
@@ -6018,7 +6201,11 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
   // Main pages
   _server->on("/", handleRoot);
   _server->on("/rover", HTTP_GET, handleRoverPage);
+  _server->on("/rover/connections", HTTP_GET, handleRoverConnectionsPage);
   _server->on("/base-cfg", HTTP_GET, handleBasePage);
+  _server->on("/base/stations", HTTP_GET, handleBaseStationsPage);
+  _server->on("/base/outputs", HTTP_GET, handleBaseOutputsPage);
+  _server->on("/base/stop", HTTP_GET, handleBaseStop);
   _server->on("/settings", HTTP_GET, handleSettingsPage);
   _server->on("/firmware", HTTP_GET, handleFirmwarePage);
   _server->on("/logs", HTTP_GET, handleLogsPage);
