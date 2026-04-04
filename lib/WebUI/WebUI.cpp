@@ -1698,10 +1698,10 @@ static void handleRoverConnectionsPage() {
   }
   sendChunk("</p>");
 
-  String tcpStatus2 = "<p><strong>Status:</strong> ";
-  tcpStatus2 += tcpInEnabled ? "<span class='badge' style='background:#2ecc71;color:white'>Active</span>" : "<span class='badge'>Inactive</span>";
-  tcpStatus2 += "</p>";
-  sendChunk(tcpStatus2);
+  String tcpStatusHtml = "<p><strong>Status:</strong> ";
+  tcpStatusHtml += tcpInEnabled ? "<span class='badge' style='background:#2ecc71;color:white'>Active</span>" : "<span class='badge'>Inactive</span>";
+  tcpStatusHtml += "</p>";
+  sendChunk(tcpStatusHtml);
 
   sendChunk("<button onclick='startTcpIn()' class='btn-success' aria-label='Start TCP IN'>&#x25BA; Start TCP IN</button> ");
   sendChunk("<button onclick='stopTcpIn()' class='btn-danger' aria-label='Stop TCP IN'>&#x25A0; Stop TCP IN</button>");
@@ -4241,7 +4241,7 @@ static void handleBaseOutEdit() {
   const auto& n=v[idx];
   
   sendHeader("Edit NTRIP OUT Profile", "base");
-  sendChunk("<div class='card'><h2>Edit NTRIP OUT Profile</h2>");
+  sendChunk("<div class='card'>");
   sendChunk("<form method='POST' action='/baseout/update'>");
   sendChunk("<input type='hidden' name='idx' value='" + String(idx) + "'>");
   sendChunk("<label>Name:</label><input name='name' value='" + htmlEscape(n.name) + "' required><br>");
