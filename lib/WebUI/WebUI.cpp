@@ -5069,11 +5069,6 @@ static void handleZedTmodeRefresh() {
   }
 }
 
-static void handleBaseStop() {
-  stopBaseMode();
-  _server->send(200, "text/plain", "Base mode stopped. TMODE disabled, returned to Rover mode.");
-}
-
 static void handleSwitchToRover() {
   switchToRover();
   _server->send(200, "text/plain", "Switched to Rover mode. NTRIP IN re-enabled.");
