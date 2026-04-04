@@ -9,7 +9,7 @@
 
 class TcpStreamer {
 public:
-    static void begin(uint16_t port = 1234);
+    static void begin(uint16_t port = 7856);
     static void handle();
     static void broadcast(const uint8_t* data, size_t len);
     static void enable(bool on);
