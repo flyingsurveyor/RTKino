@@ -2268,7 +2268,7 @@ void setup() {
   OledMenu::getMeasureProgressStr = []() -> String {
     MeasureProgress p = SurveyPoints::getMeasureProgress();
     char buf[64];
-    snprintf(buf, sizeof(buf), "%d%%\n%d samp.\nhAcc:%.4fm\n%.1fs",
+    snprintf(buf, sizeof(buf), "%d%%\n%d samples\nhAcc:%.4fm\n%.1fs",
              p.pct, p.nSamples, p.curHAcc, p.elapsed);
     return String(buf);
   };
