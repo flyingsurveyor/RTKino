@@ -6,7 +6,7 @@
 
 namespace WebUI {
 
-  // Avvio interfaccia Web
+  // Start web interface
   void begin(SdFat& sd, WebServer& server);
 
   // ===== Loaders (IN) =====
@@ -14,12 +14,12 @@ namespace WebUI {
                  String& host, int& port,
                  String& mountpoint, String& user, String& pass);
 
-  // Compatibilità con vecchio config.txt
+  // Compatibility with legacy config.txt
   bool loadOldConfigForNtrip(SdFat& sd,
                              String& host, int& port,
                              String& mountpoint, String& user, String& pass);
 
-  // ===== OUT (compat pre-esistente) =====
+  // ===== OUT (legacy compat) =====
   bool loadNtripOut(SdFat& sd,
                     String& host, int& port,
                     String& mount, String& pass);
@@ -28,6 +28,6 @@ namespace WebUI {
                     const String& host, int port,
                     const String& mount, const String& pass);
 
-  // ===== NEW: LAN TCP-IN loader (profilo selezionato) =====
+  // ===== NEW: LAN TCP-IN loader (selected profile) =====
   bool loadTcpIn(SdFat& sd, String& host, int& port);
 }

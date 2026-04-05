@@ -2247,7 +2247,7 @@ void setup() {
   OledMenu::onCreateSurvey = []() {
     time_t now = time(nullptr);
     char buf[24]; struct tm t; localtime_r(&now, &t);
-    strftime(buf, sizeof(buf), "Rilievo %d/%m %H:%M", &t);
+    strftime(buf, sizeof(buf), "Survey %d/%m %H:%M", &t);
     String sid = SurveyPoints::createSurvey(String(buf));
     if (!sid.isEmpty()) {
       SurveyPoints::setActiveSurveyId(sid);
@@ -2268,16 +2268,16 @@ void setup() {
   OledMenu::getMeasureProgressStr = []() -> String {
     MeasureProgress p = SurveyPoints::getMeasureProgress();
     char buf[64];
-    snprintf(buf, sizeof(buf), "%d%%\n%d camp.\nhAcc:%.4fm\n%.1fs",
+    snprintf(buf, sizeof(buf), "%d%%\n%d samp.\nhAcc:%.4fm\n%.1fs",
              p.pct, p.nSamples, p.curHAcc, p.elapsed);
     return String(buf);
   };
   OledMenu::getMeasureResult = []() -> String {
     MeasureProgress p = SurveyPoints::getMeasureProgress();
     if (p.status == MS_DONE) {
-      return "OK: " + p.lastPointId + "\n*=torna";
+      return "OK: " + p.lastPointId + "\n*=back";
     } else if (p.status == MS_ERROR) {
-      return "ERRORE:\n" + p.errorMsg;
+      return "ERROR:\n" + p.errorMsg;
     }
     return "---";
   };
@@ -2374,7 +2374,7 @@ void setup() {
   sdOK = sd.begin(SD_CS, SD_SCK_MHZ(25));
   
   if (!sdOK) { 
-    oledPrintln("SD non trovata"); 
+    oledPrintln("SD not found"); 
     Serial.printf("[SD] Failed! Board: %s\n", getBoardName());
   } else { 
     Serial.printf("[SD] OK! Board: %s, Flash: %s, PSRAM: %s\n", 

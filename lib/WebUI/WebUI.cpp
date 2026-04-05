@@ -5139,12 +5139,12 @@ static void handleSurveyPage() {
   sendChunk("      if(bar){bar.style.width=d.pct+'%';");
   sendChunk("        var h=d.curHAcc;var bg=h<0.02?'#27ae60':h<0.05?'#f39c12':'#e74c3c';");
   sendChunk("        bar.style.background=bg;}");
-  sendChunk("      if(st)st.innerHTML=d.pct+'% | '+d.nSamples+' camp. | hAcc:'+d.curHAcc.toFixed(4)+'m | '+d.elapsed.toFixed(1)+'s';");
+  sendChunk("      if(st)st.innerHTML=d.pct+'% | '+d.nSamples+' samples | hAcc:'+d.curHAcc.toFixed(4)+'m | '+d.elapsed.toFixed(1)+'s';");
   sendChunk("      if(d.status==='done'||d.status==='error'){");
   sendChunk("        var res=document.getElementById('meas-result');");
   sendChunk("        if(res){res.style.display='';");
   sendChunk("          res.innerHTML=d.status==='done'?'<b style=color:green>&#10003; Saved: '+d.lastPointId+'</b>':'<span style=color:red>&#9888; Error: '+d.errorMsg+'</span>';}");
-  sendChunk("        document.getElementById('btn-misura').disabled=false;");
+  sendChunk("        document.getElementById('btn-measure').disabled=false;");
   sendChunk("        if(d.status==='done'){autoIncrementName();");
   sendChunk("          setTimeout(function(){");
   sendChunk("            var r2=document.getElementById('meas-result');if(r2)r2.style.display='none';");
@@ -5157,7 +5157,7 @@ static void handleSurveyPage() {
   sendChunk("      } else {");
   sendChunk("        var res=document.getElementById('meas-result');");
   sendChunk("        if(res){res.style.display='';res.innerHTML='<span style=color:red>Measure timeout (120s)</span>';}");
-  sendChunk("        document.getElementById('btn-misura').disabled=false;");
+  sendChunk("        document.getElementById('btn-measure').disabled=false;");
   sendChunk("      }");
   sendChunk("    }).catch(function(){");
   sendChunk("      if(Date.now()<_measureDeadline)_measureTimeout=setTimeout(poll,1000);");
@@ -5224,8 +5224,8 @@ static void handleSurveyPage() {
   sendChunk("  var codice=document.getElementById('pt-codice').value;");
   sendChunk("  var dur=document.getElementById('pt-dur').value||10;");
   sendChunk("  var interval=document.getElementById('pt-rate').value||0.5;");
-  sendChunk("  document.getElementById('btn-misura').disabled=true;");
-  sendChunk("  var st=document.getElementById('meas-status');if(st)st.innerHTML='Avvio...';");
+  sendChunk("  document.getElementById('btn-measure').disabled=true;");
+  sendChunk("  var st=document.getElementById('meas-status');if(st)st.innerHTML='Starting...';");
   sendChunk("  var res=document.getElementById('meas-result');if(res)res.style.display='none';");
   sendChunk("  var bar=document.getElementById('meas-bar');if(bar){bar.style.width='0%';bar.style.background='#2ecc71';}");
   sendChunk("  fetch('/api/pts/measure?name='+encodeURIComponent(name)+'&codice='+encodeURIComponent(codice)+'&duration='+dur+'&interval='+interval+'&force='+(force?1:0))");
@@ -5233,12 +5233,12 @@ static void handleSurveyPage() {
   sendChunk("      if(d.error){");
   sendChunk("        var res=document.getElementById('meas-result');");
   sendChunk("        if(res){res.style.display='';res.innerHTML='<span style=color:red>&#9888; '+d.error+'</span>';}");
-  sendChunk("        document.getElementById('btn-misura').disabled=false;");
+  sendChunk("        document.getElementById('btn-measure').disabled=false;");
   sendChunk("      } else { startMeasurePoll(); }");
   sendChunk("    }).catch(function(e){");
   sendChunk("      var res=document.getElementById('meas-result');");
   sendChunk("      if(res){res.style.display='';res.innerHTML='<span style=color:red>Network error: '+e+'</span>';}");
-  sendChunk("      document.getElementById('btn-misura').disabled=false;");
+  sendChunk("      document.getElementById('btn-measure').disabled=false;");
   sendChunk("    });");
   sendChunk("}");
 
@@ -5300,15 +5300,15 @@ static void handleSurveyPage() {
     sendChunk("<input type='checkbox' id='chk-extint'" + extintChecked + " onchange='toggleExtint(this.checked)'> PPK marker</label>");
     sendChunk("</div>");
     // ---- Compact 2-column measure form ----
-    sendChunk("<h3 style='margin:0 0 8px'>&#128208; Nuova Misura</h3>");
+    sendChunk("<h3 style='margin:0 0 8px'>&#128208; New Measurement</h3>");
     sendChunk("<div class='form-grid'>");
-    sendChunk("<div><label>Nome punto</label><input id='pt-name' type='text' placeholder='P001' autocomplete='off'></div>");
-    sendChunk("<div><label>Categoria</label><select id='pt-cat' onchange='updateCodici(this.value)'><option value=''>-- choose --</option></select></div>");
-    sendChunk("<div class='form-full'><label>Codice</label><select id='pt-codice'><option value=''>-- choose --</option></select></div>");
-    sendChunk("<div><label>Durata (s)</label><input id='pt-dur' type='number' value='10' min='1' max='120'></div>");
-    sendChunk("<div><label>Intervallo (s)</label><input id='pt-rate' type='number' value='0.5' min='0.1' max='10' step='0.1'></div>");
+    sendChunk("<div><label>Point name</label><input id='pt-name' type='text' placeholder='P001' autocomplete='off'></div>");
+    sendChunk("<div><label>Category</label><select id='pt-cat' onchange='updateCodici(this.value)'><option value=''>-- choose --</option></select></div>");
+    sendChunk("<div class='form-full'><label>Code</label><select id='pt-codice'><option value=''>-- choose --</option></select></div>");
+    sendChunk("<div><label>Duration (s)</label><input id='pt-dur' type='number' value='10' min='1' max='120'></div>");
+    sendChunk("<div><label>Interval (s)</label><input id='pt-rate' type='number' value='0.5' min='0.1' max='10' step='0.1'></div>");
     sendChunk("</div>");
-    sendChunk("<button id='btn-misura' onclick='doMeasure()' style='width:100%;padding:12px;font-size:1.1em;background:#27ae60;color:white;border:none;border-radius:6px;cursor:pointer;margin-top:4px'>&#128994; MISURA</button>");
+    sendChunk("<button id='btn-measure' onclick='doMeasure()' style='width:100%;padding:12px;font-size:1.1em;background:#27ae60;color:white;border:none;border-radius:6px;cursor:pointer;margin-top:4px'>&#128994; MEASURE</button>");
     sendChunk("<div class='prog-bar' style='margin-top:10px'><div id='meas-bar' class='prog-fill' style='width:0%'></div></div>");
     sendChunk("<div id='meas-status' style='margin:4px 0;font-family:monospace;font-size:0.85em;color:#555'></div>");
     sendChunk("<div id='meas-result' style='display:none;margin:8px 0;padding:8px;background:#ecf0f1;border-radius:4px'></div>");
@@ -5316,16 +5316,16 @@ static void handleSurveyPage() {
   sendChunk("</div>");
 
   // ---- Survey list ----
-  sendChunk("<div class='card'><h2>&#128193; Elenco Rilievi</h2>");
+  sendChunk("<div class='card'><h2>&#128193; Survey List</h2>");
   sendChunk("<form method='POST' action='/api/pts/create' style='display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px'>");
-  sendChunk("<input name='title' type='text' placeholder='Nome rilievo' required style='flex:1;min-width:160px'>");
-  sendChunk("<input name='desc' type='text' placeholder='Descrizione (opzionale)' style='flex:2;min-width:160px'>");
-  sendChunk("<button type='submit' style='white-space:nowrap'>&#10133; Crea</button></form>");
+  sendChunk("<input name='title' type='text' placeholder='Survey name' required style='flex:1;min-width:160px'>");
+  sendChunk("<input name='desc' type='text' placeholder='Description (optional)' style='flex:2;min-width:160px'>");
+  sendChunk("<button type='submit' style='white-space:nowrap'>&#10133; Create</button></form>");
 
   std::vector<String> ids;
   SurveyPoints::listSurveyIds(ids);
   if (ids.empty()) {
-    sendChunk("<p style='color:#888'>Nessun rilievo trovato.</p>");
+    sendChunk("<p style='color:#888'>No surveys found.</p>");
   } else {
     for (const String& sid : ids) {
       String json  = SurveyPoints::loadSurveyJSON(sid);
@@ -5342,9 +5342,9 @@ static void handleSurveyPage() {
       sendChunk("<b>" + String(isActive ? "&#10003; " : "") + title + "</b> &nbsp;");
       sendChunk("<span style='color:#7f8c8d;font-size:0.85em'>&#128197; " + created + " | " + String(pts) + " pt | <code>" + sid + "</code></span><br style='margin-bottom:4px'>");
       if (!isActive) {
-        sendChunk("<button class='btn-small' onclick=\"setActive('" + sid + "')\">&#128257; Attiva</button> ");
+        sendChunk("<button class='btn-small' onclick=\"setActive('" + sid + "')\">&#128257; Set active</button> ");
       }
-      sendChunk("<button class='btn btn-small btn-danger' onclick=\"delSurvey('" + sid + "')\">&#128465; Elimina</button>");
+      sendChunk("<button class='btn btn-small btn-danger' onclick=\"delSurvey('" + sid + "')\">&#128465; Delete</button>");
       sendChunk("</div>");
     }
   }
@@ -5353,11 +5353,11 @@ static void handleSurveyPage() {
 
   // ---- Card-based point list for active survey ----
   if (!activeSid.isEmpty()) {
-    sendChunk("<div class='card'><h2>&#128203; Punti rilevati</h2>");
+    sendChunk("<div class='card'><h2>&#128203; Recorded points</h2>");
 
     int ptCount = SurveyPoints::getSurveyPointCount(activeSid);
     if (ptCount == 0) {
-      sendChunk("<p style='color:#888;font-size:0.9em'>Nessun punto ancora rilevato.</p>");
+      sendChunk("<p style='color:#888;font-size:0.9em'>No points recorded yet.</p>");
     } else {
       String json = SurveyPoints::loadSurveyJSON(activeSid);
       int pos = 0;
@@ -5418,7 +5418,7 @@ static void handleSurveyPage() {
         sendChunk("<span class='rtk-badge " + badgeClass + "'>" + rtkLabel + "</span>");
         sendChunk("</div>");
         sendChunk("<div class='sv-card-meta'>&#127757; " + lat_s + "&#176; &nbsp; " + lon_s + "&#176;</div>");
-        sendChunk("<div class='sv-card-meta'>H: " + alt_s + " m &nbsp;|&nbsp; hAcc: " + hacc_s + " m &nbsp;|&nbsp; " + nSamp + " camp.</div>");
+        sendChunk("<div class='sv-card-meta'>H: " + alt_s + " m &nbsp;|&nbsp; hAcc: " + hacc_s + " m &nbsp;|&nbsp; " + nSamp + " samples</div>");
         sendChunk("<div style='text-align:right;margin-top:4px'>");
         sendChunk("<button class='btn btn-small btn-danger' onclick=\"delPoint('" + activeSid + "','" + pid + "')\">&#128465;</button>");
         sendChunk("</div></div>");
@@ -5696,7 +5696,7 @@ static void handleStakeoutPage() {
   // fallback label when no IMU
   sendChunk("  if(!_imuOk||_devHdg===null){");
   sendChunk("    ctx.font='10px sans-serif';ctx.fillStyle='#7f8c8d';");
-  sendChunk("    ctx.fillText('Nord-up (bussola N/D)',cx,cy+r*0.84);");
+  sendChunk("    ctx.fillText('North-up (compass N/A)',cx,cy+r*0.84);");
   sendChunk("  }");
   sendChunk("}");
   // RAF animation loop - smooth redraw with latest IMU heading
@@ -5774,7 +5774,7 @@ static void handleStakeoutPage() {
   sendChunk("</div>");
   // iOS IMU permission button (hidden by default, shown by JS on iOS)
   sendChunk("<div style='text-align:center'>");
-  sendChunk("<button id='skImuBtn' class='sk-imu-btn' onclick='askImuPerm()'>&#x1F9ED; Attiva bussola</button>");
+  sendChunk("<button id='skImuBtn' class='sk-imu-btn' onclick='askImuPerm()'>&#x1F9ED; Enable compass</button>");
   sendChunk("</div>");
   // Info row: bearing, heading, fix
   sendChunk("<div class='sk-info-row'>");
