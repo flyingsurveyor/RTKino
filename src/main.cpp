@@ -1471,6 +1471,10 @@ void applyBaseValset(uint16_t stid /*=1*/, uint8_t rtcmType /*=0*/) {
   UbxVal::setBaseMsgout(rtcmType);
   String msgType = (rtcmType == 0) ? "MSM7 4const" : "MSM4 3const";
   oledPrintln(String("[BASE] DF003=") + stid + " " + msgType);
+
+  // Read back TMODE state to confirm (matches applyBaseFixedLLH pattern)
+  delay(100);  // Give ZED time to apply settings
+  readZedTmode();
 }
 
 void applyBaseFixedLLH(double lat_deg, double lon_deg, double h_m, uint16_t stid /*=1*/, uint8_t rtcmType /*=0*/) {
