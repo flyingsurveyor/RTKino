@@ -1412,9 +1412,10 @@ static void handleRoot() {
   sendChunk("<button onclick=\"syncNtp()\" style=\"background:none;border:1px solid #95a5a6;border-radius:4px;cursor:pointer;margin-left:8px;padding:7.2px 14.4px;font-size:1.08em;\" title=\"Sync NTP Now\" aria-label=\"Sync NTP\">🔄</button>");
   sendChunk("</div>");
   
-  // ZED-F9P TMODE status
+  // ZED-F9P TMODE status — always read fresh from ZED when serving Home page
+  // (single I2C call, ~5 ms; Home page is user-initiated, not a hot path)
   ZedTmodeState tmode;
-  if (getZedTmode(tmode) && tmode.valid) {
+  if (UbxVal::getTmodeState(tmode) && tmode.valid) {
     sendChunk("<div class='status-row'><strong>ZED-F9P Mode:</strong> ");
     if (tmode.mode == 0) {
       sendChunk("<span style='color:#3498db'>ROVER</span> (TMODE disabled)");
