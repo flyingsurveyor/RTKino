@@ -55,7 +55,7 @@ bool (*oledGetTcpCliConnected)() = nullptr;
 
 void oledInit() {
   if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS)) {
-    Serial.println("OLED non trovato");
+    Serial.println("OLED not found");
     return;
   }
   display.clearDisplay();
