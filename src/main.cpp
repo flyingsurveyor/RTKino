@@ -1474,7 +1474,7 @@ void applyBaseValset(uint16_t stid /*=1*/, uint8_t rtcmType /*=0*/) {
 
   // Read back TMODE state to confirm (matches applyBaseFixedLLH pattern)
   delay(100);  // Give ZED time to apply settings
-  readZedTmode();
+  getZedTmode(g_zedTmode);
 }
 
 void applyBaseFixedLLH(double lat_deg, double lon_deg, double h_m, uint16_t stid /*=1*/, uint8_t rtcmType /*=0*/) {
