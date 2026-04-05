@@ -1667,7 +1667,10 @@ void switchToRover() {
   
   // 11. Do NOT auto re-enable NTRIP IN here.
   // NTRIP remains manual after a return to rover mode.
-  
+
+  delay(500);        // lascia stabilizzare ZED post-reset
+  readZedTmode();    // aggiorna cache con dati freschi e validi
+
   Serial.println("[SWITCH] Transition complete");
   oledPrintln("[MODE] Switched to Rover");
 }
@@ -2787,13 +2790,6 @@ void loop() {
     }
   }
   
-  // Periodic TMODE state refresh (every 50 seconds)
-  static uint32_t lastTmodeCheck = 0;
-  if (now - lastTmodeCheck > 50000) {
-    lastTmodeCheck = now;
-    readZedTmode();
-  }
-
   // Periodic survey sync to SD (every 5 minutes)
   if (!loggingActive) {
     SurveyPoints::periodicSync();
