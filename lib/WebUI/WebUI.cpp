@@ -1427,9 +1427,6 @@ static void handleRoot() {
       baseInfo += "&nbsp;&nbsp;H: " + String(tmode.height, 3) + " m";
       sendChunk(baseInfo);
     }
-    uint32_t age = (millis() - tmode.lastCheck) / 1000;
-    sendChunk("<br><span style='font-size:0.85em;color:#95a5a6'>Last check: " + String(age) + "s ago</span>");
-    sendChunk("<button onclick=\"refreshTmode()\" style=\"background:none;border:1px solid #95a5a6;border-radius:4px;cursor:pointer;margin-left:8px;padding:7.2px 14.4px;font-size:1.08em;\" title=\"Refresh\" aria-label=\"Refresh TMODE status\">🔄</button>");
     // Add "Switch to Rover" button only in BASE mode
     if (tmode.mode == 2) {
       sendChunk("<button onclick=\"switchToRover()\" style=\"margin-left:8px;background-color:#f39c12;color:white;border:none;padding:7.2px 14.4px;border-radius:4px;cursor:pointer;font-size:1.08em;\" title=\"Switch to Rover Mode\">Rover</button>");
@@ -1438,7 +1435,6 @@ static void handleRoot() {
   } else {
     sendChunk("<div class='status-row'><strong>ZED-F9P Mode:</strong> ");
     sendChunk("<span style='color:#95a5a6'>Unknown</span>");
-    sendChunk("<button onclick=\"refreshTmode()\" style=\"background:none;border:1px solid #95a5a6;border-radius:4px;cursor:pointer;margin-left:8px;padding:7.2px 14.4px;font-size:1.08em;\" title=\"Refresh\" aria-label=\"Refresh TMODE status\">🔄</button>");
     sendChunk("</div>");
   }
   
@@ -1508,17 +1504,13 @@ static void handleRoot() {
   sendChunk("}");
   sendChunk("updateRtcm();setInterval(updateRtcm,2000);");
   
-  sendChunk("function refreshTmode(){");
-  sendChunk("fetch('/api/zed/tmode/refresh').then(r=>r.json()).then(d=>{location.reload();}).catch(e=>{alert('Refresh failed: '+(e.message||e));});");
-  sendChunk("}");
-  
   sendChunk("function syncNtp(){");
   sendChunk("fetch('/ntp/sync').then(r=>r.text()).then(t=>{location.reload();}).catch(e=>{alert('NTP Sync Error: '+(e.message||e));});");
   sendChunk("}");
   
   sendChunk("function switchToRover(){");
   sendChunk("if(confirm('Are you sure you want to switch to Rover mode? This will stop RTCM output and restart the ZED.')){");
-  sendChunk("fetch('/api/switchToRover').then(r=>r.text()).then(t=>{alert(t);setTimeout(function(){location.reload();},1500);}).catch(e=>{alert('Error: '+(e.message||e));});");
+    sendChunk("fetch('/api/switchToRover').then(r=>r.text()).then(t=>{alert(t);setTimeout(function(){location.reload();},3000);}).catch(e=>{alert('Error: '+(e.message||e));});");
   sendChunk("}}");
   
   sendChunk("</script>");
@@ -1747,7 +1739,7 @@ static void handleBasePage() {
   sendChunk("function startBleOut(){fetch('/api/blertcm/start').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
   sendChunk("function stopBleOut(){fetch('/api/blertcm/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
   sendChunk("function stopBase(){fetch('/base/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
-  sendChunk("function switchToRover(){if(confirm('Switch to Rover mode? This will stop RTCM OUT and restart the ZED.')){fetch('/api/switchToRover').then(r=>r.text()).then(t=>{alert(t);setTimeout(()=>location.reload(),1500);}).catch(e=>{alert('Error: '+(e.message||e));})}}");
+  sendChunk("function switchToRover(){if(confirm('Switch to Rover mode? This will stop RTCM OUT and restart the ZED.')){fetch('/api/switchToRover').then(r=>r.text()).then(t=>{alert(t);setTimeout(()=>location.reload(),3000);}).catch(e=>{alert('Error: '+(e.message||e));})}}");
   sendChunk("</script>");
 
   // --- Base Station status card ---
@@ -1768,9 +1760,6 @@ static void handleBasePage() {
       coords += "H: " + String(tmode.height, 3) + " m</p>";
       sendChunk(coords);
     }
-    uint32_t age = (millis() - tmode.lastCheck) / 1000;
-    sendChunk("<p style='font-size:0.82em;color:#95a5a6;margin:4px 0 8px 22px;'>Last check: " + String(age) + "s ago &nbsp;");
-    sendChunk("<span onclick=\"location.reload()\" style='cursor:pointer;' title='Refresh'>&#x1F504;</span></p>");
   } else {
     sendChunk("<div class='status-row'><span class='status-led led-off'></span><strong>ZED-F9P Mode:</strong>&nbsp;<span style='color:#95a5a6'>Unknown</span></div>");
   }
@@ -5045,24 +5034,8 @@ static void handleFirmwareUploadComplete() {
 
 
 // ========================================================================
-// NEW API HANDLERS - TMODE REFRESH, BASE STOP, ZED RESET
+// NEW API HANDLERS - BASE STOP, ZED RESET
 // ========================================================================
-
-static void handleZedTmodeRefresh() {
-  readZedTmode();
-  
-  ZedTmodeState tmode;
-  if (getZedTmode(tmode)) {
-    String json = "{\"success\":true,\"mode\":" + String(tmode.mode);
-    json += ",\"lat\":" + String(tmode.lat, 8);
-    json += ",\"lon\":" + String(tmode.lon, 8);
-    json += ",\"height\":" + String(tmode.height, 3);
-    json += "}";
-    _server->send(200, "application/json", json);
-  } else {
-    _server->send(500, "application/json", "{\"success\":false}");
-  }
-}
 
 static void handleSwitchToRover() {
   switchToRover();
@@ -6211,7 +6184,6 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
   _server->on("/api/antennas", HTTP_GET, handleApiAntennas);
   _server->on("/api/bases", HTTP_GET, handleApiBasesIdx);
   _server->on("/api/zed/tmode", HTTP_GET, handleApiZedTmode);
-  _server->on("/api/zed/tmode/refresh", HTTP_GET, handleZedTmodeRefresh);
   _server->on("/api/zed/reset", HTTP_GET, handleZedReset);
   _server->on("/api/switchToRover", HTTP_GET, handleSwitchToRover);
   _server->on("/api/config/export", HTTP_GET, handleConfigExport);
