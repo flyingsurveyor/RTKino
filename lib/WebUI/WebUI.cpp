@@ -4459,6 +4459,56 @@ static void handleDownload() {
   file.close();
 }
 
+static void handleApiGnssFiles() {
+  SdLockGuard guard(5000);
+  if (!guard.locked) {
+    _server->send(503, "application/json", "{\"error\":\"SD busy\"}");
+    return;
+  }
+
+  FsFile dir = _sd->open("/gnss");
+  if (!dir || !dir.isDirectory()) {
+    dir.close();
+    _server->send(200, "application/json", "{\"files\":[]}");
+    return;
+  }
+
+  struct UbxFile {
+    String name;
+    uint32_t size;
+  };
+
+  std::vector<UbxFile> files;
+  FsFile file;
+  while ((file = dir.openNextFile())) {
+    char name[64];
+    file.getName(name, sizeof(name));
+    String filename = String(name);
+    if (filename.endsWith(".ubx")) {
+      UbxFile uf;
+      uf.name = filename;
+      uf.size = file.size();
+      files.push_back(uf);
+    }
+    file.close();
+  }
+  dir.close();
+
+  // Sort descending by name (newest first, filenames are timestamped)
+  std::sort(files.begin(), files.end(), [](const UbxFile& a, const UbxFile& b) {
+    return a.name > b.name;
+  });
+
+  String json = "{\"files\":[";
+  for (size_t i = 0; i < files.size(); i++) {
+    if (i > 0) json += ",";
+    json += "{\"name\":\"" + jsonEscape(files[i].name) + "\",\"size\":" + String(files[i].size) + "}";
+  }
+  json += "]}";
+
+  _server->send(200, "application/json", json);
+}
+
 static void handleDelete() {
   if (!_server->hasArg("file")) { _server->send(400,"text/plain","missing file"); return; }
   if (!isValidGnssPath(_server->arg("file"))) { _server->send(403,"text/plain","Invalid path"); return; }
@@ -6212,6 +6262,9 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
   _server->on("/api/pts/download/csv",    HTTP_GET,  handlePtsDownloadCSV);
   _server->on("/api/pts/sync",            HTTP_GET,  handlePtsSync);
   _server->on("/api/pts/extint",          HTTP_GET,  handlePtsExtint);
+
+  // GNSS log files API
+  _server->on("/api/gnss/files", HTTP_GET, handleApiGnssFiles);
 
   // Stakeout API
   _server->on("/api/stakeout/files",       HTTP_GET,  handleStakeoutFiles);
