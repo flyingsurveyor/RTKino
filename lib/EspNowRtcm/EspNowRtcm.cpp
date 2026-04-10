@@ -127,6 +127,7 @@ void EspNowRtcm::stop() {
 // ============================================================================
 // Static RX callback — Core 0, ISR context; must be minimal
 // ============================================================================
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
 void EspNowRtcm::onRecv(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
     if (!_instance || !_instance->_rxQueue) return;
     if (len <= 0 || len > 250) return;
@@ -140,6 +141,21 @@ void EspNowRtcm::onRecv(const esp_now_recv_info_t* info, const uint8_t* data, in
     xQueueSendToBackFromISR(_instance->_rxQueue, &item, &woken);
     if (woken) portYIELD_FROM_ISR();
 }
+#else
+void EspNowRtcm::onRecv(const uint8_t* /*mac_addr*/, const uint8_t* data, int len) {
+    if (!_instance || !_instance->_rxQueue) return;
+    if (len <= 0 || len > 250) return;
+
+    RxItem item;
+    memcpy(item.data, data, len);
+    item.len  = len;
+    item.rssi = 0;  // RSSI not available in IDF 4.x callback signature
+
+    BaseType_t woken = pdFALSE;
+    xQueueSendToBackFromISR(_instance->_rxQueue, &item, &woken);
+    if (woken) portYIELD_FROM_ISR();
+}
+#endif
 
 // ============================================================================
 // rxTask — Core 1, picks from queue and calls processPacket
