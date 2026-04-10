@@ -192,12 +192,7 @@ private:
     int8_t   _lastRssi = 0;
 
     // Receive callback (static, called by IDF on Core 0)
-    // Signature is version-dependent: IDF >= 5.0 uses esp_now_recv_info_t*
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
     static void onRecv(const esp_now_recv_info_t* info, const uint8_t* data, int len);
-#else
-    static void onRecv(const uint8_t* mac_addr, const uint8_t* data, int len);
-#endif
     static EspNowRtcm* _instance;
 
     // FreeRTOS RX queue (Core 0 → Core 1)
