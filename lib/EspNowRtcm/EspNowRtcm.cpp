@@ -339,7 +339,7 @@ void EspNowRtcm::broadcastRtcm(const uint8_t* data, size_t len) {
         // Compute CRC over all fields except the last 2 bytes (crc itself)
         pkt.crc = crc16((const uint8_t*)&pkt, sizeof(pkt) - 2);
 
-        esp_err_t err = esp_now_send(nullptr /* broadcast */, (const uint8_t*)&pkt, sizeof(pkt));
+        esp_err_t err = esp_now_send(ESPNOW_BROADCAST_MAC, (const uint8_t*)&pkt, sizeof(pkt));
         if (err == ESP_OK) {
             _txPkts++;
         } else if (err == ESP_ERR_ESPNOW_NO_MEM) {
@@ -423,7 +423,10 @@ bool EspNowRtcm::sendCommand(uint16_t dst_node_id, uint8_t cmd, uint8_t param) {
 // ============================================================================
 void EspNowRtcm::sendAck(uint16_t dst_node_id, uint32_t cmd_uid, uint8_t result) {
     if (!_active) return;
-    (void)dst_node_id; // send via broadcast MAC; ESP-NOW unicast needs registered peer
+    // dst_node_id is kept in the signature for API symmetry with sendCommand()
+    // and for future unicast support once per-peer MAC tracking is added.
+    // Currently ACKs are sent via broadcast MAC (all registered peers receive them).
+    (void)dst_node_id;
 
     EspNowAckPacket pkt = {};
     pkt.magic       = ESPNOW_MAGIC;
