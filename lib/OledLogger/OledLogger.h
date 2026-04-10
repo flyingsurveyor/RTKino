@@ -31,6 +31,9 @@ void oledSetBaseMode(bool active, uint8_t tmodeMode);  // tmodeMode: 0=disabled,
 void oledSetBaseTmode(double lat, double lon, double height, uint16_t stid);
 void oledSetBaseline(float baseline);  // baseline 3D da NAV-RELPOSNED (metri)
 
+// ESP-NOW status
+void oledSetEspNow(bool enabled, bool isTx, int8_t rssi);
+
 // Base output status callbacks (set from main.cpp)
 extern bool (*oledGetCasterState)();      // g_baseCasterOn
 extern bool (*oledGetCasterConnected)();  // g_pusher && g_pusher->isConnected()

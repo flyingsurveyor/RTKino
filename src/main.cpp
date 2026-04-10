@@ -37,6 +37,7 @@
 #include "SurveyPoints.h"
 #include "PointCodes.h"
 #include "Stakeout.h"
+#include "EspNowRtcm.h"
 #if ENC_CLK_GPIO > 0 && ENC_DT_GPIO > 0 && ENC_SW_GPIO > 0
 #include "RotaryInput.h"
 #include "OledMenu.h"
@@ -56,6 +57,10 @@ bool saveBleName(const char* name);
 bool loadBlePin(uint32_t* out);
 bool saveBlePin(uint32_t pin);
 bool applyBleName(const char* newName);
+bool startEspNowRx();
+void stopEspNowRx();
+bool startEspNowTx();
+void stopEspNowTx();
 
 struct GNSSPacket { uint8_t data[PACKET_SIZE]; size_t len; };
 
@@ -94,6 +99,12 @@ BleRtcmClient g_bleRtcm;
 bool g_bleRtcmEnabled = false;
 char g_bleRtcmTargetName[21] = "rtcm-lora";
 uint32_t g_bleRtcmPasskey = 123456;
+
+// ===== ESP-NOW RTCM mesh =====
+EspNowRtcm g_espNow;
+bool g_espNowEnabled   = false;  // true = ESP-NOW active
+bool g_espNowTxEnabled = false;  // true = base mode (TX); false = rover mode (RX)
+static uint32_t g_espNowLastTelem = 0;
 
 // AP-mode boot time (for offline TIMEUTC sync gating)
 volatile uint32_t g_apStartMillis = 0;
@@ -630,6 +641,11 @@ void nmeaReaderTask(void* pvParameters) {
       if (g_bleRtcmEnabled && g_bleRtcm.isConnected()) {
         g_bleRtcm.writeRtcm(buffer, len);
       }
+      // ESP-NOW TX (base mode): fragment and broadcast RTCM via ESP-NOW mesh
+      // Fire and forget — drops if radio busy, never buffers.
+      if (g_espNowEnabled && g_espNowTxEnabled) {
+        g_espNow.broadcastRtcm(buffer, len);
+      }
       // Extract GGA only if we detect NMEA (rover)
       for (int i = 0; i < len; i++) {
         uint8_t b = buffer[i];
@@ -1161,6 +1177,109 @@ void toggleBleRtcm(bool enable) {
   }
 }
 
+// ---- ESP-NOW RTCM mesh ----
+
+bool startEspNowRx() {
+  // Mutual exclusion: only one RTCM source active at a time
+  toggleNtrip(false);
+  toggleTcpIn(false);
+  if (g_bleRtcmEnabled) stopBleRtcm();
+
+  uint8_t ch = (uint8_t)WiFi.channel();
+  if (ch == 0) ch = ESPNOW_WIFI_CHANNEL;
+
+  g_espNow.onRtcmReceived = [](const uint8_t* data, size_t len) {
+    if (len > 0) RTCMSerial.write(data, len);
+  };
+
+  g_espNow.onTelemReceived = [](const EspNowTelemPacket& pkt) {
+    // peer map updated internally by EspNowRtcm
+    (void)pkt;
+  };
+
+  g_espNow.onCommandReceived = nullptr;
+
+  if (!g_espNow.begin(ch)) {
+    oledPrintln("[ESPNOW] Init failed");
+    return false;
+  }
+  g_espNowEnabled   = true;
+  g_espNowTxEnabled = false;
+  FlashConfig::writeFile("/config/espnow_enabled.txt", "1");
+  FlashConfig::writeFile("/config/espnow_role.txt", "rx");
+  oledPrintln("[ESPNOW] RX rover attivo");
+  return true;
+}
+
+void stopEspNowRx() {
+  g_espNowEnabled   = false;
+  g_espNowTxEnabled = false;
+  g_espNow.stop();
+  FlashConfig::writeFile("/config/espnow_enabled.txt", "0");
+  oledPrintln("[ESPNOW] RX stop");
+}
+
+bool startEspNowTx() {
+  uint8_t ch = (uint8_t)WiFi.channel();
+  if (ch == 0) ch = ESPNOW_WIFI_CHANNEL;
+
+  g_espNow.onCommandReceived = [](uint8_t cmd, uint8_t param, uint16_t src) {
+    Serial.printf("[ESPNOW] CMD 0x%02X param=%u src=0x%04X\n", cmd, param, src);
+    switch (cmd) {
+      case CMD_REBOOT:
+        oledPrintln("[ESPNOW] CMD: REBOOT");
+        delay(500);
+        ESP.restart();
+        break;
+      case CMD_ZED_RESET_HOT:
+        oledPrintln("[ESPNOW] CMD: ZED hot reset");
+        UbxVal::resetZed(false);
+        break;
+      case CMD_ZED_RESET_COLD:
+        oledPrintln("[ESPNOW] CMD: ZED cold reset");
+        UbxVal::resetZed(true);
+        break;
+      case CMD_LOG_START:
+        startLogging();
+        break;
+      case CMD_LOG_STOP:
+        stopLogging();
+        break;
+      case CMD_BASE_STOP:
+        stopBaseMode();
+        break;
+      case CMD_ESPNOW_STOP:
+        stopEspNowTx();
+        break;
+      case CMD_STATUS_REQ:
+        g_espNowLastTelem = 0;  // force immediate telemetry send
+        break;
+      default:
+        Serial.printf("[ESPNOW] Unknown CMD 0x%02X\n", cmd);
+        break;
+    }
+  };
+
+  if (!g_espNow.begin(ch)) {
+    oledPrintln("[ESPNOW] TX init failed");
+    return false;
+  }
+  g_espNowEnabled   = true;
+  g_espNowTxEnabled = true;
+  FlashConfig::writeFile("/config/espnow_enabled.txt", "1");
+  FlashConfig::writeFile("/config/espnow_role.txt", "tx");
+  oledPrintln("[ESPNOW] TX base attivo");
+  return true;
+}
+
+void stopEspNowTx() {
+  g_espNowEnabled   = false;
+  g_espNowTxEnabled = false;
+  g_espNow.stop();
+  FlashConfig::writeFile("/config/espnow_enabled.txt", "0");
+  oledPrintln("[ESPNOW] TX stop");
+}
+
 static bool connectAnyWifi(const std::vector<WifiCred>& list, uint32_t perNetTimeoutMs = 8000) {
   if (list.empty()) return false;
   WiFi.mode(WIFI_STA);
@@ -1258,7 +1377,7 @@ static void ensureWifiFileExists(SdFat& sd) {
 // --- AP mode helper ---
 static void startApMode() {
   WiFi.mode(WIFI_AP);
-  bool ok = WiFi.softAP(AP_SSID, AP_PASS);
+  bool ok = WiFi.softAP(AP_SSID, AP_PASS, ESPNOW_WIFI_CHANNEL);
   IPAddress ip = WiFi.softAPIP();
   g_apMode = true;
   g_apStartMillis = millis();
@@ -2586,6 +2705,21 @@ void setup() {
       startBleRtcm(String(g_bleRtcmTargetName), g_bleRtcmPasskey);
     }
   }
+
+  // Auto-start ESP-NOW if previously enabled
+  {
+    String enEspNow = FlashConfig::readFile("/config/espnow_enabled.txt");
+    enEspNow.trim();
+    String roleEspNow = FlashConfig::readFile("/config/espnow_role.txt");
+    roleEspNow.trim();
+    if (enEspNow == "1") {
+      if (roleEspNow == "tx") {
+        startEspNowTx();
+      } else {
+        startEspNowRx();
+      }
+    }
+  }
 }
 
 void loop() {
@@ -2644,6 +2778,34 @@ void loop() {
     if (g_tcpClientOn) {
       TcpClientStreamer::handle();
     }
+
+    // ESP-NOW periodic telemetry (both base and rover)
+    if (g_espNowEnabled) {
+      uint32_t nowMs = millis();
+      if (nowMs - g_espNowLastTelem >= ESPNOW_TELEM_INTERVAL_MS) {
+        g_espNowLastTelem = nowMs;
+        GNSSPosition pos;
+        getPosition(pos);
+        uint8_t  role      = g_espNowTxEnabled ? 1 : 0;
+        int32_t  lat_e7    = (int32_t)(pos.lat * 1e7);
+        int32_t  lon_e7    = (int32_t)(pos.lon * 1e7);
+        int16_t  alt_dm    = (int16_t)(pos.alt * 10.0f);
+        uint16_t hacc_mm   = (uint16_t)min((float)65535.0f, pos.hAcc * 1000.0f);
+        uint16_t uptime_min = (uint16_t)(millis() / 60000UL);
+        uint16_t heap_kb   = (uint16_t)(ESP.getFreeHeap() / 1024);
+        g_espNow.sendTelemetry(
+            role,
+            lat_e7, lon_e7, alt_dm,
+            pos.fixQuality, pos.carrSoln, pos.numSV, hacc_mm,
+            g_espNow.getLastRssi(),
+            0,   // pkt_loss_pct: placeholder
+            0,   // rtcm_age_ms:  placeholder
+            0,   // hop_count:    0 for endpoint nodes
+            uptime_min,
+            heap_kb
+        );
+      }
+    }
   }
 
   oledSetLogging(loggingActive);
@@ -2679,6 +2841,8 @@ void loop() {
     }
     // BLE status
     oledSetBLE(g_bleEnabled, g_bleEnabled && BLESerial::isConnected());
+    // ESP-NOW status
+    oledSetEspNow(g_espNowEnabled, g_espNowTxEnabled, g_espNow.getLastRssi());
     // Base mode auto-switch
     {
       ZedTmodeState tmode;

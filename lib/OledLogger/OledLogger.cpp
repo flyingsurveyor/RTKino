@@ -43,6 +43,11 @@ static double   mon_baseHeight = 0.0;
 static uint16_t mon_baseStid = 0;
 static float    mon_baseline = -1.0f;  // -1 = non valido
 
+// ESP-NOW state
+static bool    mon_espNowEnabled = false;
+static bool    mon_espNowIsTx    = false;
+static int8_t  mon_espNowRssi    = 0;
+
 
 
 // Base output status callbacks (default nullptr, wired from main.cpp)
@@ -100,6 +105,12 @@ void oledSetBaseTmode(double lat, double lon, double height, uint16_t stid) {
 }
 void oledSetBaseline(float baseline) { mon_baseline = baseline; }
 
+void oledSetEspNow(bool enabled, bool isTx, int8_t rssi) {
+    mon_espNowEnabled = enabled;
+    mon_espNowIsTx    = isTx;
+    mon_espNowRssi    = rssi;
+}
+
 // Draw page indicator "N/T" right-aligned at y=55 (bottom-right corner)
 static void drawPageIndicator(int currentPage, int totalPages) {
   char buf[6];
@@ -134,14 +145,18 @@ static void drawLetterBadge(int x, int y, char letter, bool on) {
   display.setTextColor(SSD1306_WHITE);
 }
 
-// Draw status letter badges at y=54 (4 badges × 14px spacing = 56px)
-// Badges: W=WiFi/AP (x=0), N=NTRIP (x=14), B=BLE (x=28), L=Log (x=42)
+// Draw status letter badges at y=54 (badges × 14px spacing)
+// Badges: W=WiFi/AP (x=0), N=NTRIP (x=14), B=BLE (x=28), L=Log (x=42), E=ESP-NOW (x=56)
 static void drawStatusBadges() {
   const int badgeY = 54;
   drawLetterBadge(0,  badgeY, 'W', apMode ? true : wifiConnected);
   drawLetterBadge(14, badgeY, 'N', ntripConnected);
   drawLetterBadge(28, badgeY, 'B', mon_bleEnabled && mon_bleConnected);
   drawLetterBadge(42, badgeY, 'L', logging);
+  if (mon_espNowEnabled) {
+    // 'B' = base TX, 'R' = rover RX
+    drawLetterBadge(56, badgeY, mon_espNowIsTx ? 'B' : 'R', true);
+  }
 }
 
 // Get fix type string from carrSoln (NAV-PVT) with GGA fallback
