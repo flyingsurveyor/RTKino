@@ -1556,7 +1556,7 @@ static void handleRoot() {
   sendChunk("}");
   sendChunk("updateEspNow();setInterval(updateEspNow,2000);");
   sendChunk("function espnowStart(role){fetch('/espnow/start'+role,{method:'POST'}).then(()=>updateEspNow());}");
-  sendChunk("function espnowStop(){fetch('/espnow/stop',{method:'POST'}).then(()=>updateEspNow());}");");
+  sendChunk("function espnowStop(){fetch('/espnow/stop',{method:'POST'}).then(()=>updateEspNow());}");
   
   sendChunk("function syncNtp(){");
   sendChunk("fetch('/ntp/sync').then(r=>r.text()).then(t=>{location.reload();}).catch(e=>{alert('NTP Sync Error: '+(e.message||e));});");
