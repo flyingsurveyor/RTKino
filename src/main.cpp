@@ -61,6 +61,7 @@ bool startEspNowRx();
 void stopEspNowRx();
 bool startEspNowTx();
 void stopEspNowTx();
+void stopBaseMode();
 
 struct GNSSPacket { uint8_t data[PACKET_SIZE]; size_t len; };
 
