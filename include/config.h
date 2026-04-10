@@ -81,6 +81,37 @@
 #define AP_PASS "rtkino_zedf9p"
 
 // ============================================================================
+// ESP-NOW MESH CONFIGURATION
+// ============================================================================
+
+// Fixed WiFi channel for ESP-NOW mesh (all nodes must use the same channel)
+// Channel 11: least congested non-overlapping 2.4GHz channel in field conditions
+// (channels 1, 6, 11 are non-overlapping; consumer routers favour 1 and 6)
+#define ESPNOW_WIFI_CHANNEL    11
+
+// Network ID: 32-bit token shared by all nodes of the same network.
+// Acts as a lightweight network filter (not cryptographic).
+// Change this value to isolate different field networks.
+#define ESPNOW_NETWORK_ID      0x52544B4EUL   // "RTKN"
+
+// Maximum accepted age of an RTCM fragment in milliseconds.
+// Fragments older than this are dropped to prevent stale corrections.
+// RTK is very sensitive to correction age; keep this tight.
+#define ESPNOW_MAX_AGE_MS      800
+
+// Default TTL (max hops) for RTCM packets
+#define ESPNOW_TTL             5
+
+// RX queue depth (Core 0 → Core 1 handoff)
+#define ESPNOW_RX_QUEUE_SIZE   8
+
+// Telemetry broadcast interval in milliseconds
+#define ESPNOW_TELEM_INTERVAL_MS  5000
+
+// RTCM payload size per ESP-NOW packet (max 250 - header overhead)
+#define ESPNOW_PAYLOAD_SIZE    200
+
+// ============================================================================
 // ROTARY ENCODER PINS
 // Set all three to the actual GPIO numbers for your wiring.
 // Leave at 0 to disable encoder support entirely (no menu, no ISR).
