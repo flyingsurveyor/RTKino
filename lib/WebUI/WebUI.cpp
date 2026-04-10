@@ -1473,9 +1473,7 @@ static void handleRoot() {
   sendChunk("<h2>📡 ESP-NOW Mesh</h2>");
   sendChunk("<div id='espnow-status'><p>Loading...</p></div>");
   sendChunk("<div style='margin-top:10px'>");
-  sendChunk("<button class='btn btn-success btn-small' onclick='espnowStart(\"rx\")'>▶ Attiva RX Rover</button>&nbsp;");
-  sendChunk("<button class='btn btn-small' style='background:#e67e22' onclick='espnowStart(\"tx\")'>📤 Attiva TX Base</button>&nbsp;");
-  sendChunk("<button class='btn btn-danger btn-small' onclick='espnowStop()'>■ Stop</button>");
+  sendChunk("<button id='espnow-toggle-btn' class='btn btn-success btn-small' data-enabled='0' onclick='espnowToggle()'>▶ Attiva ESP-NOW</button>");
   sendChunk("</div>");
   sendChunk("</div>");
   
@@ -1552,12 +1550,14 @@ static void handleRoot() {
   sendChunk("}");
   sendChunk("}");
   sendChunk("document.getElementById('espnow-status').innerHTML=h;");
+  sendChunk("var btn=document.getElementById('espnow-toggle-btn');");
+  sendChunk("if(btn){if(d.enabled){btn.textContent='\\u25A0 Stop ESP-NOW';btn.className='btn btn-danger btn-small';btn.dataset.enabled='1';}else{btn.textContent='\\u25B6 Attiva ESP-NOW';btn.className='btn btn-success btn-small';btn.dataset.enabled='0';}}");
   sendChunk("}).catch(()=>{document.getElementById('espnow-status').innerHTML='<p>Error</p>';});");
   sendChunk("}");
   sendChunk("updateEspNow();setInterval(updateEspNow,2000);");
   sendChunk("function espnowStart(role){fetch('/espnow/start'+role,{method:'POST'}).then(()=>updateEspNow());}");
   sendChunk("function espnowStop(){fetch('/espnow/stop',{method:'POST'}).then(()=>updateEspNow());}");
-  
+  sendChunk("function espnowToggle(){var btn=document.getElementById('espnow-toggle-btn');if(btn&&btn.dataset.enabled==='1'){fetch('/espnow/stop',{method:'POST'}).then(()=>updateEspNow());}else{fetch('/espnow/startrx',{method:'POST'}).then(()=>updateEspNow());}}");  
   sendChunk("function syncNtp(){");
   sendChunk("fetch('/ntp/sync').then(r=>r.text()).then(t=>{location.reload();}).catch(e=>{alert('NTP Sync Error: '+(e.message||e));});");
   sendChunk("}");
