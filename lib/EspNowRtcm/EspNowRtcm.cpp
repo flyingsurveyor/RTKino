@@ -412,6 +412,75 @@ void EspNowRtcm::sendTelemetry(uint8_t role,
 }
 
 // ============================================================================
+// sendTelemetryRelay — broadcast telemetry for relay role (node_role = 2)
+// ============================================================================
+void EspNowRtcm::sendTelemetryRelay(uint16_t upstream_node_id,
+                                     uint16_t relay_for_node_id,
+                                     int8_t   upstream_rssi,
+                                     uint8_t  hops,
+                                     uint16_t uptime_min,
+                                     uint16_t heap_kb) {
+    if (!_active) return;
+
+    EspNowTelemPacket pkt = {};
+    pkt.magic             = ESPNOW_MAGIC;
+    pkt.version           = ESPNOW_VERSION;
+    pkt.pkt_type          = PKT_TELEMETRY;
+    pkt.network_id        = ESPNOW_NETWORK_ID;
+    pkt.node_id           = _nodeId;
+    pkt.node_role         = 2;  // relay
+    pkt.lat_e7            = 0;
+    pkt.lon_e7            = 0;
+    pkt.alt_dm            = 0;
+    pkt.fix_quality       = 0;
+    pkt.carr_soln         = 0;
+    pkt.num_sv            = 0;
+    pkt.h_acc_mm          = 0;
+    pkt.last_rssi         = upstream_rssi;
+    pkt.pkt_loss_pct      = 0;
+    pkt.rtcm_age_ms       = 0;
+    pkt.hop_count         = hops;
+    pkt.uptime_min        = uptime_min;
+    pkt.free_heap_kb      = heap_kb;
+    pkt.upstream_node_id  = upstream_node_id;
+    pkt.relay_for_node_id = relay_for_node_id;
+    pkt.timestamp_ms      = (uint32_t)millis();
+    pkt.crc               = crc16((const uint8_t*)&pkt, sizeof(pkt) - 2);
+
+    if (esp_now_send(ESPNOW_BROADCAST_MAC, (const uint8_t*)&pkt, sizeof(pkt)) == ESP_OK) {
+        _txPkts++;
+    }
+}
+
+// ============================================================================
+// broadcastRtcmRelay — re-broadcast a received raw RTCM packet with TTL--
+// ============================================================================
+bool EspNowRtcm::broadcastRtcmRelay(const uint8_t* raw_pkt, size_t raw_len) {
+    if (!_active || !raw_pkt || raw_len < sizeof(EspNowRtcmPacket)) return false;
+
+    EspNowRtcmPacket pkt;
+    memcpy(&pkt, raw_pkt, sizeof(pkt));
+
+    if (pkt.ttl == 0) return false;
+
+    pkt.ttl--;
+    pkt.hop_count++;
+    pkt.last_rssi = _lastRssi;
+
+    // Stagger re-broadcast to reduce collision probability
+    vTaskDelay(pdMS_TO_TICKS((uint32_t)pkt.hop_count * ESPNOW_RELAY_HOP_DELAY_MS));
+
+    // Recompute CRC over the modified packet
+    pkt.crc = crc16((const uint8_t*)&pkt, sizeof(pkt) - 2);
+
+    if (esp_now_send(ESPNOW_BROADCAST_MAC, (const uint8_t*)&pkt, sizeof(pkt)) == ESP_OK) {
+        _txPkts++;
+        return true;
+    }
+    return false;
+}
+
+// ============================================================================
 // sendCommand
 // ============================================================================
 bool EspNowRtcm::sendCommand(uint16_t dst_node_id, uint8_t cmd, uint8_t param) {

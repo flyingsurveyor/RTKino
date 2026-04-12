@@ -134,6 +134,18 @@ public:
                        int8_t rssi, uint8_t loss_pct, uint16_t rtcm_age_ms,
                        uint8_t hops, uint16_t uptime_min, uint16_t heap_kb);
 
+    // TX telemetry for relay role (node_role=2, GNSS fields zeroed)
+    void sendTelemetryRelay(uint16_t upstream_node_id,
+                            uint16_t relay_for_node_id,
+                            int8_t   upstream_rssi,
+                            uint8_t  hops,
+                            uint16_t uptime_min,
+                            uint16_t heap_kb);
+
+    // Re-broadcast a received raw RTCM packet, decrementing TTL and adding hop delay
+    // Returns false if TTL==0 (packet must not be forwarded)
+    bool broadcastRtcmRelay(const uint8_t* raw_pkt, size_t raw_len);
+
     // TX command: send to dst_node_id (unicast via broadcast MAC if peer unknown)
     bool sendCommand(uint16_t dst_node_id, uint8_t cmd, uint8_t param = 0);
 
