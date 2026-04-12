@@ -107,6 +107,11 @@ bool g_espNowEnabled   = false;  // true = ESP-NOW active
 bool g_espNowTxEnabled = false;  // true = base mode (TX); false = rover mode (RX)
 static uint32_t g_espNowLastTelem = 0;
 
+// ESP-NOW relay selection (rover side)
+uint16_t g_espNowRelayNodeId    = 0;      // best relay node_id (0 = none selected)
+static uint32_t g_espNowRelayLastReq   = 0;      // millis() of last CMD_RELAY_START sent
+static uint32_t g_espNowRelayLeaseMs   = 10000;  // send CMD_RELAY_START every 10s to renew lease
+
 // AP-mode boot time (for offline TIMEUTC sync gating)
 volatile uint32_t g_apStartMillis = 0;
 volatile bool g_apMode = false;
@@ -1194,8 +1199,22 @@ bool startEspNowRx() {
   };
 
   g_espNow.onTelemReceived = [](const EspNowTelemPacket& pkt) {
-    // peer map updated internally by EspNowRtcm
-    (void)pkt;
+    // Discover available relays: track the relay with best RSSI.
+    // node_role == 2 means relay.
+    // We prefer idle relays (relay_for_node_id == 0) or relays already serving us.
+    if (pkt.node_role == 2) {
+      const uint16_t our_id = g_espNow.getNodeId();
+      // Accept this relay if: no relay selected yet, OR this one has better RSSI,
+      // OR this is already our relay (keep tracking it)
+      const bool is_our_relay = (g_espNowRelayNodeId == pkt.node_id);
+      const bool is_available = (pkt.relay_for_node_id == 0 || pkt.relay_for_node_id == our_id);
+      EspNowRtcm::PeerInfo* existing = (g_espNowRelayNodeId != 0) ? g_espNow.findOrAddPeer(g_espNowRelayNodeId) : nullptr;
+      const bool better_rssi = (g_espNowRelayNodeId == 0) ||
+                                (is_available && pkt.last_rssi > (existing ? existing->last_rssi : -120));
+      if (is_our_relay || (is_available && better_rssi)) {
+        g_espNowRelayNodeId = pkt.node_id;
+      }
+    }
   };
 
   g_espNow.onCommandReceived = nullptr;
@@ -1217,6 +1236,8 @@ void stopEspNowRx() {
   g_espNowTxEnabled = false;
   g_espNow.stop();
   FlashConfig::writeFile("/config/espnow_enabled.txt", "0");
+  g_espNowRelayNodeId  = 0;
+  g_espNowRelayLastReq = 0;
   oledPrintln("[ESPNOW] RX stop");
 }
 
@@ -2806,10 +2827,18 @@ void loop() {
             heap_kb
         );
       }
+
+      // Rover relay lease renewal: if a relay is selected, periodically send CMD_RELAY_START
+      // to keep the relay forwarding RTCM to us. The relay auto-stops after 15s of silence.
+      if (!g_espNowTxEnabled && g_espNowRelayNodeId != 0) {
+        if (nowMs - g_espNowRelayLastReq >= g_espNowRelayLeaseMs) {
+          g_espNowRelayLastReq = nowMs;
+          g_espNow.sendCommand(g_espNowRelayNodeId, CMD_RELAY_START, 0);
+          Serial.printf("[ESPNOW] Relay lease renewed -> relay 0x%04X\n", g_espNowRelayNodeId);
+        }
+      }
     }
   }
-
-  oledSetLogging(loggingActive);
 
   // Queue monitoring for SD logging
   if (loggingActive && sdQueue) {

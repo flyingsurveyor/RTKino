@@ -32,6 +32,8 @@
 #define CMD_BASE_STOP       0x06
 #define CMD_ESPNOW_STOP     0x07
 #define CMD_STATUS_REQ      0x08
+#define CMD_RELAY_START     0x10  // ROVER → RELAY: start forwarding RTCM to me
+#define CMD_RELAY_STOP      0x11  // ROVER → RELAY: stop forwarding RTCM
 
 // ---- Packet structures (packed, no padding) ----
 
@@ -74,6 +76,8 @@ struct __attribute__((packed)) EspNowTelemPacket {
     uint8_t  hop_count;
     uint16_t uptime_min;
     uint16_t free_heap_kb;
+    uint16_t upstream_node_id;  // relay: node_id of upstream RTCM source (0 = none)
+    uint16_t relay_for_node_id; // relay: node_id of rover being served (0 = idle)
     uint32_t timestamp_ms;
     uint16_t crc;
 };
@@ -141,6 +145,7 @@ public:
     uint32_t getDropDedup()   const { return _dropDedup; }
     uint32_t getDropOld()     const { return _dropOld; }
     uint32_t getDropCrc()     const { return _dropCrc; }
+    uint32_t getDropNoMem()   const { return _dropNoMem; }
     uint32_t getTxPkts()      const { return _txPkts; }
     uint32_t getRtcmBytesRx() const { return _rtcmBytesRx; }
     int8_t   getLastRssi()    const { return _lastRssi; }
@@ -158,6 +163,8 @@ public:
         uint8_t  pkt_loss_pct;
         uint16_t rtcm_age_ms;
         uint32_t last_seen_ms;
+        uint16_t upstream_node_id;   // 0 if not a relay or no upstream
+        uint16_t relay_for_node_id;  // 0 if idle relay
     };
     static const int MAX_PEERS = 8;
     PeerInfo peers[MAX_PEERS];
@@ -187,7 +194,7 @@ private:
     static const uint32_t CMD_CONFIRM_WINDOW_MS = 3000;
 
     // Stats
-    uint32_t _rxPkts = 0, _dropDedup = 0, _dropOld = 0, _dropCrc = 0;
+    uint32_t _rxPkts = 0, _dropDedup = 0, _dropOld = 0, _dropCrc = 0, _dropNoMem = 0;
     uint32_t _txPkts = 0, _rtcmBytesRx = 0;
     int8_t   _lastRssi = 0;
 
