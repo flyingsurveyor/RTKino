@@ -417,6 +417,9 @@ void EspNowRtcm::sendTelemetry(uint8_t role,
 void EspNowRtcm::configure(uint32_t network_id, const char* psk) {
     _networkId = network_id;
     if (psk && psk[0] != '\0') {
+        if (strlen(psk) >= sizeof(_psk)) {
+            Serial.printf("[ESPNOW] WARNING: PSK truncated to %u chars\n", (unsigned)(sizeof(_psk) - 1));
+        }
         strncpy(_psk, psk, sizeof(_psk) - 1);
         _psk[sizeof(_psk) - 1] = '\0';
         _pskEnabled = true;

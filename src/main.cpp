@@ -1186,6 +1186,21 @@ void toggleBleRtcm(bool enable) {
 
 // ---- ESP-NOW RTCM mesh ----
 
+// Apply runtime network_id + PSK configuration from flash to the ESP-NOW instance
+static void applyEspNowConfigFromFlash() {
+  String enNetworkId = FlashConfig::readFile("/config/espnow_network_id.txt");
+  String enPsk       = FlashConfig::readFile("/config/espnow_psk.txt");
+  uint32_t netId = (uint32_t)ESPNOW_NETWORK_ID;
+  if (enNetworkId.length() > 0) {
+    enNetworkId.trim();
+    if (enNetworkId.startsWith("0x") || enNetworkId.startsWith("0X"))
+      netId = (uint32_t)strtoul(enNetworkId.c_str() + 2, nullptr, 16);
+    else
+      netId = (uint32_t)strtoul(enNetworkId.c_str(), nullptr, 10);
+  }
+  g_espNow.configure(netId, enPsk.c_str());
+}
+
 bool startEspNowRx() {
   // Mutual exclusion: only one RTCM source active at a time
   toggleNtrip(false);
@@ -1201,19 +1216,7 @@ bool startEspNowRx() {
   if (ch == 0) ch = ESPNOW_WIFI_CHANNEL;
 
   // Apply runtime network_id + PSK from flash
-  {
-    String enNetworkId = FlashConfig::readFile("/config/espnow_network_id.txt");
-    String enPsk       = FlashConfig::readFile("/config/espnow_psk.txt");
-    uint32_t netId = (uint32_t)ESPNOW_NETWORK_ID;
-    if (enNetworkId.length() > 0) {
-      enNetworkId.trim();
-      if (enNetworkId.startsWith("0x") || enNetworkId.startsWith("0X"))
-        netId = (uint32_t)strtoul(enNetworkId.c_str() + 2, nullptr, 16);
-      else
-        netId = (uint32_t)strtoul(enNetworkId.c_str(), nullptr, 10);
-    }
-    g_espNow.configure(netId, enPsk.c_str());
-  }
+  applyEspNowConfigFromFlash();
 
   g_espNow.onRtcmReceived = [](const uint8_t* data, size_t len) {
     if (len > 0) RTCMSerial.write(data, len);
@@ -1276,19 +1279,7 @@ bool startEspNowTx() {
   if (ch == 0) ch = ESPNOW_WIFI_CHANNEL;
 
   // Apply runtime network_id + PSK from flash
-  {
-    String enNetworkId = FlashConfig::readFile("/config/espnow_network_id.txt");
-    String enPsk       = FlashConfig::readFile("/config/espnow_psk.txt");
-    uint32_t netId = (uint32_t)ESPNOW_NETWORK_ID;
-    if (enNetworkId.length() > 0) {
-      enNetworkId.trim();
-      if (enNetworkId.startsWith("0x") || enNetworkId.startsWith("0X"))
-        netId = (uint32_t)strtoul(enNetworkId.c_str() + 2, nullptr, 16);
-      else
-        netId = (uint32_t)strtoul(enNetworkId.c_str(), nullptr, 10);
-    }
-    g_espNow.configure(netId, enPsk.c_str());
-  }
+  applyEspNowConfigFromFlash();
 
   g_espNow.onCommandReceived = [](uint8_t cmd, uint8_t param, uint16_t src) {
     Serial.printf("[ESPNOW] CMD 0x%02X param=%u src=0x%04X\n", cmd, param, src);
@@ -2786,17 +2777,6 @@ void setup() {
       roleEspNow = "rx";
       FlashConfig::writeFile("/config/espnow_role.txt", "rx");
     }
-    String enNetworkId = FlashConfig::readFile("/config/espnow_network_id.txt");
-    String enPsk       = FlashConfig::readFile("/config/espnow_psk.txt");
-    uint32_t netId = (uint32_t)ESPNOW_NETWORK_ID;
-    if (enNetworkId.length() > 0) {
-      enNetworkId.trim();
-      if (enNetworkId.startsWith("0x") || enNetworkId.startsWith("0X"))
-        netId = (uint32_t)strtoul(enNetworkId.c_str() + 2, nullptr, 16);
-      else
-        netId = (uint32_t)strtoul(enNetworkId.c_str(), nullptr, 10);
-    }
-    g_espNow.configure(netId, enPsk.c_str());
     if (enEspNow == "1") {
       if (roleEspNow == "tx") {
         startEspNowTx();

@@ -6574,20 +6574,22 @@ static void handleEspNowConfigSet() {
   }
   FlashConfig::writeFile("/config/espnow_psk.txt", pskVal);
 
-  // Apply immediately if running
-  uint32_t netId = (uint32_t)ESPNOW_NETWORK_ID;
-  if (netIdVal.length() > 0) {
-    if (netIdVal.startsWith("0x") || netIdVal.startsWith("0X"))
-      netId = (uint32_t)strtoul(netIdVal.c_str() + 2, nullptr, 16);
-    else
-      netId = (uint32_t)strtoul(netIdVal.c_str(), nullptr, 10);
-  }
+  // Apply immediately if running; startEspNow* will re-read config from flash
   if (g_espNowEnabled) {
-    g_espNow.stop();
-    g_espNow.configure(netId, pskVal.c_str());
-    if (g_espNowTxEnabled) startEspNowTx();
-    else                   startEspNowRx();
+    bool wasTx = g_espNowTxEnabled;
+    if (wasTx) stopEspNowTx();
+    else       stopEspNowRx();
+    if (wasTx) startEspNowTx();
+    else       startEspNowRx();
   } else {
+    // Apply to in-memory object without starting
+    uint32_t netId = (uint32_t)ESPNOW_NETWORK_ID;
+    if (netIdVal.length() > 0) {
+      if (netIdVal.startsWith("0x") || netIdVal.startsWith("0X"))
+        netId = (uint32_t)strtoul(netIdVal.c_str() + 2, nullptr, 16);
+      else
+        netId = (uint32_t)strtoul(netIdVal.c_str(), nullptr, 10);
+    }
     g_espNow.configure(netId, pskVal.c_str());
   }
 
