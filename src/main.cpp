@@ -105,6 +105,7 @@ uint32_t g_bleRtcmPasskey = 123456;
 EspNowRtcm g_espNow;
 bool g_espNowEnabled   = false;  // true = ESP-NOW active
 bool g_espNowTxEnabled = false;  // true = base mode (TX); false = rover mode (RX)
+uint8_t g_espNowChannel = 0;     // actual channel in use (0 = not started)
 static uint32_t g_espNowLastTelem = 0;
 
 // ESP-NOW relay selection (rover side)
@@ -1191,7 +1192,12 @@ bool startEspNowRx() {
   toggleTcpIn(false);
   if (g_bleRtcmEnabled) stopBleRtcm();
 
-  uint8_t ch = (uint8_t)WiFi.channel();
+  // Determine channel: saved preference → current WiFi channel → compile default
+  uint8_t ch = 0;
+  String savedCh = FlashConfig::readFile("/config/espnow_channel.txt");
+  savedCh.trim();
+  if (savedCh.length() > 0) ch = (uint8_t)savedCh.toInt();
+  if (ch == 0) ch = (uint8_t)WiFi.channel();
   if (ch == 0) ch = ESPNOW_WIFI_CHANNEL;
 
   g_espNow.onRtcmReceived = [](const uint8_t* data, size_t len) {
@@ -1217,7 +1223,20 @@ bool startEspNowRx() {
     }
   };
 
-  g_espNow.onCommandReceived = nullptr;
+  g_espNow.onCommandReceived = [](uint8_t cmd, uint8_t param, uint16_t src) {
+    // RTKino rover: log relay commands (relay forwarding handled by library-level helpers)
+    Serial.printf("[ESPNOW] CMD 0x%02X param=%u from 0x%04X\n", cmd, param, src);
+    switch (cmd) {
+      case CMD_RELAY_START:
+        Serial.printf("[ESPNOW] RELAY_START from 0x%04X\n", src);
+        break;
+      case CMD_RELAY_STOP:
+        Serial.printf("[ESPNOW] RELAY_STOP from 0x%04X\n", src);
+        break;
+      default:
+        break;
+    }
+  };
 
   if (!g_espNow.begin(ch)) {
     oledPrintln("[ESPNOW] Init failed");
@@ -1225,6 +1244,7 @@ bool startEspNowRx() {
   }
   g_espNowEnabled   = true;
   g_espNowTxEnabled = false;
+  g_espNowChannel   = ch;
   FlashConfig::writeFile("/config/espnow_enabled.txt", "1");
   FlashConfig::writeFile("/config/espnow_role.txt", "rx");
   oledPrintln("[ESPNOW] RX rover attivo");
@@ -1234,6 +1254,7 @@ bool startEspNowRx() {
 void stopEspNowRx() {
   g_espNowEnabled   = false;
   g_espNowTxEnabled = false;
+  g_espNowChannel   = 0;
   g_espNow.stop();
   FlashConfig::writeFile("/config/espnow_enabled.txt", "0");
   g_espNowRelayNodeId  = 0;
@@ -1242,7 +1263,12 @@ void stopEspNowRx() {
 }
 
 bool startEspNowTx() {
-  uint8_t ch = (uint8_t)WiFi.channel();
+  // Determine channel: saved preference → current WiFi channel → compile default
+  uint8_t ch = 0;
+  String savedCh = FlashConfig::readFile("/config/espnow_channel.txt");
+  savedCh.trim();
+  if (savedCh.length() > 0) ch = (uint8_t)savedCh.toInt();
+  if (ch == 0) ch = (uint8_t)WiFi.channel();
   if (ch == 0) ch = ESPNOW_WIFI_CHANNEL;
 
   g_espNow.onCommandReceived = [](uint8_t cmd, uint8_t param, uint16_t src) {
@@ -1288,6 +1314,7 @@ bool startEspNowTx() {
   }
   g_espNowEnabled   = true;
   g_espNowTxEnabled = true;
+  g_espNowChannel   = ch;
   FlashConfig::writeFile("/config/espnow_enabled.txt", "1");
   FlashConfig::writeFile("/config/espnow_role.txt", "tx");
   oledPrintln("[ESPNOW] TX base attivo");
@@ -1297,6 +1324,7 @@ bool startEspNowTx() {
 void stopEspNowTx() {
   g_espNowEnabled   = false;
   g_espNowTxEnabled = false;
+  g_espNowChannel   = 0;
   g_espNow.stop();
   FlashConfig::writeFile("/config/espnow_enabled.txt", "0");
   oledPrintln("[ESPNOW] TX stop");

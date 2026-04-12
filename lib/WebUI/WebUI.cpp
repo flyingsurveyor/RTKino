@@ -174,6 +174,7 @@ extern bool applyBleName(const char* newName);
 extern EspNowRtcm g_espNow;
 extern bool g_espNowEnabled;
 extern bool g_espNowTxEnabled;
+extern uint8_t g_espNowChannel;
 extern uint16_t g_espNowRelayNodeId;
 extern bool startEspNowRx();
 extern void stopEspNowRx();
@@ -2577,46 +2578,28 @@ static void renderBleRtcmCard() {
 
 static void renderEspNowCard() {
   sendChunk("<div class='card'><h2>&#x1F4E1; ESP-NOW Mesh</h2>");
-  sendChunk("<div style='margin-bottom:10px;color:#666;font-size:0.9em;'>");
-  sendChunk("Rete mesh ESP-NOW offline per trasporto correzioni RTCM in tempo reale tra base, rover e nodi relay.<br>");
-  sendChunk("Nessuna connessione Internet richiesta. Canale fisso: <strong>");
-  char chBuf[8]; snprintf(chBuf, sizeof(chBuf), "%d", ESPNOW_WIFI_CHANNEL);
-  sendChunk(chBuf);
-  sendChunk("</strong>. Network ID: <strong>0x52544B4E</strong>.");
-  sendChunk("</div>");
 
-  // Status
-  if (g_espNowEnabled) {
-    char buf[128];
-    snprintf(buf, sizeof(buf),
-             "<div style='margin-bottom:10px;padding:10px;background:#d4edda;border-left:4px solid #28a745;border-radius:4px;'>"
-             "<strong>&#x2713; ESP-NOW Attivo</strong> &mdash; %s &mdash; Node ID: <strong>0x%04X</strong>"
-             "</div>",
-             g_espNowTxEnabled ? "Base TX" : "Rover RX",
-             g_espNow.getNodeId());
-    sendChunk(buf);
-  }
+  // Live status section — populated by updateEspNowSettings()
+  sendChunk("<div id='espnow-cfg-status' style='margin-bottom:12px;'><em>Caricamento stato...</em></div>");
 
-  // Role selection
-  sendChunk("<form method='POST' action='/espnow/save'>");
-  sendChunk("<label>Modalità:</label>");
-  sendChunk("<select name='espnow_role' style='width:200px'>");
-  if (g_espNowTxEnabled) {
-    sendChunk("<option value='rx'>Rover RX (riceve correzioni)</option>");
-    sendChunk("<option value='tx' selected>Base TX (trasmette correzioni)</option>");
-  } else {
-    sendChunk("<option value='rx' selected>Rover RX (riceve correzioni)</option>");
-    sendChunk("<option value='tx'>Base TX (trasmette correzioni)</option>");
-  }
+  // Configuration form
+  sendChunk("<h3>Configurazione</h3>");
+  sendChunk("<div style='margin-bottom:12px;'>");
+  sendChunk("<label>Modalit&#xE0;:</label><br>");
+  sendChunk("<select id='espnow-cfg-role' style='width:220px;margin-bottom:8px;'>");
+  sendChunk("<option value='rx'>Rover RX (riceve correzioni)</option>");
+  sendChunk("<option value='tx'>Base TX (trasmette correzioni)</option>");
   sendChunk("</select><br>");
-  sendChunk("<br>");
-  sendChunk("<button type='submit' class='btn btn-success'>&#x25B6; Salva e Attiva</button>&nbsp;");
-  sendChunk("<button type='button' class='btn btn-danger' onclick='espnowStopSettings()'>&#x25A0; Stop</button>");
-  sendChunk("</form>");
+  sendChunk("<label>Canale WiFi (1&ndash;13):</label><br>");
+  char chBuf[8]; snprintf(chBuf, sizeof(chBuf), "%d", ESPNOW_WIFI_CHANNEL);
+  sendChunk(String("<input id='espnow-cfg-channel' type='number' min='1' max='13' value='") + chBuf + "' style='width:80px;margin-bottom:8px;'><br>");
+  sendChunk("</div>");
+  sendChunk("<button class='btn btn-success' onclick='espnowSaveSettings()'>&#x25B6; Salva e Attiva</button>&nbsp;");
+  sendChunk("<button class='btn btn-danger' onclick='espnowStopSettings()'>&#x25A0; Stop</button>");
 
-  // Command section
-  sendChunk("<div style='margin-top:18px;'>");
-  sendChunk("<h3>Invia Comando alla Base</h3>");
+  // Remote commands — hidden until status polling confirms enabled==true
+  sendChunk("<div id='espnow-cfg-cmds' style='display:none;margin-top:18px;'>");
+  sendChunk("<h3>Invia Comando Remoto</h3>");
   sendChunk("<div style='display:flex;gap:8px;flex-wrap:wrap;align-items:center;'>");
   sendChunk("<select id='espnow-cmd-sel' style='width:220px'>");
   sendChunk("<option value='0x08'>Status Request</option>");
@@ -2628,21 +2611,56 @@ static void renderEspNowCard() {
   sendChunk("<option value='0x07'>ESP-NOW Stop</option>");
   sendChunk("<option value='0x01'>Reboot</option>");
   sendChunk("</select>");
-  sendChunk("<input id='espnow-dst' type='text' placeholder='Node ID hex (o vuoto=broadcast)' style='width:220px' />");
+  sendChunk("<input id='espnow-dst' type='text' placeholder='Node ID hex (vuoto=broadcast)' style='width:220px' />");
   sendChunk("<button class='btn btn-small' onclick='espnowSendCmd()'>&#x1F4E4; Invia</button>");
   sendChunk("</div>");
   sendChunk("<div id='espnow-cmd-result' style='margin-top:8px;font-size:0.9em;'></div>");
   sendChunk("</div>");
 
   sendChunk("<script>");
-  sendChunk("function espnowStopSettings(){fetch('/espnow/stop',{method:'POST'}).then(()=>location.reload());}");
+  sendChunk("function espnowRoleLabel(r){return r==='tx'?'Base TX':(r==='rx'?'Rover RX':(r==='relay'?'Relay':'---'));}");
+  sendChunk("function updateEspNowSettings(){");
+  sendChunk("fetch('/api/espnow/status').then(function(r){return r.json();}).then(function(d){");
+  sendChunk("var led=d.enabled?'led-on':'led-off';");
+  sendChunk("var h='<div class=\"status-row\"><span class=\"status-led '+led+'\"></span><strong>'+(d.enabled?espnowRoleLabel(d.role)+' &mdash; Node ID: '+d.node_id+' &mdash; Ch: '+d.channel:'INATTIVO')+'</strong></div>';");
+  sendChunk("if(d.enabled){");
+  sendChunk("h+='<table style=\"width:100%;font-size:0.9em;margin-top:6px\">';");
+  sendChunk("h+='<tr><td>RSSI</td><td>'+d.last_rssi+' dBm</td><td>Network ID</td><td>'+d.network_id+'</td></tr>';");
+  sendChunk("h+='<tr><td>RX pkts</td><td>'+d.rx_pkts+'</td><td>TX pkts</td><td>'+d.tx_pkts+'</td></tr>';");
+  sendChunk("h+='<tr><td>Dedup</td><td>'+d.drop_dedup+'</td><td>CRC err</td><td>'+d.drop_crc+'</td></tr>';");
+  sendChunk("h+='<tr><td>Drop no mem</td><td>'+d.drop_no_mem+'</td><td>Drop old</td><td>'+d.drop_old+'</td></tr>';");
+  sendChunk("h+='</table>';");
+  sendChunk("if(d.peers&&d.peers.length>0){");
+  sendChunk("h+='<div style=\"overflow-x:auto;margin-top:8px\"><table style=\"width:100%;font-size:0.9em\"><tr><th>Node ID</th><th>Ruolo</th><th>RSSI</th><th>Age (s)</th></tr>';");
+  sendChunk("var roles=['Rover','Base','Relay'];");
+  sendChunk("d.peers.forEach(function(p){h+='<tr><td>'+p.node_id+'</td><td>'+(roles[p.role]||p.role)+'</td><td>'+p.rssi+' dBm</td><td>'+(p.age_ms/1000).toFixed(1)+'</td></tr>';});");
+  sendChunk("h+='</table></div>';");
+  sendChunk("}");
+  sendChunk("}");
+  sendChunk("document.getElementById('espnow-cfg-status').innerHTML=h;");
+  sendChunk("document.getElementById('espnow-cfg-cmds').style.display=d.enabled?'block':'none';");
+  sendChunk("var sel=document.getElementById('espnow-cfg-role');");
+  sendChunk("if(d.role==='tx'&&sel.options.length>1)sel.selectedIndex=1;else sel.selectedIndex=0;");
+  sendChunk("if(d.enabled&&d.channel){document.getElementById('espnow-cfg-channel').value=d.channel;}");
+  sendChunk("}).catch(function(){document.getElementById('espnow-cfg-status').innerHTML='<em style=color:red>Errore caricamento stato</em>';});");
+  sendChunk("}");
+  sendChunk("updateEspNowSettings();setInterval(updateEspNowSettings,3000);");
+  sendChunk("function espnowSaveSettings(){");
+  sendChunk("var role=document.getElementById('espnow-cfg-role').value;");
+  sendChunk("var ch=document.getElementById('espnow-cfg-channel').value;");
+  sendChunk("var body='espnow_role='+encodeURIComponent(role)+'&espnow_channel='+encodeURIComponent(ch);");
+  sendChunk("fetch('/espnow/save',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})");
+  sendChunk(".then(function(r){return r.json();}).then(function(d){if(d.ok){updateEspNowSettings();}else{alert('Errore: '+(d.error||'Init failed'));}})");
+  sendChunk(".catch(function(){alert('Errore salvataggio ESP-NOW');});");
+  sendChunk("}");
+  sendChunk("function espnowStopSettings(){fetch('/espnow/stop',{method:'POST'}).then(function(){updateEspNowSettings();});}");
   sendChunk("function espnowSendCmd(){");
   sendChunk("var cmd=document.getElementById('espnow-cmd-sel').value;");
   sendChunk("var dst=document.getElementById('espnow-dst').value.trim()||'0xFFFF';");
-  sendChunk("var body='cmd='+cmd+'&dst='+dst+'&param=0';");
+  sendChunk("var body='cmd='+encodeURIComponent(cmd)+'&dst='+encodeURIComponent(dst)+'&param=0';");
   sendChunk("fetch('/espnow/command',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})");
-  sendChunk(".then(r=>r.json()).then(d=>{document.getElementById('espnow-cmd-result').innerHTML=d.sent?'<span style=color:green>&#x2713; Inviato cmd_uid='+d.cmd_uid+'</span>':'<span style=color:red>&#x2717; Errore</span>';})");
-  sendChunk(".catch(()=>{document.getElementById('espnow-cmd-result').innerHTML='<span style=color:red>Errore</span>';});");
+  sendChunk(".then(function(r){return r.json();}).then(function(d){document.getElementById('espnow-cmd-result').innerHTML=d.sent?'<span style=color:green>&#x2713; Inviato cmd_uid='+d.cmd_uid+'</span>':'<span style=color:red>&#x2717; Errore</span>';})");
+  sendChunk(".catch(function(){document.getElementById('espnow-cmd-result').innerHTML='<span style=color:red>Errore</span>';});");
   sendChunk("}");
   sendChunk("</script>");
 
@@ -2700,7 +2718,6 @@ static void handleSettingsPage() {
   // ===== BLE (Bluetooth Low Energy) Section - MOVED HERE (second position) =====
   renderBluetoothCard();
   renderBleRtcmCard();
-  renderEspNowCard();
   
   // WiFi Configuration
   std::vector<WifiCred> wifiList;
@@ -2735,6 +2752,9 @@ static void handleSettingsPage() {
   sendChunk("<label>Password:</label><input name='pass' type='password'><br>");
   sendChunk("<button type='submit'>Add Network</button>");
   sendChunk("</form></div>");
+
+  // ===== ESP-NOW (after WiFi networks, as requested) =====
+  renderEspNowCard();
   
   // NTP / Time
   String fromFile;
@@ -6349,7 +6369,8 @@ static void handleEspNowStatus() {
   } else {
     json += "\"role\":\"off\",";
   }
-  char chBuf[8]; snprintf(chBuf, sizeof(chBuf), "%d", ESPNOW_WIFI_CHANNEL);
+  uint8_t ch = g_espNowChannel ? g_espNowChannel : (uint8_t)ESPNOW_WIFI_CHANNEL;
+  char chBuf[8]; snprintf(chBuf, sizeof(chBuf), "%d", ch);
   json += "\"channel\":" + String(chBuf) + ",";
   char nodeIdBuf[12]; snprintf(nodeIdBuf, sizeof(nodeIdBuf), "0x%04X", g_espNow.getNodeId());
   json += "\"node_id\":\"" + String(nodeIdBuf) + "\",";
@@ -6358,12 +6379,17 @@ static void handleEspNowStatus() {
   json += "\"drop_dedup\":" + String((unsigned long)g_espNow.getDropDedup()) + ",";
   json += "\"drop_old\":" + String((unsigned long)g_espNow.getDropOld()) + ",";
   json += "\"drop_crc\":" + String((unsigned long)g_espNow.getDropCrc()) + ",";
+  json += "\"drop_no_mem\":" + String((unsigned long)g_espNow.getDropNoMem()) + ",";
   json += "\"tx_pkts\":" + String((unsigned long)g_espNow.getTxPkts()) + ",";
   json += "\"rtcm_bytes_rx\":" + String((unsigned long)g_espNow.getRtcmBytesRx()) + ",";
   json += "\"last_rssi\":" + String((int)g_espNow.getLastRssi()) + ",";
   char relayBuf[12]; snprintf(relayBuf, sizeof(relayBuf), "0x%04X", g_espNowRelayNodeId);
   json += "\"relay_node_id\":\"" + String(relayBuf) + "\",";
   json += "\"relay_active\":" + String(g_espNowRelayNodeId != 0 ? "true" : "false") + ",";
+  // Relay forwarding fields (RTKino is never a relay node itself; always false/0)
+  json += "\"relay_forwarding\":false,";
+  json += "\"relay_upstream_id\":0,";
+  json += "\"relay_rover_id\":0,";
   json += "\"peers\":[";
   uint32_t nowMs = (uint32_t)millis();
   for (int i = 0; i < g_espNow.peerCount; i++) {
@@ -6409,13 +6435,21 @@ static void handleEspNowStop() {
 static void handleEspNowSave() {
   String role = _server->arg("espnow_role");
   role.trim();
-  if (role == "tx") {
-    startEspNowTx();
-  } else {
-    startEspNowRx();
+  String chStr = _server->arg("espnow_channel");
+  chStr.trim();
+  if (!chStr.isEmpty()) {
+    int ch = chStr.toInt();
+    if (ch >= 1 && ch <= 13) {
+      FlashConfig::writeFile("/config/espnow_channel.txt", String(ch));
+    }
   }
-  _server->sendHeader("Location", "/settings");
-  _server->send(303);
+  bool ok;
+  if (role == "tx") {
+    ok = startEspNowTx();
+  } else {
+    ok = startEspNowRx();
+  }
+  _server->send(200, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"Init failed\"}");
 }
 
 static void handleEspNowCommand() {
