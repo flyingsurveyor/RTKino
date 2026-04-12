@@ -180,6 +180,7 @@ extern bool startEspNowRx();
 extern void stopEspNowRx();
 extern bool startEspNowTx();
 extern void stopEspNowTx();
+extern void applyEspNowConfigFromFlash();
 
 // Stream mode extern
 extern "C" {
@@ -2610,8 +2611,9 @@ static void renderEspNowCard() {
   sendChunk("<option value='0x06'>Base Stop</option>");
   sendChunk("<option value='0x07'>ESP-NOW Stop</option>");
   sendChunk("<option value='0x01'>Reboot</option>");
-  sendChunk("<option value='16'>RELAY_START (0x10)</option>");
-  sendChunk("<option value='17'>RELAY_STOP (0x11)</option>");
+  // RELAY_START/RELAY_STOP: RTKino emits these toward Crocevia relay nodes; relay mode is not local
+  sendChunk("<option value='16'>RELAY_START (0x10) → Crocevia</option>");
+  sendChunk("<option value='17'>RELAY_STOP (0x11) → Crocevia</option>");
   sendChunk("</select>");
   sendChunk("<input id='espnow-dst' type='text' placeholder='Node ID hex (vuoto=broadcast)' style='width:220px' />");
   sendChunk("<button class='btn btn-small' onclick='espnowSendCmd()'>&#x1F4E4; Invia</button>");
@@ -2632,6 +2634,7 @@ static void renderEspNowCard() {
   sendChunk("h+='<tr><td>Dedup</td><td>'+d.drop_dedup+'</td><td>CRC err</td><td>'+d.drop_crc+'</td></tr>';");
   sendChunk("h+='<tr><td>Drop no mem</td><td>'+d.drop_no_mem+'</td><td>Drop old</td><td>'+d.drop_old+'</td></tr>';");
   sendChunk("if(d.psk_enabled)h+='<tr><td>PSK</td><td>attivo</td><td>Auth err</td><td>'+d.drop_auth+'</td></tr>';");
+  // relay_node_id: the remote Crocevia relay node currently serving this rover (0 = none selected)
   sendChunk("if(d.relay_node_id&&d.relay_node_id!=='0x0000')h+='<tr><td colspan=2>Relay: 0x'+d.relay_node_id.replace('0x','').toUpperCase()+'</td><td colspan=2></td></tr>';");
   sendChunk("h+='</table>';");
   sendChunk("if(d.peers&&d.peers.length>0){");
@@ -6582,15 +6585,8 @@ static void handleEspNowConfigSet() {
     if (wasTx) startEspNowTx();
     else       startEspNowRx();
   } else {
-    // Apply to in-memory object without starting
-    uint32_t netId = (uint32_t)ESPNOW_NETWORK_ID;
-    if (netIdVal.length() > 0) {
-      if (netIdVal.startsWith("0x") || netIdVal.startsWith("0X"))
-        netId = (uint32_t)strtoul(netIdVal.c_str() + 2, nullptr, 16);
-      else
-        netId = (uint32_t)strtoul(netIdVal.c_str(), nullptr, 10);
-    }
-    g_espNow.configure(netId, pskVal.c_str());
+    // Apply to in-memory object without starting (reads from flash we just wrote)
+    applyEspNowConfigFromFlash();
   }
 
   _server->send(200, "application/json", "{\"ok\":true}");

@@ -1187,7 +1187,7 @@ void toggleBleRtcm(bool enable) {
 // ---- ESP-NOW RTCM mesh ----
 
 // Apply runtime network_id + PSK configuration from flash to the ESP-NOW instance
-static void applyEspNowConfigFromFlash() {
+void applyEspNowConfigFromFlash() {
   String enNetworkId = FlashConfig::readFile("/config/espnow_network_id.txt");
   String enPsk       = FlashConfig::readFile("/config/espnow_psk.txt");
   uint32_t netId = (uint32_t)ESPNOW_NETWORK_ID;

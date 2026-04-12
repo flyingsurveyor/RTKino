@@ -229,7 +229,7 @@ void EspNowRtcm::processPacket(const uint8_t* data, int len, int8_t rssi) {
         const EspNowTelemPacket* pkt = reinterpret_cast<const EspNowTelemPacket*>(data);
 
         uint16_t calc = computeAuth(data, sizeof(EspNowTelemPacket) - 2);
-        if (calc != pkt->crc) { _dropAuth++; return; }
+        if (calc != pkt->crc) { _dropAuth++; return; }  // crc field doubles as auth tag when PSK enabled
 
         PeerInfo* peer = findOrAddPeer(pkt->node_id);
         if (peer) {
