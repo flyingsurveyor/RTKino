@@ -174,6 +174,7 @@ extern bool applyBleName(const char* newName);
 extern EspNowRtcm g_espNow;
 extern bool g_espNowEnabled;
 extern bool g_espNowTxEnabled;
+extern uint16_t g_espNowRelayNodeId;
 extern bool startEspNowRx();
 extern void stopEspNowRx();
 extern bool startEspNowTx();
@@ -1526,7 +1527,7 @@ static void handleRoot() {
   sendChunk("updateRtcm();setInterval(updateRtcm,2000);");
 
   // ESP-NOW status polling
-  sendChunk("function roleLabel(r){return r==='tx'?'Base TX':(r==='rx'?'Rover RX':'---');}");
+  sendChunk("function roleLabel(r){return r==='tx'?'Base TX':(r==='rx'?'Rover RX':(r==='relay'?'Relay':'---'));}");
   sendChunk("function updateEspNow(){");
   sendChunk("fetch('/api/espnow/status').then(r=>r.json()).then(d=>{");
   sendChunk("let led=d.enabled?'led-on':'led-off';");
@@ -6360,6 +6361,9 @@ static void handleEspNowStatus() {
   json += "\"tx_pkts\":" + String((unsigned long)g_espNow.getTxPkts()) + ",";
   json += "\"rtcm_bytes_rx\":" + String((unsigned long)g_espNow.getRtcmBytesRx()) + ",";
   json += "\"last_rssi\":" + String((int)g_espNow.getLastRssi()) + ",";
+  char relayBuf[12]; snprintf(relayBuf, sizeof(relayBuf), "0x%04X", g_espNowRelayNodeId);
+  json += "\"relay_node_id\":\"" + String(relayBuf) + "\",";
+  json += "\"relay_active\":" + String(g_espNowRelayNodeId != 0 ? "true" : "false") + ",";
   json += "\"peers\":[";
   uint32_t nowMs = (uint32_t)millis();
   for (int i = 0; i < g_espNow.peerCount; i++) {

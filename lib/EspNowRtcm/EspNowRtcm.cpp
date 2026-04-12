@@ -245,6 +245,8 @@ void EspNowRtcm::processPacket(const uint8_t* data, int len, int8_t rssi) {
             peer->pkt_loss_pct  = pkt->pkt_loss_pct;
             peer->rtcm_age_ms   = pkt->rtcm_age_ms;
             peer->last_seen_ms  = (uint32_t)millis();
+            peer->upstream_node_id  = pkt->upstream_node_id;
+            peer->relay_for_node_id = pkt->relay_for_node_id;
         }
 
         if (onTelemReceived) onTelemReceived(*pkt);
@@ -359,6 +361,7 @@ void EspNowRtcm::broadcastRtcm(const uint8_t* data, size_t len) {
         if (err == ESP_OK) {
             _txPkts++;
         } else if (err == ESP_ERR_ESPNOW_NO_MEM) {
+            _dropNoMem++;
             // Radio busy — drop silently (freshness over completeness)
         }
         // Small yield between fragments to avoid overwhelming the radio
@@ -398,6 +401,8 @@ void EspNowRtcm::sendTelemetry(uint8_t role,
     pkt.hop_count     = hops;
     pkt.uptime_min    = uptime_min;
     pkt.free_heap_kb  = heap_kb;
+    pkt.upstream_node_id  = 0;
+    pkt.relay_for_node_id = 0;
     pkt.timestamp_ms  = (uint32_t)millis();
     pkt.crc           = crc16((const uint8_t*)&pkt, sizeof(pkt) - 2);
 
