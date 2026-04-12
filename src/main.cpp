@@ -1200,6 +1200,21 @@ bool startEspNowRx() {
   if (ch == 0) ch = (uint8_t)WiFi.channel();
   if (ch == 0) ch = ESPNOW_WIFI_CHANNEL;
 
+  // Apply runtime network_id + PSK from flash
+  {
+    String enNetworkId = FlashConfig::readFile("/config/espnow_network_id.txt");
+    String enPsk       = FlashConfig::readFile("/config/espnow_psk.txt");
+    uint32_t netId = (uint32_t)ESPNOW_NETWORK_ID;
+    if (enNetworkId.length() > 0) {
+      enNetworkId.trim();
+      if (enNetworkId.startsWith("0x") || enNetworkId.startsWith("0X"))
+        netId = (uint32_t)strtoul(enNetworkId.c_str() + 2, nullptr, 16);
+      else
+        netId = (uint32_t)strtoul(enNetworkId.c_str(), nullptr, 10);
+    }
+    g_espNow.configure(netId, enPsk.c_str());
+  }
+
   g_espNow.onRtcmReceived = [](const uint8_t* data, size_t len) {
     if (len > 0) RTCMSerial.write(data, len);
   };
@@ -1224,18 +1239,7 @@ bool startEspNowRx() {
   };
 
   g_espNow.onCommandReceived = [](uint8_t cmd, uint8_t param, uint16_t src) {
-    // RTKino rover: log relay commands (relay forwarding handled by library-level helpers)
     Serial.printf("[ESPNOW] CMD 0x%02X param=%u from 0x%04X\n", cmd, param, src);
-    switch (cmd) {
-      case CMD_RELAY_START:
-        Serial.printf("[ESPNOW] RELAY_START from 0x%04X\n", src);
-        break;
-      case CMD_RELAY_STOP:
-        Serial.printf("[ESPNOW] RELAY_STOP from 0x%04X\n", src);
-        break;
-      default:
-        break;
-    }
   };
 
   if (!g_espNow.begin(ch)) {
@@ -1270,6 +1274,21 @@ bool startEspNowTx() {
   if (savedCh.length() > 0) ch = (uint8_t)savedCh.toInt();
   if (ch == 0) ch = (uint8_t)WiFi.channel();
   if (ch == 0) ch = ESPNOW_WIFI_CHANNEL;
+
+  // Apply runtime network_id + PSK from flash
+  {
+    String enNetworkId = FlashConfig::readFile("/config/espnow_network_id.txt");
+    String enPsk       = FlashConfig::readFile("/config/espnow_psk.txt");
+    uint32_t netId = (uint32_t)ESPNOW_NETWORK_ID;
+    if (enNetworkId.length() > 0) {
+      enNetworkId.trim();
+      if (enNetworkId.startsWith("0x") || enNetworkId.startsWith("0X"))
+        netId = (uint32_t)strtoul(enNetworkId.c_str() + 2, nullptr, 16);
+      else
+        netId = (uint32_t)strtoul(enNetworkId.c_str(), nullptr, 10);
+    }
+    g_espNow.configure(netId, enPsk.c_str());
+  }
 
   g_espNow.onCommandReceived = [](uint8_t cmd, uint8_t param, uint16_t src) {
     Serial.printf("[ESPNOW] CMD 0x%02X param=%u src=0x%04X\n", cmd, param, src);
@@ -2762,6 +2781,22 @@ void setup() {
     enEspNow.trim();
     String roleEspNow = FlashConfig::readFile("/config/espnow_role.txt");
     roleEspNow.trim();
+    if (roleEspNow == "relay") {
+      Serial.println("[ESPNOW] WARNING: role 'relay' not supported on RTKino, falling back to 'rx'");
+      roleEspNow = "rx";
+      FlashConfig::writeFile("/config/espnow_role.txt", "rx");
+    }
+    String enNetworkId = FlashConfig::readFile("/config/espnow_network_id.txt");
+    String enPsk       = FlashConfig::readFile("/config/espnow_psk.txt");
+    uint32_t netId = (uint32_t)ESPNOW_NETWORK_ID;
+    if (enNetworkId.length() > 0) {
+      enNetworkId.trim();
+      if (enNetworkId.startsWith("0x") || enNetworkId.startsWith("0X"))
+        netId = (uint32_t)strtoul(enNetworkId.c_str() + 2, nullptr, 16);
+      else
+        netId = (uint32_t)strtoul(enNetworkId.c_str(), nullptr, 10);
+    }
+    g_espNow.configure(netId, enPsk.c_str());
     if (enEspNow == "1") {
       if (roleEspNow == "tx") {
         startEspNowTx();
