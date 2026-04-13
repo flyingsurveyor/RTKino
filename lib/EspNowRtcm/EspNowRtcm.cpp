@@ -97,7 +97,7 @@ bool EspNowRtcm::begin(uint8_t channel) {
         esp_now_deinit();
         return false;
     }
-    xTaskCreatePinnedToCore(rxTask, "espnow_rx", 4096, this, 2, &_rxTaskHandle, 1);
+    xTaskCreatePinnedToCore(rxTask, "espnow_rx", 4096, this, 1, &_rxTaskHandle, 1);
 
     _active = true;
     Serial.printf("[ESPNOW] Started, node_id=0x%04X, ch=%u\n", _nodeId, channel);
@@ -164,9 +164,11 @@ void EspNowRtcm::rxTask(void* pv) {
     EspNowRtcm* self = static_cast<EspNowRtcm*>(pv);
     RxItem item;
     while (self->_active) {
-        if (xQueueReceive(self->_rxQueue, &item, pdMS_TO_TICKS(50)) == pdTRUE) {
+        if (xQueueReceive(self->_rxQueue, &item, pdMS_TO_TICKS(20)) == pdTRUE) {
             self->processPacket(item.data, item.len, item.rssi);
         }
+        // Yield to allow loop() and other tasks to run
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
     vTaskDelete(nullptr);
 }
