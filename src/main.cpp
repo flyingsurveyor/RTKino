@@ -1207,12 +1207,11 @@ bool startEspNowRx() {
   toggleTcpIn(false);
   if (g_bleRtcmEnabled) stopBleRtcm();
 
-  // Determine channel: saved preference → current WiFi channel → compile default
+  // Determine channel: saved preference → compile default
   uint8_t ch = 0;
   String savedCh = FlashConfig::readFile("/config/espnow_channel.txt");
   savedCh.trim();
   if (savedCh.length() > 0) ch = (uint8_t)savedCh.toInt();
-  if (ch == 0) ch = (uint8_t)WiFi.channel();
   if (ch == 0) ch = ESPNOW_WIFI_CHANNEL;
 
   // Apply runtime network_id + PSK from flash
@@ -1270,12 +1269,11 @@ void stopEspNowRx() {
 }
 
 bool startEspNowTx() {
-  // Determine channel: saved preference → current WiFi channel → compile default
+  // Determine channel: saved preference → compile default
   uint8_t ch = 0;
   String savedCh = FlashConfig::readFile("/config/espnow_channel.txt");
   savedCh.trim();
   if (savedCh.length() > 0) ch = (uint8_t)savedCh.toInt();
-  if (ch == 0) ch = (uint8_t)WiFi.channel();
   if (ch == 0) ch = ESPNOW_WIFI_CHANNEL;
 
   // Apply runtime network_id + PSK from flash

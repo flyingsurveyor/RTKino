@@ -85,9 +85,9 @@
 // ============================================================================
 
 // Fixed WiFi channel for ESP-NOW mesh (all nodes must use the same channel)
-// Channel 11: least congested non-overlapping 2.4GHz channel in field conditions
-// (channels 1, 6, 11 are non-overlapping; consumer routers favour 1 and 6)
-#define ESPNOW_WIFI_CHANNEL    11
+// Channel 6: common default shared with Crocevia base station
+// (channels 1, 6, 11 are non-overlapping; channel 6 is the mesh network default)
+#define ESPNOW_WIFI_CHANNEL    6
 
 // Network ID: 32-bit token shared by all nodes of the same network.
 // Acts as a lightweight network filter (not cryptographic).

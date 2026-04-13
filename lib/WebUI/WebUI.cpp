@@ -2648,7 +2648,7 @@ static void renderEspNowCard() {
   sendChunk("document.getElementById('espnow-cfg-cmds').style.display=d.enabled?'block':'none';");
   sendChunk("var sel=document.getElementById('espnow-cfg-role');");
   sendChunk("if(d.role==='tx'&&sel.options.length>1)sel.selectedIndex=1;else sel.selectedIndex=0;");
-  sendChunk("if(d.enabled&&d.channel){document.getElementById('espnow-cfg-channel').value=d.channel;}");
+  sendChunk("if(d.channel){document.getElementById('espnow-cfg-channel').value=d.channel;}");
   sendChunk("}).catch(function(){document.getElementById('espnow-cfg-status').innerHTML='<em style=color:red>Errore caricamento stato</em>';});");
   sendChunk("}");
   sendChunk("updateEspNowSettings();setInterval(updateEspNowSettings,3000);");
