@@ -1214,6 +1214,14 @@ bool startEspNowRx() {
   if (savedCh.length() > 0) ch = (uint8_t)savedCh.toInt();
   if (ch == 0) ch = ESPNOW_WIFI_CHANNEL;
 
+  // If WiFi is connected in STA mode, the radio is locked to the AP's channel.
+  // Override ch so ESP-NOW uses the same channel and can communicate.
+  if (WiFi.status() == WL_CONNECTED) {
+    ch = (uint8_t)WiFi.channel();
+    Serial.printf("[ESPNOW] Using WiFi channel %d (from connected AP)\n", ch);
+    FlashConfig::writeFile("/config/espnow_channel.txt", String(ch));
+  }
+
   // Apply runtime network_id + PSK from flash
   applyEspNowConfigFromFlash();
 
@@ -1275,6 +1283,14 @@ bool startEspNowTx() {
   savedCh.trim();
   if (savedCh.length() > 0) ch = (uint8_t)savedCh.toInt();
   if (ch == 0) ch = ESPNOW_WIFI_CHANNEL;
+
+  // If WiFi is connected in STA mode, the radio is locked to the AP's channel.
+  // Override ch so ESP-NOW uses the same channel and can communicate.
+  if (WiFi.status() == WL_CONNECTED) {
+    ch = (uint8_t)WiFi.channel();
+    Serial.printf("[ESPNOW] Using WiFi channel %d (from connected AP)\n", ch);
+    FlashConfig::writeFile("/config/espnow_channel.txt", String(ch));
+  }
 
   // Apply runtime network_id + PSK from flash
   applyEspNowConfigFromFlash();
