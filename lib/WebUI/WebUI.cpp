@@ -180,6 +180,7 @@ extern bool startEspNowRx();
 extern void stopEspNowRx();
 extern bool startEspNowTx();
 extern void stopEspNowTx();
+extern void applyEspNowConfigFromFlash();
 
 // Stream mode extern
 extern "C" {
@@ -2610,6 +2611,9 @@ static void renderEspNowCard() {
   sendChunk("<option value='0x06'>Base Stop</option>");
   sendChunk("<option value='0x07'>ESP-NOW Stop</option>");
   sendChunk("<option value='0x01'>Reboot</option>");
+  // RELAY_START/RELAY_STOP: RTKino emits these toward Crocevia relay nodes; relay mode is not local
+  sendChunk("<option value='16'>RELAY_START (0x10) → Crocevia</option>");
+  sendChunk("<option value='17'>RELAY_STOP (0x11) → Crocevia</option>");
   sendChunk("</select>");
   sendChunk("<input id='espnow-dst' type='text' placeholder='Node ID hex (vuoto=broadcast)' style='width:220px' />");
   sendChunk("<button class='btn btn-small' onclick='espnowSendCmd()'>&#x1F4E4; Invia</button>");
@@ -2629,6 +2633,9 @@ static void renderEspNowCard() {
   sendChunk("h+='<tr><td>RX pkts</td><td>'+d.rx_pkts+'</td><td>TX pkts</td><td>'+d.tx_pkts+'</td></tr>';");
   sendChunk("h+='<tr><td>Dedup</td><td>'+d.drop_dedup+'</td><td>CRC err</td><td>'+d.drop_crc+'</td></tr>';");
   sendChunk("h+='<tr><td>Drop no mem</td><td>'+d.drop_no_mem+'</td><td>Drop old</td><td>'+d.drop_old+'</td></tr>';");
+  sendChunk("if(d.psk_enabled)h+='<tr><td>PSK</td><td>attivo</td><td>Auth err</td><td>'+d.drop_auth+'</td></tr>';");
+  // relay_node_id: the remote Crocevia relay node currently serving this rover (0 = none selected)
+  sendChunk("if(d.relay_node_id&&d.relay_node_id!=='0x0000')h+='<tr><td colspan=2>Relay: 0x'+d.relay_node_id.replace('0x','').toUpperCase()+'</td><td colspan=2></td></tr>';");
   sendChunk("h+='</table>';");
   sendChunk("if(d.peers&&d.peers.length>0){");
   sendChunk("h+='<div style=\"overflow-x:auto;margin-top:8px\"><table style=\"width:100%;font-size:0.9em\"><tr><th>Node ID</th><th>Ruolo</th><th>RSSI</th><th>Age (s)</th></tr>';");
@@ -2664,6 +2671,33 @@ static void renderEspNowCard() {
   sendChunk("}");
   sendChunk("</script>");
 
+  sendChunk("</div>");
+
+  // ---- ESP-NOW Rete (Network ID + PSK) card ----
+  sendChunk("<div class='card'><h2>&#x1F512; ESP-NOW Rete</h2>");
+  sendChunk("<div style='margin-bottom:12px;'>");
+  sendChunk("<label>Network ID (hex):</label><br>");
+  sendChunk("<input id='enNetId' type='text' maxlength='10' placeholder='0x52544B4E' style='width:160px;margin-bottom:8px;'><br>");
+  sendChunk("<label>PSK (max 32 char):</label><br>");
+  sendChunk("<input id='enPsk' type='password' maxlength='32' placeholder='(vuoto = solo CRC16)' style='width:220px;margin-bottom:8px;'><br>");
+  sendChunk("</div>");
+  sendChunk("<button class='btn btn-success' onclick='enSaveNetCfg()'>&#x1F4BE; Salva</button>");
+  sendChunk("<div id='enNetMsg' style='margin-top:8px;font-size:0.9em;'></div>");
+  sendChunk("<script>");
+  sendChunk("function enSaveNetCfg(){");
+  sendChunk("var netId=document.getElementById('enNetId').value.trim();");
+  sendChunk("var psk=document.getElementById('enPsk').value;");
+  sendChunk("var body=JSON.stringify({network_id:netId,psk:psk});");
+  sendChunk("fetch('/api/espnow/config/set',{method:'POST',headers:{'Content-Type':'application/json'},body:body})");
+  sendChunk(".then(function(r){return r.json();}).then(function(d){document.getElementById('enNetMsg').innerHTML=d.ok?'<span style=color:green>&#x2713; Salvato</span>':'<span style=color:red>&#x2717; '+( d.err||'Errore')+'</span>';})");
+  sendChunk(".catch(function(){document.getElementById('enNetMsg').innerHTML='<span style=color:red>Errore</span>';});");
+  sendChunk("}");
+  sendChunk("(function(){fetch('/api/espnow/config/get').then(function(r){return r.json();}).then(function(d){");
+  sendChunk("if(d.ok){");
+  sendChunk("if(d.network_id)document.getElementById('enNetId').value='0x'+d.network_id.toString(16).toUpperCase();");
+  sendChunk("document.getElementById('enPsk').placeholder=d.psk_set?'(PSK impostato)':'(vuoto = solo CRC16)';");
+  sendChunk("}}).catch(function(){});})();");
+  sendChunk("</script>");
   sendChunk("</div>");
 }
 
@@ -6386,6 +6420,8 @@ static void handleEspNowStatus() {
   char relayBuf[12]; snprintf(relayBuf, sizeof(relayBuf), "0x%04X", g_espNowRelayNodeId);
   json += "\"relay_node_id\":\"" + String(relayBuf) + "\",";
   json += "\"relay_active\":" + String(g_espNowRelayNodeId != 0 ? "true" : "false") + ",";
+  json += "\"psk_enabled\":" + String(g_espNow.isPskEnabled() ? "true" : "false") + ",";
+  json += "\"drop_auth\":" + String((unsigned long)g_espNow.getDropAuth()) + ",";
   // Relay forwarding fields (RTKino is never a relay node itself; always false/0)
   json += "\"relay_forwarding\":false,";
   json += "\"relay_upstream_id\":0,";
@@ -6435,6 +6471,10 @@ static void handleEspNowStop() {
 static void handleEspNowSave() {
   String role = _server->arg("espnow_role");
   role.trim();
+  if (role == "relay") {
+    _server->send(400, "application/json", "{\"ok\":false,\"err\":\"Relay mode not supported on RTKino\"}");
+    return;
+  }
   String chStr = _server->arg("espnow_channel");
   chStr.trim();
   if (!chStr.isEmpty()) {
@@ -6472,6 +6512,84 @@ static void handleEspNowCommand() {
   resp += sent ? "true" : "false";
   resp += ",\"cmd_uid\":\"" + String(uidBuf) + "\"}";
   _server->send(200, "application/json", resp);
+}
+
+static void handleEspNowConfigGet() {
+  String netIdStr = FlashConfig::readFile("/config/espnow_network_id.txt");
+  netIdStr.trim();
+  uint32_t netId = (uint32_t)ESPNOW_NETWORK_ID;
+  if (netIdStr.length() > 0) {
+    if (netIdStr.startsWith("0x") || netIdStr.startsWith("0X"))
+      netId = (uint32_t)strtoul(netIdStr.c_str() + 2, nullptr, 16);
+    else
+      netId = (uint32_t)strtoul(netIdStr.c_str(), nullptr, 10);
+  }
+  String pskStr = FlashConfig::readFile("/config/espnow_psk.txt");
+  bool pskSet = (pskStr.length() > 0);
+  String json = "{\"ok\":true,\"network_id\":";
+  json += String((unsigned long)netId);
+  json += ",\"psk_set\":";
+  json += pskSet ? "true" : "false";
+  json += "}";
+  _server->send(200, "application/json", json);
+}
+
+static void handleEspNowConfigSet() {
+  String body = _server->arg("plain");
+  // Parse JSON body: {"network_id":"0x...","psk":"..."}
+  String netIdVal, pskVal;
+
+  // Simple extraction without heavy JSON lib
+  int ni = body.indexOf("\"network_id\"");
+  if (ni >= 0) {
+    int q1 = body.indexOf(':', ni);
+    if (q1 >= 0) {
+      int v1 = body.indexOf('"', q1 + 1);
+      int v2 = (v1 >= 0) ? body.indexOf('"', v1 + 1) : -1;
+      if (v1 >= 0 && v2 > v1) {
+        netIdVal = body.substring(v1 + 1, v2);
+      } else {
+        // numeric value without quotes
+        int vs = q1 + 1;
+        while (vs < (int)body.length() && (body[vs] == ' ')) vs++;
+        int ve = vs;
+        while (ve < (int)body.length() && body[ve] != ',' && body[ve] != '}') ve++;
+        netIdVal = body.substring(vs, ve);
+        netIdVal.trim();
+      }
+    }
+  }
+  int pi = body.indexOf("\"psk\"");
+  if (pi >= 0) {
+    int q1 = body.indexOf(':', pi);
+    if (q1 >= 0) {
+      int v1 = body.indexOf('"', q1 + 1);
+      int v2 = (v1 >= 0) ? body.indexOf('"', v1 + 1) : -1;
+      if (v1 >= 0 && v2 >= v1) {
+        pskVal = body.substring(v1 + 1, v2);
+      }
+    }
+  }
+
+  if (netIdVal.length() > 0) {
+    netIdVal.trim();
+    FlashConfig::writeFile("/config/espnow_network_id.txt", netIdVal);
+  }
+  FlashConfig::writeFile("/config/espnow_psk.txt", pskVal);
+
+  // Apply immediately if running; startEspNow* will re-read config from flash
+  if (g_espNowEnabled) {
+    bool wasTx = g_espNowTxEnabled;
+    if (wasTx) stopEspNowTx();
+    else       stopEspNowRx();
+    if (wasTx) startEspNowTx();
+    else       startEspNowRx();
+  } else {
+    // Apply to in-memory object without starting (reads from flash we just wrote)
+    applyEspNowConfigFromFlash();
+  }
+
+  _server->send(200, "application/json", "{\"ok\":true}");
 }
 
 void WebUI::begin(SdFat& sd, WebServer& server) {
@@ -6662,12 +6780,14 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
   });
 
   // ESP-NOW Mesh API
-  _server->on("/api/espnow/status", HTTP_GET,  handleEspNowStatus);
-  _server->on("/espnow/startrx",    HTTP_POST, handleEspNowStartRx);
-  _server->on("/espnow/starttx",    HTTP_POST, handleEspNowStartTx);
-  _server->on("/espnow/stop",       HTTP_POST, handleEspNowStop);
-  _server->on("/espnow/save",       HTTP_POST, handleEspNowSave);
-  _server->on("/espnow/command",    HTTP_POST, handleEspNowCommand);
+  _server->on("/api/espnow/status",     HTTP_GET,  handleEspNowStatus);
+  _server->on("/api/espnow/config/get", HTTP_GET,  handleEspNowConfigGet);
+  _server->on("/api/espnow/config/set", HTTP_POST, handleEspNowConfigSet);
+  _server->on("/espnow/startrx",        HTTP_POST, handleEspNowStartRx);
+  _server->on("/espnow/starttx",        HTTP_POST, handleEspNowStartTx);
+  _server->on("/espnow/stop",           HTTP_POST, handleEspNowStop);
+  _server->on("/espnow/save",           HTTP_POST, handleEspNowSave);
+  _server->on("/espnow/command",        HTTP_POST, handleEspNowCommand);
 
   // NTRIP IN CRUD
   _server->on("/ntrip/add", HTTP_POST, handleNtripAdd);

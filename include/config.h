@@ -111,16 +111,6 @@
 // RTCM payload size per ESP-NOW packet (max 250 - header overhead)
 #define ESPNOW_PAYLOAD_SIZE    200
 
-// Relay: delay per hop (ms) to avoid radio collision on re-broadcast
-#ifndef ESPNOW_RELAY_HOP_DELAY_MS
-  #define ESPNOW_RELAY_HOP_DELAY_MS  8
-#endif
-
-// Relay: rover inactivity timeout — relay stops forwarding if no CMD_RELAY_START received
-#ifndef ESPNOW_RELAY_ROVER_TIMEOUT_MS
-  #define ESPNOW_RELAY_ROVER_TIMEOUT_MS  15000
-#endif
-
 // ============================================================================
 // ROTARY ENCODER PINS
 // Set all three to the actual GPIO numbers for your wiring.

@@ -188,7 +188,7 @@ void EspNowRtcm::processPacket(const uint8_t* data, int len, int8_t rssi) {
     // Network ID check (offset 6 for all packet types)
     uint32_t net_id;
     memcpy(&net_id, data + 6, 4);
-    if (net_id != ESPNOW_NETWORK_ID) return;
+    if (net_id != _networkId) return;
 
     _rxPkts++;
 
@@ -228,8 +228,8 @@ void EspNowRtcm::processPacket(const uint8_t* data, int len, int8_t rssi) {
         if (len < (int)sizeof(EspNowTelemPacket)) return;
         const EspNowTelemPacket* pkt = reinterpret_cast<const EspNowTelemPacket*>(data);
 
-        uint16_t calc = crc16(data, sizeof(EspNowTelemPacket) - 2);
-        if (calc != pkt->crc) { _dropCrc++; return; }
+        uint16_t calc = computeAuth(data, sizeof(EspNowTelemPacket) - 2);
+        if (calc != pkt->crc) { _dropAuth++; return; }  // crc field doubles as auth tag when PSK enabled
 
         PeerInfo* peer = findOrAddPeer(pkt->node_id);
         if (peer) {
@@ -258,8 +258,8 @@ void EspNowRtcm::processPacket(const uint8_t* data, int len, int8_t rssi) {
         if (len < (int)sizeof(EspNowCmdPacket)) return;
         const EspNowCmdPacket* pkt = reinterpret_cast<const EspNowCmdPacket*>(data);
 
-        uint16_t calc = crc16(data, sizeof(EspNowCmdPacket) - 2);
-        if (calc != pkt->crc) { _dropCrc++; return; }
+        uint16_t calc = computeAuth(data, sizeof(EspNowCmdPacket) - 2);
+        if (calc != pkt->crc) { _dropAuth++; return; }
 
         // Check destination
         if (pkt->dst_node_id != _nodeId && pkt->dst_node_id != 0xFFFF) return;
@@ -304,8 +304,8 @@ void EspNowRtcm::processPacket(const uint8_t* data, int len, int8_t rssi) {
         if (len < (int)sizeof(EspNowAckPacket)) return;
         const EspNowAckPacket* pkt = reinterpret_cast<const EspNowAckPacket*>(data);
 
-        uint16_t calc = crc16(data, sizeof(EspNowAckPacket) - 2);
-        if (calc != pkt->crc) { _dropCrc++; return; }
+        uint16_t calc = computeAuth(data, sizeof(EspNowAckPacket) - 2);
+        if (calc != pkt->crc) { _dropAuth++; return; }
 
         if (pkt->ack_cmd_uid == _pendingCmdUid) {
             Serial.printf("[ESPNOW] ACK received for cmd_uid=0x%08X result=%u\n",
@@ -338,7 +338,7 @@ void EspNowRtcm::broadcastRtcm(const uint8_t* data, size_t len) {
         pkt.magic        = ESPNOW_MAGIC;
         pkt.version      = ESPNOW_VERSION;
         pkt.pkt_type     = PKT_RTCM_FRAG;
-        pkt.network_id   = ESPNOW_NETWORK_ID;
+        pkt.network_id   = _networkId;
         pkt.node_id      = _nodeId;
         pkt.seq          = _seq;
         pkt.ttl          = ESPNOW_TTL;
@@ -385,7 +385,7 @@ void EspNowRtcm::sendTelemetry(uint8_t role,
     pkt.magic         = ESPNOW_MAGIC;
     pkt.version       = ESPNOW_VERSION;
     pkt.pkt_type      = PKT_TELEMETRY;
-    pkt.network_id    = ESPNOW_NETWORK_ID;
+    pkt.network_id    = _networkId;
     pkt.node_id       = _nodeId;
     pkt.node_role     = role;
     pkt.lat_e7        = lat_e7;
@@ -404,7 +404,7 @@ void EspNowRtcm::sendTelemetry(uint8_t role,
     pkt.upstream_node_id  = 0;
     pkt.relay_for_node_id = 0;
     pkt.timestamp_ms  = (uint32_t)millis();
-    pkt.crc           = crc16((const uint8_t*)&pkt, sizeof(pkt) - 2);
+    pkt.crc           = computeAuth((const uint8_t*)&pkt, sizeof(pkt) - 2);
 
     if (esp_now_send(ESPNOW_BROADCAST_MAC, (const uint8_t*)&pkt, sizeof(pkt)) == ESP_OK) {
         _txPkts++;
@@ -412,72 +412,45 @@ void EspNowRtcm::sendTelemetry(uint8_t role,
 }
 
 // ============================================================================
-// sendTelemetryRelay — broadcast telemetry for relay role (node_role = 2)
+// configure — set runtime network_id and PSK
 // ============================================================================
-void EspNowRtcm::sendTelemetryRelay(uint16_t upstream_node_id,
-                                     uint16_t relay_for_node_id,
-                                     int8_t   upstream_rssi,
-                                     uint8_t  hops,
-                                     uint16_t uptime_min,
-                                     uint16_t heap_kb) {
-    if (!_active) return;
-
-    EspNowTelemPacket pkt = {};
-    pkt.magic             = ESPNOW_MAGIC;
-    pkt.version           = ESPNOW_VERSION;
-    pkt.pkt_type          = PKT_TELEMETRY;
-    pkt.network_id        = ESPNOW_NETWORK_ID;
-    pkt.node_id           = _nodeId;
-    pkt.node_role         = 2;  // relay
-    pkt.lat_e7            = 0;
-    pkt.lon_e7            = 0;
-    pkt.alt_dm            = 0;
-    pkt.fix_quality       = 0;
-    pkt.carr_soln         = 0;
-    pkt.num_sv            = 0;
-    pkt.h_acc_mm          = 0;
-    pkt.last_rssi         = upstream_rssi;
-    pkt.pkt_loss_pct      = 0;
-    pkt.rtcm_age_ms       = 0;
-    pkt.hop_count         = hops;
-    pkt.uptime_min        = uptime_min;
-    pkt.free_heap_kb      = heap_kb;
-    pkt.upstream_node_id  = upstream_node_id;
-    pkt.relay_for_node_id = relay_for_node_id;
-    pkt.timestamp_ms      = (uint32_t)millis();
-    pkt.crc               = crc16((const uint8_t*)&pkt, sizeof(pkt) - 2);
-
-    if (esp_now_send(ESPNOW_BROADCAST_MAC, (const uint8_t*)&pkt, sizeof(pkt)) == ESP_OK) {
-        _txPkts++;
+void EspNowRtcm::configure(uint32_t network_id, const char* psk) {
+    _networkId = network_id;
+    if (psk && psk[0] != '\0') {
+        if (strlen(psk) >= sizeof(_psk)) {
+            Serial.printf("[ESPNOW] WARNING: PSK truncated to %u chars\n", (unsigned)(sizeof(_psk) - 1));
+        }
+        strncpy(_psk, psk, sizeof(_psk) - 1);
+        _psk[sizeof(_psk) - 1] = '\0';
+        _pskEnabled = true;
+    } else {
+        memset(_psk, 0, sizeof(_psk));
+        _pskEnabled = false;
     }
 }
 
 // ============================================================================
-// broadcastRtcmRelay — re-broadcast a received raw RTCM packet with TTL--
+// computeHmac4 — HMAC-SHA256 keyed by _psk; returns first 4 bytes big-endian
 // ============================================================================
-bool EspNowRtcm::broadcastRtcmRelay(const uint8_t* raw_pkt, size_t raw_len) {
-    if (!_active || !raw_pkt || raw_len < sizeof(EspNowRtcmPacket)) return false;
+uint32_t EspNowRtcm::computeHmac4(const uint8_t* data, size_t len) const {
+    uint8_t digest[32];
+    mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),
+                    (const uint8_t*)_psk, strlen(_psk),
+                    data, len, digest);
+    return ((uint32_t)digest[0] << 24) |
+           ((uint32_t)digest[1] << 16) |
+           ((uint32_t)digest[2] <<  8) |
+            (uint32_t)digest[3];
+}
 
-    EspNowRtcmPacket pkt;
-    memcpy(&pkt, raw_pkt, sizeof(pkt));
-
-    if (pkt.ttl == 0) return false;
-
-    pkt.ttl--;
-    pkt.hop_count++;
-    pkt.last_rssi = _lastRssi;
-
-    // Stagger re-broadcast to reduce collision probability
-    vTaskDelay(pdMS_TO_TICKS((uint32_t)pkt.hop_count * ESPNOW_RELAY_HOP_DELAY_MS));
-
-    // Recompute CRC over the modified packet
-    pkt.crc = crc16((const uint8_t*)&pkt, sizeof(pkt) - 2);
-
-    if (esp_now_send(ESPNOW_BROADCAST_MAC, (const uint8_t*)&pkt, sizeof(pkt)) == ESP_OK) {
-        _txPkts++;
-        return true;
+// ============================================================================
+// computeAuth — returns auth field: HMAC top-2 bytes if PSK enabled, else CRC16
+// ============================================================================
+uint16_t EspNowRtcm::computeAuth(const uint8_t* data, size_t len) const {
+    if (_pskEnabled) {
+        return (uint16_t)(computeHmac4(data, len) >> 16);
     }
-    return false;
+    return crc16(data, len);
 }
 
 // ============================================================================
@@ -490,13 +463,13 @@ bool EspNowRtcm::sendCommand(uint16_t dst_node_id, uint8_t cmd, uint8_t param) {
     pkt.magic       = ESPNOW_MAGIC;
     pkt.version     = ESPNOW_VERSION;
     pkt.pkt_type    = PKT_COMMAND;
-    pkt.network_id  = ESPNOW_NETWORK_ID;
+    pkt.network_id  = _networkId;
     pkt.src_node_id = _nodeId;
     pkt.dst_node_id = dst_node_id;
     pkt.cmd_uid     = (uint32_t)millis() ^ ((uint32_t)_nodeId << 16);
     pkt.command     = cmd;
     pkt.param       = param;
-    pkt.crc         = crc16((const uint8_t*)&pkt, sizeof(pkt) - 2);
+    pkt.crc         = computeAuth((const uint8_t*)&pkt, sizeof(pkt) - 2);
 
     _pendingCmdUid    = pkt.cmd_uid;
     _pendingCmdSentMs = (uint32_t)millis();
@@ -522,11 +495,11 @@ void EspNowRtcm::sendAck(uint16_t dst_node_id, uint32_t cmd_uid, uint8_t result)
     pkt.magic       = ESPNOW_MAGIC;
     pkt.version     = ESPNOW_VERSION;
     pkt.pkt_type    = PKT_ACK;
-    pkt.network_id  = ESPNOW_NETWORK_ID;
+    pkt.network_id  = _networkId;
     pkt.src_node_id = _nodeId;
     pkt.ack_cmd_uid = cmd_uid;
     pkt.result      = result;
-    pkt.crc         = crc16((const uint8_t*)&pkt, sizeof(pkt) - 2);
+    pkt.crc         = computeAuth((const uint8_t*)&pkt, sizeof(pkt) - 2);
 
     if (esp_now_send(ESPNOW_BROADCAST_MAC, (const uint8_t*)&pkt, sizeof(pkt)) == ESP_OK) {
         _txPkts++;

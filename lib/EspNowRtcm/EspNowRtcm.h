@@ -7,9 +7,11 @@
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <esp_idf_version.h>
+#include <mbedtls/md.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "config.h"
 
 // ============================================================================
 // ESP-NOW RTCM MESH — Packet protocol
@@ -134,17 +136,8 @@ public:
                        int8_t rssi, uint8_t loss_pct, uint16_t rtcm_age_ms,
                        uint8_t hops, uint16_t uptime_min, uint16_t heap_kb);
 
-    // TX telemetry for relay role (node_role=2, GNSS fields zeroed)
-    void sendTelemetryRelay(uint16_t upstream_node_id,
-                            uint16_t relay_for_node_id,
-                            int8_t   upstream_rssi,
-                            uint8_t  hops,
-                            uint16_t uptime_min,
-                            uint16_t heap_kb);
-
-    // Re-broadcast a received raw RTCM packet, decrementing TTL and adding hop delay
-    // Returns false if TTL==0 (packet must not be forwarded)
-    bool broadcastRtcmRelay(const uint8_t* raw_pkt, size_t raw_len);
+    // Runtime network_id + PSK configuration
+    void configure(uint32_t network_id, const char* psk);
 
     // TX command: send to dst_node_id (unicast via broadcast MAC if peer unknown)
     bool sendCommand(uint16_t dst_node_id, uint8_t cmd, uint8_t param = 0);
@@ -162,6 +155,8 @@ public:
     uint32_t getRtcmBytesRx() const { return _rtcmBytesRx; }
     int8_t   getLastRssi()    const { return _lastRssi; }
     uint16_t getNodeId()      const { return _nodeId; }
+    bool     isPskEnabled()   const { return _pskEnabled; }
+    uint32_t getDropAuth()    const { return _dropAuth; }
 
     // Peer map (telemetry received from other nodes)
     struct PeerInfo {
@@ -210,6 +205,12 @@ private:
     uint32_t _txPkts = 0, _rtcmBytesRx = 0;
     int8_t   _lastRssi = 0;
 
+    // PSK / HMAC-SHA256 authentication
+    uint32_t _networkId  = ESPNOW_NETWORK_ID;
+    char     _psk[33]    = {};
+    bool     _pskEnabled = false;
+    uint32_t _dropAuth   = 0;
+
     // Receive callback (static, called by IDF on Core 0)
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
     static void onRecv(const esp_now_recv_info_t* info, const uint8_t* data, int len);
@@ -234,4 +235,8 @@ private:
 
     // CRC16-CCITT
     static uint16_t crc16(const uint8_t* data, size_t len);
+
+    // HMAC-SHA256 helpers
+    uint32_t computeHmac4(const uint8_t* data, size_t len) const;
+    uint16_t computeAuth(const uint8_t* data, size_t len) const;
 };
