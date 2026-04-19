@@ -583,7 +583,7 @@ void resetRtcmStats() {
 
 // ---------------- GPS Sync message helpers ----------------
 
-// CRC16-CCITT-FALSE: poly=0x1021, init=0xFFFF, no reflect
+// CRC16-CCITT-FALSE: poly=0x1021, init=0xFFFF, no input/output reflection
 static uint16_t crc16_ccitt(const uint8_t* data, size_t len) {
     uint16_t crc = 0xFFFF;
     for (size_t i = 0; i < len; i++) {
@@ -604,13 +604,13 @@ static void sendGpsSyncMessage() {
     uint8_t msg[14];
     msg[0] = 0xCE; msg[1] = 0xFA;
     msg[2] = 0x54; msg[3] = 0x53;
+    // Snapshot volatile TOW atomically; local_ms is millis() at the moment of sending
     uint32_t tow = g_timtp_tow_ms;
     uint32_t loc = (uint32_t)millis();
     memcpy(&msg[4], &tow, 4);
     memcpy(&msg[8], &loc, 4);
     uint16_t crc = crc16_ccitt(msg, 12);
-    msg[12] = (uint8_t)(crc & 0xFF);
-    msg[13] = (uint8_t)(crc >> 8);
+    memcpy(&msg[12], &crc, 2);
 
     if (g_bleRtcmEnabled && g_bleRtcm.isConnected()) {
         g_bleRtcm.writeRtcm(msg, sizeof(msg));
@@ -768,18 +768,18 @@ void nmeaReaderTask(void* pvParameters) {
               // TIM-TP (0x0D 0x01) - GPS time pulse, 16-byte payload
               if (ubxClass == 0x0D && ubxId == 0x01 && ubxLen == 16) {
                 // Payload layout (little-endian):
-                //   0-3:  towMS     uint32  Time pulse TOW (ms)
+                //   0-3:  towMs     uint32  Time pulse TOW (ms)
                 //   4-7:  towSubMS  uint32  Sub-ms part
                 //   8-11: qErr      int32   Quantization error (ps)
                 //  12-13: week      uint16  GPS week
                 //     14: flags     uint8   bit3 = towValid
                 //     15: refInfo   uint8
-                uint32_t towMS;
-                memcpy(&towMS, &ubxPayload[0], 4);
+                uint32_t towMs;
+                memcpy(&towMs, &ubxPayload[0], 4);
                 uint8_t flags = ubxPayload[14];
-                bool towValid = (flags >> 3) & 0x01;
+                bool towValid = (flags & 0x08) != 0;
                 if (towValid) {
-                  g_timtp_tow_ms      = towMS;
+                  g_timtp_tow_ms      = towMs;
                   g_timtp_recv_millis = (uint32_t)millis();
                   g_timtp_valid       = true;
                 }
