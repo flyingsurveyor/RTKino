@@ -446,11 +446,11 @@ uint32_t EspNowRtcm::computeHmac4(const uint8_t* data, size_t len) const {
 }
 
 // ============================================================================
-// computeAuth — returns auth field: HMAC top-2 bytes if PSK enabled, else CRC16
+// computeAuth — returns auth field: HMAC low-2 bytes if PSK enabled, else CRC16
 // ============================================================================
 uint16_t EspNowRtcm::computeAuth(const uint8_t* data, size_t len) const {
     if (_pskEnabled) {
-        return (uint16_t)(computeHmac4(data, len) >> 16);
+        return (uint16_t)(computeHmac4(data, len) & 0xFFFF);
     }
     return crc16(data, len);
 }
