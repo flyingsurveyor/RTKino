@@ -121,6 +121,13 @@
 #define ENC_SW_GPIO  18    // Rotary SW  pin — user must set manually KEY
 
 // ============================================================================
+// GPS SYNC MESSAGE CONFIGURATION
+// ============================================================================
+
+// GPS sync message interval (ms) — sent via BLE/TCP to Crocevia for LoRa slot scheduling
+#define GPS_SYNC_INTERVAL_MS  15000
+
+// ============================================================================
 // HELPER MACROS FOR CONDITIONAL CODE
 // ============================================================================
 

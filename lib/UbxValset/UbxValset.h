@@ -88,6 +88,9 @@ namespace UbxVal {
 
     // Station ID (DF003 OUT)
     static constexpr uint32_t RTCM_DF003_OUT     = 0x30090001; // U2: 1..4095
+
+    // TIM-TP output on UART2 (U1: 0=off, 1=every epoch @1Hz)
+    static constexpr uint32_t TIMTP_UART2        = 0x2091017F; // CFG-MSGOUT-UBX_TIM_TP_UART2
   }
 
   // =================== HELPERS ===================

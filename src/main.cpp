@@ -318,6 +318,11 @@ static uint32_t g_lastHeapCheck = 0;  // For periodic heap monitoring
 // EXTINT marker flag — toggled from WebUI; drives GPIO6 HIGH/LOW around sampling
 volatile bool g_extintMarkerEnabled = false;
 
+// ===== GPS timing anchor (TIM-TP from ZED-F9P) =====
+static volatile uint32_t g_timtp_tow_ms      = 0;   // GPS TOW in ms at last time pulse
+static volatile uint32_t g_timtp_recv_millis = 0;   // millis() when TIM-TP packet was received
+static volatile bool     g_timtp_valid        = false; // true when towValid and data is fresh
+
 // ---------------- ZED helpers (reading/CFG-RATE legacy via I2C) ----------------
 void readCfgRateFromZED() {
   const uint8_t pollRate[] = { 0xB5,0x62,0x06,0x08,0x00,0x00,0x0E,0x30 };
@@ -576,6 +581,45 @@ void resetRtcmStats() {
     }
 }
 
+// ---------------- GPS Sync message helpers ----------------
+
+// CRC16-CCITT-FALSE: poly=0x1021, init=0xFFFF, no reflect
+static uint16_t crc16_ccitt(const uint8_t* data, size_t len) {
+    uint16_t crc = 0xFFFF;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= (uint16_t)data[i] << 8;
+        for (int j = 0; j < 8; j++) {
+            if (crc & 0x8000) crc = (crc << 1) ^ 0x1021;
+            else              crc = (crc << 1);
+        }
+    }
+    return crc;
+}
+
+// Send a 14-byte GpsSync message on all active Crocevia channels (BLE NUS and TCP).
+// Format: [0xCE][0xFA][0x54][0x53][tow_ms 4B LE][local_ms 4B LE][crc16 2B LE]
+static void sendGpsSyncMessage() {
+    if (!g_timtp_valid) return;
+
+    uint8_t msg[14];
+    msg[0] = 0xCE; msg[1] = 0xFA;
+    msg[2] = 0x54; msg[3] = 0x53;
+    uint32_t tow = g_timtp_tow_ms;
+    uint32_t loc = (uint32_t)millis();
+    memcpy(&msg[4], &tow, 4);
+    memcpy(&msg[8], &loc, 4);
+    uint16_t crc = crc16_ccitt(msg, 12);
+    msg[12] = (uint8_t)(crc & 0xFF);
+    msg[13] = (uint8_t)(crc >> 8);
+
+    if (g_bleRtcmEnabled && g_bleRtcm.isConnected()) {
+        g_bleRtcm.writeRtcm(msg, sizeof(msg));
+    }
+    if (g_baseTcpOn && RtcmStreamer::active()) {
+        RtcmStreamer::broadcast(msg, sizeof(msg));
+    }
+}
+
 // ---------------- FreeRTOS tasks ----------------
 void nmeaReaderTask(void* pvParameters) {
   // UART1 = ZED UART2 TX (NMEA/UBX/RTCM base) -> SOURCE for caster/TCP when in base
@@ -718,6 +762,26 @@ void nmeaReaderTask(void* pvParameters) {
                   if (sinceAp > 60000 && g_timeSource == TIME_SRC_NONE) {
                     syncTimeFromUbxTimeUtc(year, month, day, hour, min, sec, valid);
                   }
+                }
+              }
+
+              // TIM-TP (0x0D 0x01) - GPS time pulse, 16-byte payload
+              if (ubxClass == 0x0D && ubxId == 0x01 && ubxLen == 16) {
+                // Payload layout (little-endian):
+                //   0-3:  towMS     uint32  Time pulse TOW (ms)
+                //   4-7:  towSubMS  uint32  Sub-ms part
+                //   8-11: qErr      int32   Quantization error (ps)
+                //  12-13: week      uint16  GPS week
+                //     14: flags     uint8   bit3 = towValid
+                //     15: refInfo   uint8
+                uint32_t towMS;
+                memcpy(&towMS, &ubxPayload[0], 4);
+                uint8_t flags = ubxPayload[14];
+                bool towValid = (flags >> 3) & 0x01;
+                if (towValid) {
+                  g_timtp_tow_ms      = towMS;
+                  g_timtp_recv_millis = (uint32_t)millis();
+                  g_timtp_valid       = true;
                 }
               }
 
@@ -1662,6 +1726,9 @@ void applyBaseValset(uint16_t stid /*=1*/, uint8_t rtcmType /*=0*/) {
 
   // 3) MSGOUT coherent (1005/1230 at 10 s; MSM7 or MSM4 at 1 s)
   UbxVal::setBaseMsgout(rtcmType);
+  // 4) Enable UBX output and TIM-TP @1Hz for GPS timing anchor
+  UbxVal::setFlag(UbxVal::Keys::UART2OUT_UBX, true);
+  UbxVal::setU1(UbxVal::Keys::TIMTP_UART2, 1);
   String msgType = (rtcmType == 0) ? "MSM7 4const" : "MSM4 3const";
   oledPrintln(String("[BASE] DF003=") + stid + " " + msgType);
 
@@ -1690,6 +1757,9 @@ void applyBaseFixedLLH(double lat_deg, double lon_deg, double h_m, uint16_t stid
   delay(30);
   UbxVal::setFlag(UbxVal::Keys::UART2OUT_RTCM3, true);
   UbxVal::setBaseMsgout(rtcmType);
+  // Enable UBX output and TIM-TP @1Hz for GPS timing anchor
+  UbxVal::setFlag(UbxVal::Keys::UART2OUT_UBX, true);
+  UbxVal::setU1(UbxVal::Keys::TIMTP_UART2, 1);
   String msgType = (rtcmType == 0) ? "MSM7" : "MSM4";
   oledPrintln(String("[BASE] DF003=") + stid + " " + msgType + " ready");
   
@@ -2382,6 +2452,8 @@ void setup() {
   oledInit();
   oledSplashLandscape();
   readCfgRateFromZED();
+  // Enable TIM-TP output on ZED-F9P UART2 for GPS timing anchor (rover mode)
+  UbxVal::setU1(UbxVal::Keys::TIMTP_UART2, 1);
   oledSetLogging(false); oledSetWifi(false); oledSetApMode(false); oledSetNtrip(false); oledSetIP("---");
 
   // ---- Rotary encoder + OledMenu (compiled only when pins are configured) ----
@@ -3048,5 +3120,19 @@ void loop() {
   // Periodic survey sync to SD (every 5 minutes)
   if (!loggingActive) {
     SurveyPoints::periodicSync();
+  }
+
+  // Periodic GPS sync message — injected into BLE/TCP Crocevia channels
+  {
+    static uint32_t lastGpsSyncMs = 0;
+    static bool gpsSyncFirstSent = false;
+    if (g_timtp_valid) {
+      uint32_t nowMs = millis();
+      if (!gpsSyncFirstSent || (nowMs - lastGpsSyncMs) >= GPS_SYNC_INTERVAL_MS) {
+        lastGpsSyncMs = nowMs;
+        gpsSyncFirstSent = true;
+        sendGpsSyncMessage();
+      }
+    }
   }
 }
