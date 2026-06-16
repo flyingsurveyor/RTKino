@@ -22,8 +22,8 @@
   
   // UART Pins (ZED-F9P connections)
   #define RAW_UART_RX 42        // UART2: ZED UART1 TX (RAW only)
-  #define UBX_UART_RX 40        // UART1: ZED UART2 TX (NMEA/UBX/RTCM base)
-  #define RTCM_UART_TX 39       // UART2: ZED UART2 RX (RTCM input per rover)
+  #define UBX_UART_RX 39        // UART1: ZED UART2 TX (NMEA/UBX/RTCM base)
+  #define RTCM_UART_TX 40       // UART2: ZED UART2 RX (RTCM input per rover)
   
   // I2C Pins (OLED + ZED-F9P on same bus)
   #define ZED_I2C_SDA 9         // I2C SDA (native connector)
@@ -32,8 +32,8 @@
   #define OLED_I2C_SCL 10       // OLED on same I2C bus as ZED
   
   // GPIO Pins
-  #define BUZZER_GPIO 5         // Buzzer PWM output
-  #define EXTINT_GPIO 6         // ZED-F9P EXTINT — PPK event marker (TIM-TM2)
+  #define BUZZER_GPIO 4         // Buzzer PWM output
+  #define EXTINT_GPIO 5         // ZED-F9P EXTINT — PPK event marker (TIM-TM2)
   
   // SD Card (integrated slot on SPI bus - NOT SDMMC)
   // TF_CS = GPIO 46 per board variant

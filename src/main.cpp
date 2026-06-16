@@ -88,7 +88,7 @@ char g_ntpTz[64] = "CET-1CEST,M3.5.0/2,M10.5.0/3";
 char g_mdnsName[32] = "rtkino";
 
 // ===== BLE configuration =====
-// BLE is ALWAYS disabled by default on boot (non-persistent)
+// BLE enabled state — set to true during setup(), session-only if toggled off via WebUI
 bool g_bleEnabled = false;
 // BLE device name (persistent, saved to SD)
 char g_bleDeviceName[21] = "RTKino";
@@ -180,6 +180,13 @@ SemaphoreHandle_t rtcmStatsMutex = nullptr;
 
 // ===== ZED-F9P TMODE State =====
 ZedTmodeState g_zedTmode = {0, 0, 0.0, 0.0, 0.0, false, 0};
+
+// ===== OLED base-from-measurement pending flag =====
+// Set by onStartBaseFromPoint; cleared in loop() when measurement completes.
+static bool g_pendingBaseActivation = false;
+
+// ===== Quick-measure duration (seconds) — configurable from OLED Settings =====
+static int g_quickMeasureDuration = 30;
 SemaphoreHandle_t zedTmodeMutex = nullptr;
 
 // Safe access helper to g_zedTmode
@@ -269,6 +276,7 @@ bool silentMode = false;
 unsigned long lastOledUpdate = 0;
 
 String lastRateSet = "---";
+int    g_zedRateHz  = 1;    // current ZED output rate in Hz (drives OLED refresh period)
 
 QueueHandle_t sdQueue;
 
@@ -336,7 +344,8 @@ void readCfgRateFromZED() {
   while (Wire.available() && i < 16) buffer[i++] = Wire.read();
   if (i == 16 && buffer[0]==0xB5 && buffer[1]==0x62 && buffer[2]==0x06 && buffer[3]==0x08) {
     uint16_t measRate = buffer[6] | (buffer[7] << 8);
-    lastRateSet = measRate ?  String(1000 / measRate) + " Hz" : String("---");
+    lastRateSet  = measRate ? String(1000 / measRate) + " Hz" : String("---");
+    g_zedRateHz  = measRate ? (1000 / measRate) : 1;
     Serial.println(">> Current CFG-RATE: " + lastRateSet);
   } else {
     lastRateSet = "---";
@@ -377,6 +386,7 @@ void sendCfgRateToZED(uint16_t measRateMs) {
   }
   Serial.printf("CFG-RATE sent via I2C:  %u Hz\n", 1000/measRateMs);
   lastRateSet = String(1000 / measRateMs) + " Hz";
+  g_zedRateHz = 1000 / measRateMs;
   delay(100);
   sendCfgSaveToZED();
 }
@@ -2560,6 +2570,125 @@ void setup() {
     return String(buf);
   };
 
+  // ---- Quick measure (double-click from home) ----
+  OledMenu::onQuickMeasure = []() {
+    MeasureParams mp;
+    mp.name         = "";
+    mp.codice       = "";
+    mp.desc         = "";
+    mp.durationSec  = (float)g_quickMeasureDuration;
+    mp.intervalSec  = 1.0f;
+    mp.forceQuality = false;
+    SurveyPoints::startMeasure(mp);
+  };
+  OledMenu::getQuickMeasureDuration = []() -> int { return g_quickMeasureDuration; };
+
+  // ---- Base mode callbacks ----
+  OledMenu::getBaseActive = []() -> bool {
+    ZedTmodeState t;
+    return getZedTmode(t) && t.valid && t.mode > 0;
+  };
+
+  OledMenu::onStartBaseFromPoint = [](int durationSec) {
+    // Start a timed survey measurement; after completion loop() will activate the base
+    MeasureParams mp;
+    mp.name         = "BASE";
+    mp.codice       = "";
+    mp.desc         = "Base da OLED";
+    mp.durationSec  = (float)durationSec;
+    mp.intervalSec  = 1.0f;
+    mp.forceQuality = false;
+    SurveyPoints::startMeasure(mp);
+    g_pendingBaseActivation = true;
+    Serial.printf("[Base] Starting base measurement: %ds\n", durationSec);
+  };
+
+  OledMenu::onStartBaseFromList = [](int idx) {
+    // Load base record from bases.txt by index and activate as fixed base
+    String content = FlashConfig::readFile("/config/bases.txt");
+    int lineIdx = 0, start = 0;
+    while (start < (int)content.length()) {
+      int endPos = content.indexOf('\n', start);
+      if (endPos < 0) endPos = content.length();
+      String line = content.substring(start, endPos);
+      line.trim();
+      start = endPos + 1;
+      if (line.isEmpty() || line[0] == '#' || line.indexOf(';') < 0) continue;
+      if (lineIdx == idx) {
+        // Format: name;lat;lon;altGround;stid;hARP;antennaIdx;rtcmType
+        int p1 = line.indexOf(';');         if (p1 < 0) break;
+        int p2 = line.indexOf(';', p1+1);   if (p2 < 0) break;
+        int p3 = line.indexOf(';', p2+1);   if (p3 < 0) break;
+        int p4 = line.indexOf(';', p3+1);   if (p4 < 0) break;
+        int p5 = line.indexOf(';', p4+1);   if (p5 < 0) break;
+        double   lat  = line.substring(p1+1, p2).toDouble();
+        double   lon  = line.substring(p2+1, p3).toDouble();
+        double   alt  = line.substring(p3+1, p4).toDouble();
+        uint16_t stid = (uint16_t)line.substring(p4+1, p5).toInt();
+        float    hARP = line.substring(p5+1).toFloat();
+        Serial.printf("[Base] Activating from list: %s lat=%.8f lon=%.8f alt=%.3f stid=%u\n",
+                      line.substring(0, p1).c_str(), lat, lon, alt + hARP, stid);
+        applyBaseFixedLLH(lat, lon, alt + hARP, stid, 0);
+        break;
+      }
+      lineIdx++;
+    }
+  };
+
+  OledMenu::onStartSurveyIn = []() {
+    // Start ZED-F9P built-in survey-in (TMODE=1) with default duration/accuracy from config
+    // Uses applyBaseValset to configure RTCM output, then sets TMODE=1
+    Serial.println("[Base] Starting ZED survey-in from OLED");
+    uint32_t svInDur = 300;  // seconds — TODO: make configurable
+    float    svInAcc = 2.0f; // metres
+    UbxVal::setU1(0x20030001, 0);  // CFG_TMODE_MODE = 0 first (stop any active mode)
+    delay(50);
+    UbxVal::setU4(0x40030010, svInDur); // CFG_TMODE_SVIN_MIN_DUR
+    UbxVal::setU4(0x40030011, (uint32_t)(svInAcc * 10000)); // CFG_TMODE_SVIN_ACC_LIMIT (0.1mm)
+    UbxVal::setU1(0x20030001, 1);  // CFG_TMODE_MODE = 1 (Survey-in)
+    delay(100);
+    applyBaseValset(1, 0);  // configure RTCM output
+    getZedTmode(g_zedTmode);
+  };
+
+  OledMenu::onStopBase = []() {
+    stopBaseMode();
+    Serial.println("[Base] Base stopped from OLED");
+  };
+
+  OledMenu::getBaseListCount = []() -> int {
+    String content = FlashConfig::readFile("/config/bases.txt");
+    int count = 0, start = 0;
+    while (start < (int)content.length()) {
+      int endPos = content.indexOf('\n', start);
+      if (endPos < 0) endPos = content.length();
+      String line = content.substring(start, endPos);
+      line.trim();
+      start = endPos + 1;
+      if (!line.isEmpty() && line[0] != '#' && line.indexOf(';') > 0) count++;
+    }
+    return count;
+  };
+
+  OledMenu::getBaseListLabel = [](int idx) -> String {
+    String content = FlashConfig::readFile("/config/bases.txt");
+    int lineIdx = 0, start = 0;
+    while (start < (int)content.length()) {
+      int endPos = content.indexOf('\n', start);
+      if (endPos < 0) endPos = content.length();
+      String line = content.substring(start, endPos);
+      line.trim();
+      start = endPos + 1;
+      if (line.isEmpty() || line[0] == '#' || line.indexOf(';') < 0) continue;
+      if (lineIdx == idx) {
+        int p1 = line.indexOf(';');
+        return p1 > 0 ? line.substring(0, p1) : line;
+      }
+      lineIdx++;
+    }
+    return "";
+  };
+
   Serial.printf("[ENC] Rotary encoder on CLK=%d DT=%d SW=%d\n",
                 ENC_CLK_GPIO, ENC_DT_GPIO, ENC_SW_GPIO);
 #endif
@@ -2611,6 +2740,10 @@ void setup() {
   g_buzzer = new Buzzer(BUZZER_GPIO, BUZZER_LEDC_CHANNEL);
   if (g_buzzer && g_buzzer->begin()) {
     Serial.printf("[Buzzer] Initialized on GPIO %d\n", BUZZER_GPIO);
+    g_buzzer->setSD(&sd, sdMutex);
+    if (sdOK && sd.exists("/gnss/buzzer_melody.json")) {
+      g_buzzer->loadCustomMelody("/gnss/buzzer_melody.json");
+    }
   } else {
     Serial.println("[Buzzer] Failed to initialize");
   }
@@ -2909,7 +3042,31 @@ void loop() {
     }
   }
 
-  if (millis() - lastOledUpdate > 1000) {
+  // ---- Pending base activation: fires when base measurement completes ----
+  if (g_pendingBaseActivation && !SurveyPoints::isMeasuring()) {
+    g_pendingBaseActivation = false;
+    MeasureProgress prog = SurveyPoints::getMeasureProgress();
+    if (prog.status == MS_DONE) {
+      // Use current GNSS position as the averaged base position.
+      // (SurveyPoints already performed robust averaging; the current position
+      //  in RTK-fixed mode is equivalent to the computed mean.)
+      GNSSPosition pos;
+      if (getPosition(pos) && pos.carrSoln >= 1) {
+        double alt = pos.hpAccValid ? pos.altHAE : pos.altMSLHP;
+        Serial.printf("[Base] Activating base from measured point: lat=%.8f lon=%.8f alt=%.3f\n",
+                      pos.lat, pos.lon, alt);
+        applyBaseFixedLLH(pos.lat, pos.lon, alt, 1, 0);
+      } else {
+        Serial.println("[Base] Base activation failed: no valid RTK position after measurement");
+      }
+    } else {
+      Serial.println("[Base] Base activation skipped: measurement did not complete successfully");
+    }
+  }
+
+  // OLED refresh period: 500 ms at ZED ≥ 5 Hz, 1000 ms otherwise
+  const uint32_t oledPeriodMs = (g_zedRateHz >= 5) ? 500UL : 1000UL;
+  if (millis() - lastOledUpdate > oledPeriodMs) {
     // Feed GNSS data to OLED monitor
     GNSSPosition oledPos;
     if (getPosition(oledPos)) {

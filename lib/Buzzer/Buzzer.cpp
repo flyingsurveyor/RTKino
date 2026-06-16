@@ -41,10 +41,12 @@ bool Buzzer::begin() {
         return true;
     }
     
-    // Configure LEDC for PWM tone generation
-    ledcSetup(m_ledcChannel, 0, 8);  // 0 Hz initially, 8-bit resolution
+    // Configure LEDC for PWM tone generation.
+    // A non-zero seed frequency is required by the ESP-IDF LEDC peripheral;
+    // passing 0 Hz causes an IDF error log on serial at startup.
+    ledcSetup(m_ledcChannel, 1000, 8);  // 1 kHz seed, 8-bit resolution
     ledcAttachPin(m_gpio, m_ledcChannel);
-    ledcWrite(m_ledcChannel, 0);  // Start silent
+    ledcWrite(m_ledcChannel, 0);  // Start silent (0% duty cycle)
     
     m_initialized = true;
     return true;
@@ -72,7 +74,8 @@ void Buzzer::playEvent(BuzzerEvent event) {
         case BuzzerEvent::RTK_LOST:
             playMelody(MELODY_RTK_LOST);
             break;
-        default:
+        case BuzzerEvent::CUSTOM:
+            if (!m_customMelody.empty()) playMelody(m_customMelody);
             break;
     }
 }
@@ -180,17 +183,41 @@ bool Buzzer::loadMelodyFromJson(const String& json, std::vector<BuzzerTone>& mel
     return true;
 }
 
+void Buzzer::setSD(SdFat* sd, SemaphoreHandle_t sdMutex) {
+    m_sd      = sd;
+    m_sdMutex = sdMutex;
+}
+
+bool Buzzer::setCustomMelody(const String& jsonContent) {
+    std::vector<BuzzerTone> melody;
+    if (!loadMelodyFromJson(jsonContent, melody)) return false;
+    m_customMelody = melody;
+    Serial.printf("[Buzzer] Custom melody set: %d tones\n", (int)m_customMelody.size());
+    return true;
+}
+
 bool Buzzer::loadCustomMelody(const char* path) {
-    // TODO: Implement actual melody loading from file
-    // Note: This method is designed to be called from WebUI
-    // which handles SD locking. Do NOT lock SD here to avoid deadlock.
-    // When implemented, this should:
-    // 1. Read JSON from path
-    // 2. Parse using loadMelodyFromJson()
-    // 3. Store as a custom melody event
-    // 4. Return false on any error
-    Serial.printf("[Buzzer] loadCustomMelody called for %s (stub)\n", path);
-    return true;  // Stub - actual loading to be implemented
+    if (!m_sd || !m_sdMutex) {
+        Serial.println("[Buzzer] loadCustomMelody: SD not available");
+        return false;
+    }
+    bool locked = (xSemaphoreTake(m_sdMutex, pdMS_TO_TICKS(2000)) == pdTRUE);
+    if (!locked) {
+        Serial.println("[Buzzer] loadCustomMelody: SD busy");
+        return false;
+    }
+    FsFile f = m_sd->open(path, O_RDONLY);
+    if (!f) {
+        xSemaphoreGive(m_sdMutex);
+        Serial.printf("[Buzzer] loadCustomMelody: file not found: %s\n", path);
+        return false;
+    }
+    String content;
+    content.reserve(f.size());
+    while (f.available()) content += (char)f.read();
+    f.close();
+    xSemaphoreGive(m_sdMutex);
+    return setCustomMelody(content);
 }
 
 void Buzzer::startTone(uint16_t freq) {
@@ -198,9 +225,8 @@ void Buzzer::startTone(uint16_t freq) {
         return;
     }
     
-    // Reconfigure LEDC for the new frequency
+    // Change frequency on the already-attached channel (no re-attach needed)
     ledcSetup(m_ledcChannel, freq, 8);
-    ledcAttachPin(m_gpio, m_ledcChannel);
     ledcWrite(m_ledcChannel, 128);  // 50% duty cycle
 }
 

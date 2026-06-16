@@ -5196,9 +5196,10 @@ static void handleAudioUpload() {
     
     Serial.println("[AUDIO] File saved successfully");
     
-    // Reload in buzzer if available
+    // Update buzzer directly from the already-in-memory content
+    // (no need to re-read from SD — avoids an extra lock/read cycle)
     if (g_buzzer) {
-      g_buzzer->loadCustomMelody("/gnss/buzzer_melody.json");
+      g_buzzer->setCustomMelody(g_audioUploadContent);
     }
   }
 }

@@ -343,13 +343,26 @@ void oledUpdate() {
       snprintf(pdopBuf, sizeof(pdopBuf), "PDOP:%.1f", mon_pdop);
     display.setCursor(0, 9);
     display.print(pdopBuf);
-    // Age right-aligned
+    // Age right-aligned — inverted block + blink when alarm (RTK active, age > 3s)
     char ageBuf[16];
     snprintf(ageBuf, sizeof(ageBuf), "Age:%.1fs", mon_age);
     int16_t x1, y1; uint16_t w, h;
     display.getTextBounds(ageBuf, 0, 0, &x1, &y1, &w, &h);
+
+    const bool ageAlarm = (mon_carrSoln >= 1 && mon_age > 3.0f);
+    static bool s_ageBlinkState = false;
+    if (ageAlarm) {
+      s_ageBlinkState = !s_ageBlinkState;
+      if (s_ageBlinkState) {
+        display.fillRect(SCREEN_WIDTH - w - 3, 8, w + 3, 10, SSD1306_WHITE);
+        display.setTextColor(SSD1306_BLACK);
+      }
+    } else {
+      s_ageBlinkState = false;
+    }
     display.setCursor(SCREEN_WIDTH - w - 2, 9);
     display.print(ageBuf);
+    display.setTextColor(SSD1306_WHITE);
   }
 
   // ---- Row 2 (y=18): dashed separator ----

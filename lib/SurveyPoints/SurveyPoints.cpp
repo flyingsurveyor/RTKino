@@ -41,6 +41,32 @@ static uint32_t          g_lastSyncMs   = 0;
 extern volatile bool g_extintMarkerEnabled;
 
 // ============================================================
+// EXTINT / PPK event marker helper
+// ============================================================
+//
+// ZED-F9P EXTINT is an input. RTKino must generate a short pulse
+// only when a survey sample is actually acquired. The receiver
+// timestamps the rising/falling edge and reports it through UBX-TIM-TM2.
+//
+// Idle level is LOW. The pin must never be kept HIGH for the whole
+// measurement, otherwise TIM-TM2 marks the measurement start/end rather
+// than the individual samples.
+static constexpr uint32_t EXTINT_MARKER_PULSE_US = 5000;
+
+static inline void extintMarkerBeginPulse()
+{
+    digitalWrite(EXTINT_GPIO, LOW);
+    delayMicroseconds(50);
+    digitalWrite(EXTINT_GPIO, HIGH);
+}
+
+static inline void extintMarkerEndPulse()
+{
+    delayMicroseconds(EXTINT_MARKER_PULSE_US);
+    digitalWrite(EXTINT_GPIO, LOW);
+}
+
+// ============================================================
 // Static helpers
 // ============================================================
 static String currentTimestamp() {
@@ -1001,21 +1027,33 @@ static void measureTask(void* pvParam) {
 
     // ---- Sampling loop ----
     int      nCollected  = 0;
-    if (markerEnabled) {
-        digitalWrite(EXTINT_GPIO, HIGH);  // Rising edge → TIM-TM2 start marker
-    }
     uint32_t startMs     = millis();
     uint32_t durationMs  = (uint32_t)(params.durationSec * 1000.0f);
     uint32_t intervalMs  = (uint32_t)(params.intervalSec * 1000.0f);
     uint32_t lastSample  = startMs - intervalMs; // take first sample immediately
 
+    if (markerEnabled) {
+        // Make sure EXTINT starts from the idle level before the first sample.
+        digitalWrite(EXTINT_GPIO, LOW);
+    }
+
     while ((millis() - startMs) < durationMs && nCollected < maxSamples) {
         uint32_t now = millis();
         if ((now - lastSample) >= intervalMs) {
             if (SurveyPoints::snapshotProvider) {
+                if (markerEnabled) {
+                    // Rising edge: actual PPK marker for this survey sample.
+                    extintMarkerBeginPulse();
+                }
+
                 SurveyPoints::snapshotProvider(snaps[nCollected]);
                 nCollected++;
                 lastSample = now;
+
+                if (markerEnabled) {
+                    // Finish the short pulse after the sample copy.
+                    extintMarkerEndPulse();
+                }
             }
         }
         if (g_measureMutex && xSemaphoreTake(g_measureMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
@@ -1031,7 +1069,8 @@ static void measureTask(void* pvParam) {
 
     // ---- Average and save ----
     if (markerEnabled) {
-        digitalWrite(EXTINT_GPIO, LOW);   // Falling edge → TIM-TM2 end marker
+        // Keep EXTINT in the idle state after the measurement.
+        digitalWrite(EXTINT_GPIO, LOW);
     }
     bool ok = buildAndSavePoint(params, snaps, nCollected);
     free(snaps);
