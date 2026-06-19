@@ -16,6 +16,8 @@ static const struct { const char* sdPath; const char* flashPath; } MIGRATE_FILES
   { "/gnss/mdns.txt",                 "/config/mdns.txt"                },
   { "/gnss/ble_name.txt",             "/config/ble_name.txt"            },
   { "/gnss/ble_pin.txt",              "/config/ble_pin.txt"             },
+  { "/gnss/ap_ssid.txt",             "/config/ap_ssid.txt"             },
+  { "/gnss/ap_pass.txt",             "/config/ap_pass.txt"             },
   { "/gnss/config.txt",               "/config/config.txt"              },
   { "/gnss/ntrip.txt",                "/config/ntrip.txt"               },
   { "/gnss/codici_punto.json",        "/config/codici_punto.json"       },
@@ -36,6 +38,8 @@ static const struct { const char* flashPath; const char* sdPath; } SYNC_FILES[] 
   { "/config/mdns.txt",                 "/gnss/mdns.txt"                },
   { "/config/ble_name.txt",             "/gnss/ble_name.txt"            },
   { "/config/ble_pin.txt",              "/gnss/ble_pin.txt"             },
+  { "/config/ap_ssid.txt",             "/gnss/ap_ssid.txt"             },
+  { "/config/ap_pass.txt",             "/gnss/ap_pass.txt"             },
   { "/config/codici_punto.json",        "/gnss/codici_punto.json"       },
   { "/config/tz.txt",                   "/gnss/tz.txt"                  },
 };

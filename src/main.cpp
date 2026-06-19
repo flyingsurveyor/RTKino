@@ -87,6 +87,10 @@ char g_ntpTz[64] = "CET-1CEST,M3.5.0/2,M10.5.0/3";
 // NOTE: only the host label is stored here (without .local)
 char g_mdnsName[32] = "rtkino";
 
+// ===== AP mode credentials (configurable from WebUI, persistent) =====
+char g_apSsid[33] = AP_SSID;   // max 32 chars
+char g_apPass[64] = AP_PASS;   // max 63 chars, empty = open network
+
 // ===== BLE configuration =====
 // BLE enabled state — set to true during setup(), session-only if toggled off via WebUI
 bool g_bleEnabled = false;
@@ -1217,19 +1221,18 @@ bool startEspNowRx() {
   toggleTcpIn(false);
   if (g_bleRtcmEnabled) stopBleRtcm();
 
-  // Determine channel: saved preference → compile default
-  uint8_t ch = 0;
-  String savedCh = FlashConfig::readFile("/config/espnow_channel.txt");
-  savedCh.trim();
-  if (savedCh.length() > 0) ch = (uint8_t)savedCh.toInt();
-  if (ch == 0) ch = ESPNOW_WIFI_CHANNEL;
-
-  // If WiFi is connected in STA mode, the radio is locked to the AP's channel.
-  // Override ch so ESP-NOW uses the same channel and can communicate.
+  // Determine channel: always follow the radio's actual channel.
+  // In STA mode the radio is locked to the connected AP's channel.
+  // In AP (or offline) mode the radio is on ESPNOW_WIFI_CHANNEL (softAP always
+  // created on that channel). Never read the saved file in non-STA modes: it may
+  // hold a stale STA channel that would cause a mismatch with the softAP channel.
+  uint8_t ch;
   if (WiFi.status() == WL_CONNECTED) {
     ch = (uint8_t)WiFi.channel();
     Serial.printf("[ESPNOW] Using WiFi channel %d (from connected AP)\n", ch);
     FlashConfig::writeFile("/config/espnow_channel.txt", String(ch));
+  } else {
+    ch = ESPNOW_WIFI_CHANNEL;
   }
 
   // Apply runtime network_id + PSK from flash
@@ -1287,19 +1290,18 @@ void stopEspNowRx() {
 }
 
 bool startEspNowTx() {
-  // Determine channel: saved preference → compile default
-  uint8_t ch = 0;
-  String savedCh = FlashConfig::readFile("/config/espnow_channel.txt");
-  savedCh.trim();
-  if (savedCh.length() > 0) ch = (uint8_t)savedCh.toInt();
-  if (ch == 0) ch = ESPNOW_WIFI_CHANNEL;
-
-  // If WiFi is connected in STA mode, the radio is locked to the AP's channel.
-  // Override ch so ESP-NOW uses the same channel and can communicate.
+  // Determine channel: always follow the radio's actual channel.
+  // In STA mode the radio is locked to the connected AP's channel.
+  // In AP (or offline) mode the radio is on ESPNOW_WIFI_CHANNEL (softAP always
+  // created on that channel). Never read the saved file in non-STA modes: it may
+  // hold a stale STA channel that would cause a mismatch with the softAP channel.
+  uint8_t ch;
   if (WiFi.status() == WL_CONNECTED) {
     ch = (uint8_t)WiFi.channel();
     Serial.printf("[ESPNOW] Using WiFi channel %d (from connected AP)\n", ch);
     FlashConfig::writeFile("/config/espnow_channel.txt", String(ch));
+  } else {
+    ch = ESPNOW_WIFI_CHANNEL;
   }
 
   // Apply runtime network_id + PSK from flash
@@ -1461,12 +1463,12 @@ static void ensureWifiFileExists(SdFat& sd) {
 // --- AP mode helper ---
 static void startApMode() {
   WiFi.mode(WIFI_AP);
-  bool ok = WiFi.softAP(AP_SSID, AP_PASS, ESPNOW_WIFI_CHANNEL);
+  bool ok = WiFi.softAP(g_apSsid, g_apPass[0] ? g_apPass : nullptr, ESPNOW_WIFI_CHANNEL);
   IPAddress ip = WiFi.softAPIP();
   g_apMode = true;
   g_apStartMillis = millis();
   oledPrintln(ok ? "[WiFi] AP started" : "[WiFi] AP failed");
-  oledPrintln(String("SSID: ") + AP_SSID);
+  oledPrintln(String("SSID: ") + g_apSsid);
   oledPrintln(String("IP: ") + ip.toString());
 
   // In AP server and viewer must run as in STA
@@ -1484,6 +1486,34 @@ static void startApMode() {
 
   // To run server/ntrip/tcp in loop(), consider "wifiAvailable" true
   wifiAvailable = true;
+}
+
+// Runtime switch to AP mode — called from WebUI while server is already running.
+// Unlike startApMode(), does NOT re-init WebServer/TcpStreamer (already started).
+void switchToApModeNow() {
+  if (g_apMode) return;  // already in AP mode
+
+  // Stop NTRIP IN — needs internet, won't work without STA
+  if (ntripEnabled) toggleNtrip(false);
+
+  // Switch WiFi: disconnect STA, start AP on the ESP-NOW channel
+  WiFi.disconnect(false);
+  delay(100);
+  WiFi.mode(WIFI_AP);
+  bool ok = WiFi.softAP(g_apSsid, g_apPass[0] ? g_apPass : nullptr, ESPNOW_WIFI_CHANNEL);
+  IPAddress ip = WiFi.softAPIP();
+
+  g_apMode        = true;
+  g_apStartMillis = millis();
+
+  oledSetWifi(true);
+  oledSetApMode(true);
+  oledSetIP(ip.toString());
+  oledSetNtrip(false);
+
+  Serial.printf("[WiFi] Switched to AP mode at runtime: %s ch%d IP=%s (%s)\n",
+                g_apSsid, ESPNOW_WIFI_CHANNEL, ip.toString().c_str(),
+                ok ? "OK" : "FAIL");
 }
 
 void applyTimezone() {
@@ -1531,6 +1561,36 @@ bool applyMdnsHostname(const char* hostname) {
   MDNS.addService("http", "tcp", 80);
   Serial.printf("[mDNS] Started: http://%s.local/\n", hostname);
   return true;
+}
+
+// ===== AP credentials management =====
+static void loadApConfig() {
+  String ssid = FlashConfig::readFile("/config/ap_ssid.txt");
+  ssid.trim();
+  if (ssid.length() >= 1 && ssid.length() <= 32) {
+    strncpy(g_apSsid, ssid.c_str(), sizeof(g_apSsid) - 1);
+    g_apSsid[sizeof(g_apSsid) - 1] = '\0';
+  }
+  String pass = FlashConfig::readFile("/config/ap_pass.txt");
+  pass.trim();
+  if (pass.length() <= 63) {
+    strncpy(g_apPass, pass.c_str(), sizeof(g_apPass) - 1);
+    g_apPass[sizeof(g_apPass) - 1] = '\0';
+  }
+}
+
+bool saveApConfig(const char* ssid, const char* pass) {
+  if (!ssid || strlen(ssid) < 1 || strlen(ssid) > 32) return false;
+  if (!pass || strlen(pass) > 63) return false;
+  bool ok = FlashConfig::writeFile("/config/ap_ssid.txt", String(ssid) + "\n");
+  ok &= FlashConfig::writeFile("/config/ap_pass.txt", String(pass) + "\n");
+  if (ok) {
+    strncpy(g_apSsid, ssid, sizeof(g_apSsid) - 1);
+    g_apSsid[sizeof(g_apSsid) - 1] = '\0';
+    strncpy(g_apPass, pass, sizeof(g_apPass) - 1);
+    g_apPass[sizeof(g_apPass) - 1] = '\0';
+  }
+  return ok;
 }
 
 // ===== BLE name management =====
@@ -2828,6 +2888,8 @@ void setup() {
   loadNtpTz(g_ntpTz, sizeof(g_ntpTz));
   applyTimezone();   // re-apply after loading persisted timezone from flash
   loadMdnsName(g_mdnsName, sizeof(g_mdnsName));
+  loadApConfig();
+  Serial.printf("[AP] Credentials: SSID='%s' pass=%s\n", g_apSsid, g_apPass[0] ? "(set)" : "(open)");
   if (wifiList.empty()) { WifiCred c{1, DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASSWORD}; wifiList.push_back(c); oledPrintln("[WiFi] Uso fallback:  " DEFAULT_WIFI_SSID); }
   WifiProfiles::sortByPriority(wifiList);
 

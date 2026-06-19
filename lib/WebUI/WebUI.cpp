@@ -192,6 +192,11 @@ extern "C" {
 // --- RAW logging controls (defined in main.cpp) ---
 extern void startLogging();
 extern void stopLogging();
+extern void switchToApModeNow();
+extern volatile bool g_apMode;
+extern char g_apSsid[33];
+extern char g_apPass[64];
+extern bool saveApConfig(const char* ssid, const char* pass);
 extern bool loggingActive;
 
 // --- Buzzer and SystemLog (defined in main.cpp) ---
@@ -1475,8 +1480,12 @@ static void handleRoot() {
   sendChunk("<div class='card'>");
   sendChunk("<h2>📡 ESP-NOW Mesh</h2>");
   sendChunk("<div id='espnow-status'><p>Loading...</p></div>");
-  sendChunk("<div style='margin-top:10px'>");
-  sendChunk("<button id='espnow-toggle-btn' class='btn btn-success btn-small' data-enabled='0' onclick='espnowToggle()'>▶ Attiva ESP-NOW</button>");
+  sendChunk("<div style='margin-top:10px' id='espnow-buttons'>");
+  sendChunk("<button class='btn btn-success btn-small' onclick='espnowStart(\"tx\")'>&#x25B6; Base TX</button>");
+  sendChunk("&nbsp;<button class='btn btn-small' style='background:#2980b9;color:#fff' onclick='espnowStart(\"rx\")'>&#x25B6; Rover RX</button>");
+  sendChunk("</div>");
+  sendChunk("<div style='margin-top:6px'>");
+  sendChunk("<button class='btn btn-small' style='background:#8e44ad;color:#fff' onclick='startApMode()' title='Avvia AP su canale ESP-NOW e disconnetti WiFi STA'>&#x1F4F6; Avvia AP</button>");
   sendChunk("</div>");
   sendChunk("</div>");
   
@@ -1553,14 +1562,20 @@ static void handleRoot() {
   sendChunk("}");
   sendChunk("}");
   sendChunk("document.getElementById('espnow-status').innerHTML=h;");
-  sendChunk("var btn=document.getElementById('espnow-toggle-btn');");
-  sendChunk("if(btn){if(d.enabled){btn.textContent='\\u25A0 Stop ESP-NOW';btn.className='btn btn-danger btn-small';btn.dataset.enabled='1';}else{btn.textContent='\\u25B6 Attiva ESP-NOW';btn.className='btn btn-success btn-small';btn.dataset.enabled='0';}}");
+  // Update action buttons based on current state
+  sendChunk("var bd=document.getElementById('espnow-buttons');");
+  sendChunk("if(bd){");
+  sendChunk("  if(d.enabled){");
+  sendChunk("    bd.innerHTML='<button class=\"btn btn-danger btn-small\" onclick=\"espnowStop()\">&#x25A0; Stop ESP-NOW&nbsp;('+roleLabel(d.role)+')</button>';");
+  sendChunk("  } else {");
+  sendChunk("    bd.innerHTML='<button class=\"btn btn-success btn-small\" onclick=\"espnowStart(\\\"tx\\\")\">&#x25B6; Base TX</button>&nbsp;<button class=\"btn btn-small\" style=\"background:#2980b9;color:#fff\" onclick=\"espnowStart(\\\"rx\\\")\">&#x25B6; Rover RX</button>';");
+  sendChunk("  }");
+  sendChunk("}");
   sendChunk("}).catch(()=>{document.getElementById('espnow-status').innerHTML='<p>Error</p>';});");
   sendChunk("}");
   sendChunk("updateEspNow();setInterval(updateEspNow,2000);");
   sendChunk("function espnowStart(role){fetch('/espnow/start'+role,{method:'POST'}).then(()=>updateEspNow());}");
-  sendChunk("function espnowStop(){fetch('/espnow/stop',{method:'POST'}).then(()=>updateEspNow());}");
-  sendChunk("function espnowToggle(){var btn=document.getElementById('espnow-toggle-btn');if(btn&&btn.dataset.enabled==='1'){fetch('/espnow/stop',{method:'POST'}).then(()=>updateEspNow());}else{fetch('/espnow/startrx',{method:'POST'}).then(()=>updateEspNow());}}");  
+  sendChunk("function espnowStop(){fetch('/espnow/stop',{method:'POST'}).then(()=>updateEspNow());}");  
   sendChunk("function syncNtp(){");
   sendChunk("fetch('/ntp/sync').then(r=>r.text()).then(t=>{location.reload();}).catch(e=>{alert('NTP Sync Error: '+(e.message||e));});");
   sendChunk("}");
@@ -1569,7 +1584,13 @@ static void handleRoot() {
   sendChunk("if(confirm('Are you sure you want to switch to Rover mode? This will stop RTCM output and restart the ZED.')){");
     sendChunk("fetch('/api/switchToRover').then(r=>r.text()).then(t=>{alert(t);setTimeout(function(){location.reload();},3000);}).catch(e=>{alert('Error: '+(e.message||e));});");
   sendChunk("}}");
-  
+
+  // AP mode runtime switch
+  sendChunk("function startApMode(){");
+  sendChunk("if(!confirm('Passare in modalita\\' AP?\\n\\nRTKino avviera\\' AP: " + htmlEscape(String(g_apSsid)) + " (ch ESP-NOW).\\n\\nConnettiti a quell\\'AP per continuare.')) return;");
+  sendChunk("fetch('/api/start-ap',{method:'POST'}).then(r=>r.text()).then(t=>{alert(t);}).catch(()=>{alert('Connettiti a " + htmlEscape(String(g_apSsid)) + " \\u2192 http://192.168.4.1');});");
+  sendChunk("}");
+
   sendChunk("</script>");
   
   sendFooter();
@@ -3120,6 +3141,23 @@ static void handleSettingsPage() {
     sendChunk("</div>");
   }
   
+  // ===== AP Credentials Section =====
+  {
+    sendChunk("<div class='card'><h2>📶 Access Point (AP)</h2>");
+    sendChunk("<p>Credenziali dell'AP locale di RTKino (usato in assenza di WiFi o con il pulsante \"Avvia AP\" nella home).</p>");
+    sendChunk("<p><strong>IP:</strong> <code>http://192.168.4.1</code> &nbsp; <strong>Canale:</strong> stesso di ESP-NOW (configurabile in ESP-NOW Settings)</p>");
+    sendChunk("<form method='POST' action='/api/ap/config'>");
+    sendChunk("<div class='form-row'><label>SSID:</label>");
+    sendChunk("<input name='ap_ssid' value='" + htmlEscape(String(g_apSsid)) + "' maxlength='32' required style='width:220px' placeholder='rtkino_AP'></div>");
+    sendChunk("<div class='form-row' style='margin-top:8px'><label>Password:</label>");
+    sendChunk("<input name='ap_pass' type='password' value='" + htmlEscape(String(g_apPass)) + "' maxlength='63' style='width:220px' placeholder='Lascia vuoto = rete aperta'>");
+    sendChunk("<br><small style='color:#666'>Min 8 caratteri per WPA2, oppure vuoto per rete aperta.</small></div>");
+    sendChunk("<button type='submit' class='btn' style='margin-top:12px'>Salva credenziali AP</button>");
+    sendChunk("</form>");
+    sendChunk("<p style='font-size:0.85em;color:#888;margin-top:10px'>Le credenziali entrano in vigore al prossimo avvio dell'AP (\"Avvia AP\" o assenza di WiFi).</p>");
+    sendChunk("</div>");
+  }
+
   // ===== Firmware OTA Section =====
   sendChunk("<div class='card'><h2>🔄 Firmware Update (OTA)</h2>");
   sendChunk("<p>Update RTKino firmware over-the-air via web browser</p>");
@@ -6859,6 +6897,43 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
   _server->on("/log/stop", HTTP_GET, [](){
     stopLogging();
     _server->send(200, "text/plain", "RAW log STOPPED");
+  });
+
+  // AP credentials save
+  _server->on("/api/ap/config", HTTP_POST, [](){
+    if (!_server->hasArg("ap_ssid")) { _server->send(400, "text/plain", "Missing ap_ssid"); return; }
+    String ssid = _server->arg("ap_ssid");
+    String pass = _server->hasArg("ap_pass") ? _server->arg("ap_pass") : "";
+    ssid.trim(); pass.trim();
+    if (ssid.length() < 1 || ssid.length() > 32) {
+      _server->send(400, "text/plain", "SSID non valido (1-32 caratteri)"); return;
+    }
+    if (pass.length() > 0 && pass.length() < 8) {
+      _server->send(400, "text/plain", "Password troppo corta (min 8 caratteri o vuota)"); return;
+    }
+    if (pass.length() > 63) {
+      _server->send(400, "text/plain", "Password troppo lunga (max 63 caratteri)"); return;
+    }
+    if (saveApConfig(ssid.c_str(), pass.c_str())) {
+      _server->sendHeader("Location", "/settings");
+      _server->send(303);
+    } else {
+      _server->send(500, "text/plain", "Errore salvataggio credenziali AP");
+    }
+  });
+
+  // Switch to AP mode at runtime (session-only, no persistence — reboot resets to normal WiFi)
+  _server->on("/api/start-ap", HTTP_POST, [](){
+    if (g_apMode) {
+      _server->send(200, "text/plain", "Gia' in modalita' AP.");
+      return;
+    }
+    _server->send(200, "text/plain",
+      String("Passando in modalita' AP (") + g_apSsid + ", ch" + String(ESPNOW_WIFI_CHANNEL) + ").\n"
+      "Connettiti a " + g_apSsid + " e vai su http://192.168.4.1\n"
+      "Al prossimo riavvio RTKino tornera' alla modalita' WiFi normale.");
+    delay(300);
+    switchToApModeNow();
   });
 
   // Reboot endpoint
