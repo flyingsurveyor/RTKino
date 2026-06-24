@@ -83,8 +83,11 @@ char g_ntpServer[64] = "pool.ntp.org";
 // NTP timezone POSIX string (can be edited from WebUI, default: Italy CET/CEST)
 char g_ntpTz[64] = "CET-1CEST,M3.5.0/2,M10.5.0/3";
 
-// mDNS hostname (can be edited from WebUI) - browse: http://<name>.local/
-// NOTE: only the host label is stored here (without .local)
+// Device name — single source of truth for BLE, mDNS and WebUI header.
+// Stored in /config/device_name.txt; must be alphanumeric + hyphens, max 20 chars.
+char g_deviceName[32] = "RTKino";
+
+// mDNS hostname (populated from g_deviceName at boot) - browse: http://<name>.local/
 char g_mdnsName[32] = "rtkino";
 
 // ===== AP mode credentials (configurable from WebUI, persistent) =====
@@ -1639,12 +1642,39 @@ bool saveBlePin(uint32_t pin) {
 
 bool applyBleName(const char* newName) {
   if (!newName || strlen(newName) == 0 || strlen(newName) > 20) return false;
-  
   strncpy(g_bleDeviceName, newName, sizeof(g_bleDeviceName) - 1);
   g_bleDeviceName[sizeof(g_bleDeviceName) - 1] = 0;
-  
   Serial.printf("[BLE] Device name updated: %s\n", g_bleDeviceName);
   return true;
+}
+
+// ===== Device name management (single name for BLE + mDNS + WebUI header) =====
+bool loadDeviceName(char* out, size_t maxLen) {
+  String content = FlashConfig::readFile("/config/device_name.txt");
+  content.trim();
+  if (content.length() == 0 || content.length() > 20) return false;
+  strncpy(out, content.c_str(), maxLen - 1);
+  out[maxLen - 1] = '\0';
+  return true;
+}
+
+bool saveDeviceName(const char* name) {
+  if (!name || strlen(name) == 0 || strlen(name) > 20) return false;
+  bool ok = FlashConfig::writeFile("/config/device_name.txt", String(name) + "\n");
+  if (ok) FlashConfig::markDirty();
+  return ok;
+}
+
+// Apply device name to BLE, mDNS and the WebUI header global.
+// If BLE is active it will be restarted by the caller after this returns.
+void applyDeviceName(const char* name) {
+  strncpy(g_deviceName, name, sizeof(g_deviceName) - 1);
+  g_deviceName[sizeof(g_deviceName) - 1] = '\0';
+  strncpy(g_bleDeviceName, name, sizeof(g_bleDeviceName) - 1);
+  g_bleDeviceName[sizeof(g_bleDeviceName) - 1] = '\0';
+  strncpy(g_mdnsName, name, sizeof(g_mdnsName) - 1);
+  g_mdnsName[sizeof(g_mdnsName) - 1] = '\0';
+  applyMdnsHostname(g_mdnsName);
 }
 
 bool syncTimeFromNtp(const char* server) {
@@ -2416,6 +2446,7 @@ static void loadStakeoutFilePoints(int fileIdx) {
 #endif // ENC_CLK_GPIO > 0 && ...
 
 void setup() {
+  neopixelWrite(RGB_BUILTIN, 0, 0, 0);  // spegni LED RGB Lolin S3 Pro (arduino-esp32 3.x lo accende al boot)
   Serial.begin(115200);
   delay(300);
   // Apply default timezone (CET/CEST) for localtime() and filename formatting;
@@ -2823,12 +2854,20 @@ void setup() {
     }
   }
 
-  // ===== Load BLE device name from flash (persistent) =====
-  if (loadBleName(g_bleDeviceName, sizeof(g_bleDeviceName))) {
-    Serial.printf("[BLE] Device name loaded: %s\n", g_bleDeviceName);
+  // ===== Load device name (source of truth for BLE + mDNS + WebUI header) =====
+  if (loadDeviceName(g_deviceName, sizeof(g_deviceName))) {
+    Serial.printf("[Device] Name loaded: %s\n", g_deviceName);
+  } else if (loadBleName(g_deviceName, sizeof(g_deviceName))) {
+    // Migrate from legacy ble_name.txt on first boot with new firmware
+    saveDeviceName(g_deviceName);
+    Serial.printf("[Device] Name migrated from ble_name.txt: %s\n", g_deviceName);
   } else {
-    Serial.println("[BLE] Using default device name: RTKino");
+    Serial.println("[Device] Using default name: RTKino");
   }
+  strncpy(g_bleDeviceName, g_deviceName, sizeof(g_bleDeviceName) - 1);
+  g_bleDeviceName[sizeof(g_bleDeviceName) - 1] = '\0';
+  strncpy(g_mdnsName, g_deviceName, sizeof(g_mdnsName) - 1);
+  g_mdnsName[sizeof(g_mdnsName) - 1] = '\0';
 
   // ===== Load BLE PIN from flash (persistent) =====
   if (loadBlePin(&g_blePasskey)) {
@@ -2887,7 +2926,7 @@ void setup() {
   loadNtpServer(g_ntpServer, sizeof(g_ntpServer));
   loadNtpTz(g_ntpTz, sizeof(g_ntpTz));
   applyTimezone();   // re-apply after loading persisted timezone from flash
-  loadMdnsName(g_mdnsName, sizeof(g_mdnsName));
+  // g_mdnsName already set from g_deviceName above
   loadApConfig();
   Serial.printf("[AP] Credentials: SSID='%s' pass=%s\n", g_apSsid, g_apPass[0] ? "(set)" : "(open)");
   if (wifiList.empty()) { WifiCred c{1, DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASSWORD}; wifiList.push_back(c); oledPrintln("[WiFi] Uso fallback:  " DEFAULT_WIFI_SSID); }

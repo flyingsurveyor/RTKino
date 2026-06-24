@@ -17,6 +17,7 @@
 // Time sync globals (defined in main.cpp)
 extern char g_ntpServer[64];
 extern char g_ntpTz[64];
+extern char g_deviceName[32];
 extern char g_mdnsName[32];
 extern volatile uint8_t g_timeSource;
 extern volatile time_t  g_lastSyncEpoch;
@@ -424,16 +425,28 @@ form.inline { display: inline; }
   body {
     font-size: 13px;
   }
-  
+
   th, td {
     padding: 4px 6px;
     font-size: 11px;
   }
-  
+
   h1 {
     font-size: 1.3em;
   }
 }
+/* Settings hub grid */
+.settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 8px; }
+.settings-card { display: flex !important; align-items: center; text-decoration: none !important; color: #2c3e50 !important; background: #fff; border-radius: 10px; padding: 20px 20px 20px 22px; box-shadow: 0 3px 10px rgba(0,0,0,0.12); border-left: 6px solid #3498db; transition: box-shadow 0.2s, transform 0.15s; cursor: pointer; }
+.settings-card:hover { box-shadow: 0 6px 20px rgba(0,0,0,0.18); transform: translateY(-2px); text-decoration: none !important; }
+.settings-card-body { flex: 1; min-width: 0; }
+.settings-card-title { font-size: 16px; font-weight: 700; color: #2c3e50; display: block; margin-bottom: 5px; }
+.settings-card-summary { font-size: 12px; color: #95a5a6; line-height: 1.5; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.settings-card-arrow { color: #bdc3c7; font-size: 28px; font-weight: 300; margin-left: 12px; flex-shrink: 0; line-height: 1; }
+.settings-hub-title { color: #2c3e50; font-size: 20px; margin-bottom: 4px; }
+.settings-hub-sub { color: #7f8c8d; font-size: 13px; margin-bottom: 18px; }
+.settings-breadcrumb { margin-bottom: 16px; }
+@media screen and (max-width: 600px) { .settings-grid { grid-template-columns: 1fr; } }
 )CSS";
 
 // ========================================================================
@@ -618,11 +631,13 @@ static void sendHeader(const char* title, const char* activePage = "") {
   sendChunk("<title>");
   sendChunk(title);
   sendChunk(" - RTKino</title>");
-  sendChunk("<link rel='stylesheet' href='/css'>");
+  sendChunk("<link rel='stylesheet' href='/css?v=3'>");
   sendChunk("</head><body>");
   
   // Header
-  sendChunk("<div class='header'><h1>RTKino - ");
+  sendChunk("<div class='header'><h1>");
+  sendChunk(g_deviceName[0] ? g_deviceName : "RTKino");
+  sendChunk(" &ndash; ");
   sendChunk(title);
   sendChunk("</h1></div>");
   
@@ -647,7 +662,7 @@ static void sendHeader(const char* title, const char* activePage = "") {
   
   nav = "<a href='/rover'";
   if (active == "rover") nav += " class='active'";
-  nav += " title='Rover'><span class='nav-text'>Rover</span></a>";
+  nav += " title='RTCM IN'><span class='nav-text'>RTCM IN</span></a>";
   sendChunk(nav);
   
   nav = "<a href='/base-cfg'";
@@ -697,6 +712,9 @@ struct NtripIn {
   String name, host, mount, user, pass; int port;
 };
 static String ntripInListPath(){ return "/config/ntrip_in_list.txt"; }
+static std::vector<NtripIn> s_ntripInCache;
+static int s_ntripInLastIdx = -1;
+static bool s_ntripInCacheValid = false;
 
 // NTRIP OUT list
 struct NtripOut {
@@ -715,13 +733,16 @@ struct TcpIn {
   String name, host; int port;
 };
 static String tcpInListPath(){ return "/config/tcp_in_lista.txt"; }
+static std::vector<TcpIn> s_tcpInCache;
+static int s_tcpInLastIdx = -1;
+static bool s_tcpInCacheValid = false;
 
 // ========================================================================
 // LOAD/SAVE FUNCTIONS FOR DATA FILES
 // ========================================================================
 
-static void loadBases(std::vector<BaseRec>& out){
-  out.clear();
+static void loadBases(std::vector<BaseRec>& out, int& lastIdx){
+  out.clear(); lastIdx = -1;
   String content = FlashConfig::readFile(basesFilePath().c_str());
   if (content.length() == 0) return;
 
@@ -732,7 +753,12 @@ static void loadBases(std::vector<BaseRec>& out){
     String line = content.substring(start, endPos);
     line.trim();
     start = endPos + 1;
-    if (line.length() == 0 || line[0] == '#') continue;
+    if (line.length() == 0) continue;
+    if (line[0] == '#') {
+      int p = line.indexOf("LAST=");
+      if (p >= 0) lastIdx = line.substring(p + 5).toInt();
+      continue;
+    }
     int p1=line.indexOf(';'); if (p1<0) continue;
     int p2=line.indexOf(';',p1+1); if (p2<0) continue;
     int p3=line.indexOf(';',p2+1); if (p3<0) continue;
@@ -771,8 +797,11 @@ static void loadBases(std::vector<BaseRec>& out){
   std::sort(out.begin(), out.end(), [](const BaseRec&a, const BaseRec&b){ return a.stid < b.stid; });
 }
 
-static bool saveBases(const std::vector<BaseRec>& v){
-  String content = "# name;lat;lon;altGround;stid;hARP;antennaIdx;rtcmType\n";
+static void loadBases(std::vector<BaseRec>& out) { int dummy; loadBases(out, dummy); }
+
+static bool saveBases(const std::vector<BaseRec>& v, int lastIdx = -1){
+  String content = String("# LAST=") + lastIdx + "\n";
+  content += "# name;lat;lon;altGround;stid;hARP;antennaIdx;rtcmType\n";
   for (auto& b: v){
     content += clampSemi(b.name); content += ';';
     content += String(b.lat,8); content += ';';
@@ -784,6 +813,34 @@ static bool saveBases(const std::vector<BaseRec>& v){
     content += String((int)b.rtcmType); content += '\n';
   }
   return FlashConfig::writeFile(basesFilePath().c_str(), content);
+}
+
+// ========================================================================
+// BASE AUTO-START CONFIG
+// ========================================================================
+
+struct BaseAutoStart { bool ntrip=false, tcp=false, ble=false; };
+static String baseAutoStartPath(){ return "/config/base_autostart.txt"; }
+
+static BaseAutoStart loadBaseAutoStart(){
+  BaseAutoStart s;
+  String content = FlashConfig::readFile(baseAutoStartPath().c_str());
+  int pos=0;
+  while (pos < (int)content.length()) {
+    int e=content.indexOf('\n',pos); if(e<0) e=content.length();
+    String line=content.substring(pos,e); line.trim(); pos=e+1;
+    if(line.startsWith("NTRIP=")) s.ntrip = line.substring(6).toInt() != 0;
+    else if(line.startsWith("TCP=")) s.tcp = line.substring(4).toInt() != 0;
+    else if(line.startsWith("BLE=")) s.ble = line.substring(4).toInt() != 0;
+  }
+  return s;
+}
+
+static bool saveBaseAutoStart(const BaseAutoStart& s){
+  String content = String("NTRIP=") + (s.ntrip?1:0) + "\n";
+  content += String("TCP=") + (s.tcp?1:0) + "\n";
+  content += String("BLE=") + (s.ble?1:0) + "\n";
+  return FlashConfig::writeFile(baseAutoStartPath().c_str(), content);
 }
 
 // ========================================================================
@@ -821,37 +878,42 @@ static bool saveAntennas(const std::vector<AntennaRec>& v){
 }
 
 static int loadNtripInList(std::vector<NtripIn>& out, int& lastIdx){
-  out.clear(); lastIdx=-1;
-  String content = FlashConfig::readFile(ntripInListPath().c_str());
-  if (content.length() == 0) return 0;
-
-  int start = 0;
-  while (start < (int)content.length()) {
-    int endPos = content.indexOf('\n', start);
-    if (endPos < 0) endPos = content.length();
-    String line = content.substring(start, endPos);
-    line.trim();
-    start = endPos + 1;
-    if (line.length() == 0) continue;
-    if (line.startsWith("#")){
-      int p=line.indexOf("LAST=");
-      if (p>=0){ lastIdx = line.substring(p+5).toInt(); }
-      continue;
+  if (!s_ntripInCacheValid) {
+    s_ntripInCache.clear(); s_ntripInLastIdx = -1;
+    String content = FlashConfig::readFile(ntripInListPath().c_str());
+    if (content.length() > 0) {
+      int start = 0;
+      while (start < (int)content.length()) {
+        int endPos = content.indexOf('\n', start);
+        if (endPos < 0) endPos = content.length();
+        String line = content.substring(start, endPos);
+        line.trim();
+        start = endPos + 1;
+        if (line.length() == 0) continue;
+        if (line.startsWith("#")){
+          int p=line.indexOf("LAST=");
+          if (p>=0){ s_ntripInLastIdx = line.substring(p+5).toInt(); }
+          continue;
+        }
+        int p1=line.indexOf(';'); if (p1<0) continue;
+        int p2=line.indexOf(';',p1+1); if (p2<0) continue;
+        int p3=line.indexOf(';',p2+1); if (p3<0) continue;
+        int p4=line.indexOf(';',p3+1); if (p4<0) continue;
+        int p5=line.indexOf(';',p4+1); if (p5<0) continue;
+        NtripIn n;
+        n.name  = line.substring(0,p1);
+        n.host  = line.substring(p1+1,p2);
+        n.port  = line.substring(p2+1,p3).toInt();
+        n.mount = line.substring(p3+1,p4);
+        n.user  = line.substring(p4+1,p5);
+        n.pass  = line.substring(p5+1);
+        s_ntripInCache.push_back(n);
+      }
     }
-    int p1=line.indexOf(';'); if (p1<0) continue;
-    int p2=line.indexOf(';',p1+1); if (p2<0) continue;
-    int p3=line.indexOf(';',p2+1); if (p3<0) continue;
-    int p4=line.indexOf(';',p3+1); if (p4<0) continue;
-    int p5=line.indexOf(';',p4+1); if (p5<0) continue;
-    NtripIn n;
-    n.name  = line.substring(0,p1);
-    n.host  = line.substring(p1+1,p2);
-    n.port  = line.substring(p2+1,p3).toInt();
-    n.mount = line.substring(p3+1,p4);
-    n.user  = line.substring(p4+1,p5);
-    n.pass  = line.substring(p5+1);
-    out.push_back(n);
+    s_ntripInCacheValid = true;
   }
+  out = s_ntripInCache;
+  lastIdx = s_ntripInLastIdx;
   return (int)out.size();
 }
 
@@ -864,7 +926,9 @@ static bool saveNtripInList(const std::vector<NtripIn>& v, int lastIdx){
     content += n.mount; content += ';'; content += n.user; content += ';';
     content += n.pass; content += '\n';
   }
-  return FlashConfig::writeFile(ntripInListPath().c_str(), content);
+  bool ok = FlashConfig::writeFile(ntripInListPath().c_str(), content);
+  if (ok) { s_ntripInCache = v; s_ntripInLastIdx = lastIdx; s_ntripInCacheValid = true; }
+  return ok;
 }
 
 static int loadNtripOutList(std::vector<NtripOut>& out, int& lastIdx){
@@ -915,30 +979,35 @@ static bool saveNtripOutList(const std::vector<NtripOut>& v, int lastIdx){
 }
 
 static int loadTcpInList(std::vector<TcpIn>& out, int& lastIdx){
-  out.clear(); lastIdx=-1;
-  String content = FlashConfig::readFile(tcpInListPath().c_str());
-  if (content.length() == 0) return 0;
-
-  int start = 0;
-  while (start < (int)content.length()) {
-    int endPos = content.indexOf('\n', start);
-    if (endPos < 0) endPos = content.length();
-    String line = content.substring(start, endPos);
-    line.trim();
-    start = endPos + 1;
-    if (!line.length()) continue;
-    if (line.startsWith("#")){
-      int p=line.indexOf("LAST=");
-      if (p>=0){ lastIdx = line.substring(p+5).toInt(); }
-      continue;
+  if (!s_tcpInCacheValid) {
+    s_tcpInCache.clear(); s_tcpInLastIdx = -1;
+    String content = FlashConfig::readFile(tcpInListPath().c_str());
+    if (content.length() > 0) {
+      int start = 0;
+      while (start < (int)content.length()) {
+        int endPos = content.indexOf('\n', start);
+        if (endPos < 0) endPos = content.length();
+        String line = content.substring(start, endPos);
+        line.trim();
+        start = endPos + 1;
+        if (!line.length()) continue;
+        if (line.startsWith("#")){
+          int p=line.indexOf("LAST=");
+          if (p>=0){ s_tcpInLastIdx = line.substring(p+5).toInt(); }
+          continue;
+        }
+        int p1=line.indexOf(';'); if (p1<0) continue;
+        int p2=line.indexOf(';',p1+1); if (p2<0) continue;
+        TcpIn t; t.name = line.substring(0,p1);
+        t.host = line.substring(p1+1,p2);
+        t.port = line.substring(p2+1).toInt();
+        s_tcpInCache.push_back(t);
+      }
     }
-    int p1=line.indexOf(';'); if (p1<0) continue;
-    int p2=line.indexOf(';',p1+1); if (p2<0) continue;
-    TcpIn t; t.name = line.substring(0,p1);
-    t.host = line.substring(p1+1,p2);
-    t.port = line.substring(p2+1).toInt();
-    out.push_back(t);
+    s_tcpInCacheValid = true;
   }
+  out = s_tcpInCache;
+  lastIdx = s_tcpInLastIdx;
   return (int)out.size();
 }
 
@@ -949,7 +1018,9 @@ static bool saveTcpInList(const std::vector<TcpIn>& v, int lastIdx){
     content += clampSemi(t.name); content += ';'; content += t.host;
     content += ';'; content += t.port; content += '\n';
   }
-  return FlashConfig::writeFile(tcpInListPath().c_str(), content);
+  bool ok = FlashConfig::writeFile(tcpInListPath().c_str(), content);
+  if (ok) { s_tcpInCache = v; s_tcpInLastIdx = lastIdx; s_tcpInCacheValid = true; }
+  return ok;
 }
 
 static int loadTcpOutClientList(std::vector<TcpOutClient>& out, int& lastIdx){
@@ -1103,6 +1174,11 @@ static void handleApiRtcm() {
     
     json += "]}";
     _server->send(200, "application/json", json);
+}
+
+static void handleApiRtcmReset() {
+  resetRtcmStats();
+  _server->send(200, "text/plain", "OK");
 }
 
 static void handleApiAntennas() {
@@ -1277,16 +1353,18 @@ static void handleSurveySave() {
     b.hARP = res.instrumentHeight;  // Save the instrument height used
     b.antennaIdx = antennaIdx;      // Save antenna index
     
-    // Load existing bases
-    std::vector<BaseRec> v;
-    loadBases(v);
+    // Load existing bases (preserve lastIdx)
+    int baseLast=-1; std::vector<BaseRec> v;
+    loadBases(v, baseLast);
+    uint16_t selStid = (baseLast>=0&&baseLast<(int)v.size()) ? v[baseLast].stid : 0;
     v.push_back(b);
-    
+
     // Sort by STID
     std::sort(v.begin(), v.end(), [](const BaseRec&a, const BaseRec&b){return a.stid<b.stid;});
-    
+    if (selStid>0) { baseLast=-1; for(int i=0;i<(int)v.size();i++) if(v[i].stid==selStid){baseLast=i;break;} }
+
     // Save to file
-    if (!saveBases(v)) {
+    if (!saveBases(v, baseLast)) {
         _server->send(500, "application/json", "{\"error\":\"Failed to save base station\"}");
         return;
     }
@@ -1470,7 +1548,7 @@ static void handleRoot() {
   
   // RTCM Stream Card
   sendChunk("<div class='card'>");
-  sendChunk("<h2>📡 RTCM Stream</h2>");
+  sendChunk("<h2>📡 RTCM Stream <button onclick='resetRtcm()' class='btn btn-small btn-secondary' style='float:right;margin-top:-4px;' title='Azzera conteggio messaggi RTCM'>&#x21BA; Reset</button></h2>");
   sendChunk("<div id='rtcm-status'>");
   sendChunk("<p>Loading...</p>");
   sendChunk("</div>");
@@ -1536,6 +1614,7 @@ static void handleRoot() {
   sendChunk("}).catch(e=>{document.getElementById('rtcm-status').innerHTML='<p>Error loading RTCM data</p>';});");
   sendChunk("}");
   sendChunk("updateRtcm();setInterval(updateRtcm,2000);");
+  sendChunk("function resetRtcm(){fetch('/api/rtcm/reset',{method:'POST'}).then(()=>updateRtcm()).catch(e=>alert('Errore: '+(e.message||e)));}");
 
   // ESP-NOW status polling
   sendChunk("function roleLabel(r){return r==='tx'?'Base TX':(r==='rx'?'Rover RX':(r==='relay'?'Relay':'---'));}");
@@ -1601,7 +1680,7 @@ static void handleRoot() {
 // ========================================================================
 
 static void handleRoverPage() {
-  sendHeader("Rover", "rover");
+  sendHeader("RTCM IN", "rover");
 
   // Load connection data
   std::vector<NtripIn> ntripList; int ntripLast=-1;
@@ -1617,7 +1696,7 @@ static void handleRoverPage() {
   sendChunk("</script>");
 
   sendChunk("<div class='card'>");
-  sendChunk("<h2>&#x1F4E5; Corrections IN (Rover)</h2>");
+  sendChunk("<h2>&#x1F4E5; RTCM IN</h2>");
 
   // --- NTRIP IN ---
   sendChunk("<h3>NTRIP IN</h3>");
@@ -1682,9 +1761,9 @@ static void handleRoverPage() {
 // ========================================================================
 
 static void handleRoverConnectionsPage() {
-  sendHeader("Rover – Connections IN", "rover");
+  sendHeader("RTCM IN – Connections", "rover");
 
-  sendChunk("<p style='margin-bottom:14px;'><a class='btn' href='/rover'>&larr; Back to Rover</a></p>");
+  sendChunk("<p style='margin-bottom:14px;'><a class='btn' href='/rover'>&larr; Back to RTCM IN</a></p>");
 
   // --- NTRIP IN Profiles ---
   std::vector<NtripIn> ntripList; int ntripLast=-1;
@@ -1732,13 +1811,36 @@ static void handleRoverConnectionsPage() {
   sendChunk("<h3>Add NTRIP IN Profile</h3>");
   sendChunk("<form method='POST' action='/ntrip/add'>");
   sendChunk("<label>Name:</label><input name='name' required><br>");
-  sendChunk("<label>Host:</label><input name='host' required><br>");
-  sendChunk("<label>Port:</label><input name='port' type='number' value='2101' required><br>");
-  sendChunk("<label>Mountpoint:</label><input name='mount' required><br>");
-  sendChunk("<label>User:</label><input name='user'><br>");
-  sendChunk("<label>Password:</label><input name='pwd' type='password'><br>");
+  sendChunk("<label>Host:</label><input id='aHost' name='host' required><br>");
+  sendChunk("<label>Port:</label><input id='aPort' name='port' type='number' value='2101' required><br>");
+  sendChunk("<label>User:</label><input id='aUser' name='user'><br>");
+  sendChunk("<label>Password:</label><input id='aPwd' name='pwd' type='password'><br>");
+  sendChunk("<label>Mountpoint:</label><div style='display:flex;gap:6px;align-items:center;max-width:320px;'>");
+  sendChunk("<input id='aMount' name='mount' required style='flex:1;'>");
+  sendChunk("<button type='button' id='aBrowseBtn' onclick='browseMount(\"aMount\",\"aHost\",\"aPort\",\"aUser\",\"aPwd\",\"aStResult\",\"aBrowseBtn\")'>Browse</button>");
+  sendChunk("</div><div id='aStResult' style='margin-top:8px;overflow-x:auto;'></div><br>");
   sendChunk("<button type='submit'>Add NTRIP IN Profile</button>");
   sendChunk("</form></div>");
+  sendChunk("<script>");
+  sendChunk("function browseMount(mId,hId,pId,uId,wId,rId,bId){");
+  sendChunk("var h=document.getElementById(hId).value.trim(),p=document.getElementById(pId).value.trim();");
+  sendChunk("if(!h||!p){alert('Inserisci host e porta prima di sfogliare');return;}");
+  sendChunk("var btn=document.getElementById(bId);btn.disabled=true;btn.textContent='Caricamento...';");
+  sendChunk("var u=document.getElementById(uId).value.trim(),w=document.getElementById(wId).value.trim();");
+  sendChunk("fetch('/ntrip/sourcetable?host='+encodeURIComponent(h)+'&port='+p+'&user='+encodeURIComponent(u)+'&pass='+encodeURIComponent(w))");
+  sendChunk(".then(function(r){return r.json();}).then(function(d){");
+  sendChunk("btn.disabled=false;btn.textContent='Browse';");
+  sendChunk("var div=document.getElementById(rId);");
+  sendChunk("if(!d.ok){div.innerHTML='<p style=\"color:red\">'+d.err+'</p>';return;}");
+  sendChunk("if(!d.mounts||d.mounts.length===0){div.innerHTML='<p><em>Nessun mountpoint trovato</em></p>';return;}");
+  sendChunk("var html='<table style=\"font-size:13px\"><tr><th>ID</th><th>Formato</th><th>Nav</th><th>Paese</th><th>Lat</th><th>Lon</th></tr>';");
+  sendChunk("d.mounts.forEach(function(m){");
+  sendChunk("html+='<tr style=\"cursor:pointer\" onclick=\"document.getElementById(\\''+mId+'\\').value=\\''+m.id+'\\'\">'+");
+  sendChunk("'<td><strong>'+m.id+'</strong></td><td>'+(m.fmt||'')+'</td><td>'+(m.nav||'')+'</td><td>'+(m.ctr||'')+'</td><td>'+(m.lat||'')+'</td><td>'+(m.lon||'')+'</td></tr>';");
+  sendChunk("});html+='</table><p style=\"font-size:12px;color:#666\">Clicca una riga per selezionare il mountpoint</p>';");
+  sendChunk("div.innerHTML=html;");
+  sendChunk("}).catch(function(e){btn.disabled=false;btn.textContent='Browse';alert('Errore: '+e.message);});}");
+  sendChunk("</script>");
 
   // --- TCP IN Profiles ---
   std::vector<TcpIn> tcpList; int tcpLast=-1;
@@ -1808,117 +1910,93 @@ static void handleRoverConnectionsPage() {
 static void handleBasePage() {
   sendHeader("Base", "base");
 
-  // JavaScript for quick actions
   sendChunk("<script>");
-  sendChunk("function startOut(){fetch('/baseout/start').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
   sendChunk("function stopOut(){fetch('/baseout/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
-  sendChunk("function startTcpClient(){fetch('/tcpclient/start').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
   sendChunk("function stopTcpClient(){fetch('/tcpclient/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
-  sendChunk("function startBleOut(){fetch('/api/blertcm/start').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
   sendChunk("function stopBleOut(){fetch('/api/blertcm/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
-  sendChunk("function stopBase(){fetch('/base/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
   sendChunk("function switchToRover(){if(confirm('Switch to Rover mode? This will stop RTCM OUT and restart the ZED.')){fetch('/api/switchToRover').then(r=>r.text()).then(t=>{alert(t);setTimeout(()=>location.reload(),3000);}).catch(e=>{alert('Error: '+(e.message||e));})}}");
+  sendChunk("function avviaBase(){");
+  sendChunk("  var btn=document.getElementById('btn-avvia-base');");
+  sendChunk("  btn.disabled=true; btn.textContent='Configuring ZED...';");
+  sendChunk("  fetch('/api/startBaseMode').then(function(r){");
+  sendChunk("    if(!r.ok) return r.text().then(function(t){throw new Error(t);});");
+  sendChunk("    btn.textContent='Starting outputs in 4s...';");
+  sendChunk("    return new Promise(function(res){setTimeout(res,4000);});");
+  sendChunk("  }).then(function(){ return fetch('/api/startAllOutputs'); })");
+  sendChunk("  .then(function(r){ return r.text(); })");
+  sendChunk("  .then(function(t){ alert('Base mode started!\\n'+t); location.reload(); })");
+  sendChunk("  .catch(function(e){ alert('Error: '+(e.message||e)); btn.disabled=false; btn.textContent='\\u25BA Start Base Mode'; });");
+  sendChunk("}");
   sendChunk("</script>");
 
-  // --- Base Station status card ---
-  sendChunk("<div class='card'>");
-  sendChunk("<h2>&#x1F4FB; Base Station</h2>");
-
   ZedTmodeState tmode;
-  if (getZedTmode(tmode) && tmode.valid) {
-    sendChunk("<div class='status-row'><span class='status-led ");
-    if (tmode.mode == 2) sendChunk("led-on'></span><strong>ZED-F9P Mode:</strong>&nbsp;<span style='color:#2ecc71'>BASE – Fixed</span>");
-    else if (tmode.mode == 1) sendChunk("led-off'></span><strong>ZED-F9P Mode:</strong>&nbsp;<span style='color:#f39c12'>Survey-In</span>");
-    else sendChunk("led-off'></span><strong>ZED-F9P Mode:</strong>&nbsp;<span style='color:#3498db'>Rover (TMODE disabled)</span>");
+  bool tmodeOk = UbxVal::getTmodeState(tmode) && tmode.valid;
+  bool inBaseMode = tmodeOk && tmode.mode == 2;
+
+  if (inBaseMode) {
+    // === BASE ATTIVA ===
+    sendChunk("<div class='card' style='border-left:4px solid #2ecc71;'>");
+    sendChunk("<h2><span class='status-led led-on' style='margin-right:8px;'></span>&#x1F4FB; BASE – Fixed</h2>");
+    String coords = "<p style='margin:4px 0 12px 0;color:#555;'>";
+    coords += "Lat: " + String(tmode.lat, 8) + "&deg;<br>";
+    coords += "Lon: " + String(tmode.lon, 8) + "&deg;<br>";
+    coords += "H: " + String(tmode.height, 3) + " m</p>";
+    sendChunk(coords);
+    sendChunk("<button onclick='switchToRover()' style='width:100%;min-height:52px;font-size:1.1em;background:#e67e22;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:bold;'>&#x21BA; Rover</button>");
     sendChunk("</div>");
-    if (tmode.mode == 2) {
-      String coords = "<p style='margin:6px 0 0 22px;font-size:0.9em;color:#555;'>";
-      coords += "Lat: " + String(tmode.lat, 8) + "&deg; &nbsp; ";
-      coords += "Lon: " + String(tmode.lon, 8) + "&deg; &nbsp; ";
-      coords += "H: " + String(tmode.height, 3) + " m</p>";
-      sendChunk(coords);
+  } else {
+    // === ROVER / NON IN BASE ===
+    int baseLast=-1; std::vector<BaseRec> bases; loadBases(bases, baseLast);
+    std::vector<NtripOut> outList; int outLast=-1; loadNtripOutList(outList, outLast);
+    std::vector<TcpOutClient> tcpList; int tcpLast=-1; loadTcpOutClientList(tcpList, tcpLast);
+    BaseAutoStart as = loadBaseAutoStart();
+
+    sendChunk("<div class='card'>");
+    sendChunk("<h2>&#x1F4FB; Start Base Mode</h2>");
+
+    // Selected station
+    sendChunk("<p><strong>Station:</strong> ");
+    if (baseLast>=0 && baseLast<(int)bases.size()) {
+      const auto& b=bases[baseLast];
+      sendChunk("<span class='badge'>" + htmlEscape(b.name) + "</span>");
+      sendChunk("<br><small style='color:#555'>Lat: "+String(b.lat,8)+" &nbsp; Lon: "+String(b.lon,8)+" &nbsp; H: "+String(b.altGround,3)+" m</small>");
+    } else {
+      sendChunk("<em style='color:#e74c3c;'>None selected &mdash; go to Base Stations and select one</em>");
     }
-  } else {
-    sendChunk("<div class='status-row'><span class='status-led led-off'></span><strong>ZED-F9P Mode:</strong>&nbsp;<span style='color:#95a5a6'>Unknown</span></div>");
+    sendChunk("</p>");
+
+    // Auto-start outputs
+    sendChunk("<p><strong>Outputs on start:</strong>");
+    sendChunk("<ul style='margin:4px 0 8px 16px;font-size:0.92em;'>");
+    if (as.ntrip) {
+      String n = (outLast>=0&&outLast<(int)outList.size()) ? htmlEscape(outList[outLast].name) : "<em>no profile selected</em>";
+      sendChunk("<li>NTRIP OUT: " + n + "</li>");
+    }
+    if (as.tcp) {
+      String t = (tcpLast>=0&&tcpLast<(int)tcpList.size()) ? htmlEscape(tcpList[tcpLast].name) : "<em>no profile selected</em>";
+      sendChunk("<li>TCP Client OUT: " + t + "</li>");
+    }
+    if (as.ble) sendChunk("<li>BLE RTCM OUT</li>");
+    if (!as.ntrip && !as.tcp && !as.ble) sendChunk("<li style='color:#95a5a6;'>No outputs configured &mdash; set them in RTCM Outputs</li>");
+    sendChunk("</ul></p>");
+
+    bool canStart = (baseLast>=0 && baseLast<(int)bases.size());
+    sendChunk("<button id='btn-avvia-base' onclick='avviaBase()' style='width:100%;min-height:52px;font-size:1.1em;background:");
+    sendChunk(canStart ? "#27ae60" : "#95a5a6");
+    sendChunk(";color:white;border:none;border-radius:6px;cursor:pointer;font-weight:bold;'");
+    if (!canStart) sendChunk(" disabled title='Select a station first'");
+    sendChunk(">&#x25BA; Start Base Mode</button>");
+    sendChunk("</div>");
   }
 
-  sendChunk("<div style='margin-top:10px;'>");
-  sendChunk("<button onclick='stopBase()' class='btn-danger' style='min-height:44px;padding:10px 18px;font-size:1em;'>&#x25A0; Stop Base</button> ");
-  if (tmode.valid && tmode.mode == 2) {
-    sendChunk("<button onclick='switchToRover()' style='min-height:44px;padding:10px 18px;font-size:1em;background:#f39c12;color:white;border:none;border-radius:4px;cursor:pointer;'>&#x21BA; Switch to Rover</button>");
-  }
-  sendChunk("</div>");
-  sendChunk("<hr style='margin:14px 0;border:none;border-top:1px solid #ecf0f1;'>");
-  sendChunk("<a href='/base/stations' style='display:block;text-align:center;min-height:48px;line-height:48px;font-size:1.05em;background:#3498db;color:white;border-radius:4px;text-decoration:none;'>&#x2699; Manage Base Stations</a>");
-  sendChunk("</div>"); // end Base Station card
-
-  // --- RTCM Outputs card ---
-  std::vector<NtripOut> outList; int outLast=-1;
-  loadNtripOutList(outList, outLast);
-  std::vector<TcpOutClient> tcpClientList; int tcpClientLast=-1;
-  loadTcpOutClientList(tcpClientList, tcpClientLast);
-
+  // Manage links (always visible)
   sendChunk("<div class='card'>");
-  sendChunk("<h2>&#x1F4E4; RTCM Outputs (Base)</h2>");
-
-  // NTRIP OUT
-  sendChunk("<h3>NTRIP OUT</h3>");
-  sendChunk("<p><strong>Selected Profile:</strong> ");
-  if (outLast>=0 && outLast<(int)outList.size()) {
-    const auto& o = outList[outLast];
-    sendChunk("<span class='badge'>" + htmlEscape(o.name) + "</span>");
-    sendChunk("<br><small style='color:#555'>" + htmlEscape(o.host) + ":" + String(o.port) +
-              " &mdash; Mount: " + htmlEscape(o.mount) + "</small>");
-  } else {
-    sendChunk("<em>None selected</em>");
-  }
-  sendChunk("</p>");
-  sendChunk("<div style='margin-top:8px;'>");
-  sendChunk("<button onclick='startOut()' class='btn-success' style='min-height:44px;padding:10px 18px;font-size:1em;'>&#x25BA; Start NTRIP OUT</button> ");
-  sendChunk("<button onclick='stopOut()' class='btn-danger' style='min-height:44px;padding:10px 18px;font-size:1em;'>&#x25A0; Stop NTRIP OUT</button>");
+  sendChunk("<h2>&#x2699; Manage</h2>");
+  sendChunk("<div style='display:flex;gap:10px;flex-wrap:wrap;'>");
+  sendChunk("<a href='/base/stations' style='flex:1;display:block;text-align:center;min-height:48px;line-height:48px;font-size:1em;background:#3498db;color:white;border-radius:4px;text-decoration:none;'>&#x1F5FA; Base Stations</a>");
+  sendChunk("<a href='/base/outputs' style='flex:1;display:block;text-align:center;min-height:48px;line-height:48px;font-size:1em;background:#3498db;color:white;border-radius:4px;text-decoration:none;'>&#x1F4E4; RTCM Outputs</a>");
   sendChunk("</div>");
-
-  sendChunk("<hr style='margin:14px 0;border:none;border-top:1px solid #ecf0f1;'>");
-
-  // TCP Client OUT
-  sendChunk("<h3>TCP Client OUT</h3>");
-  sendChunk("<p><strong>Selected Profile:</strong> ");
-  if (tcpClientLast>=0 && tcpClientLast<(int)tcpClientList.size()) {
-    const auto& tc = tcpClientList[tcpClientLast];
-    sendChunk("<span class='badge'>" + htmlEscape(tc.name) + "</span>");
-    sendChunk("<br><small style='color:#555'>" + htmlEscape(tc.host) + ":" + String(tc.port) + "</small>");
-  } else {
-    sendChunk("<em>None selected</em>");
-  }
-  sendChunk("</p>");
-  sendChunk("<div style='margin-top:8px;'>");
-  sendChunk("<button onclick='startTcpClient()' class='btn-success' style='min-height:44px;padding:10px 18px;font-size:1em;'>&#x25BA; Start TCP Client OUT</button> ");
-  sendChunk("<button onclick='stopTcpClient()' class='btn-danger' style='min-height:44px;padding:10px 18px;font-size:1em;'>&#x25A0; Stop TCP Client OUT</button>");
   sendChunk("</div>");
-
-  sendChunk("<hr style='margin:14px 0;border:none;border-top:1px solid #ecf0f1;'>");
-
-  // BLE OUT
-  sendChunk("<h3>BLE RTCM OUT</h3>");
-  sendChunk("<div class='status-row'><span class='status-led ");
-  if (g_bleRtcmEnabled && g_bleRtcm.isConnected()) {
-    sendChunk("led-on'></span><strong>Status:</strong>&nbsp;Connected");
-    sendChunk(" (" + htmlEscape(g_bleRtcm.connectedName()) + ")");
-  } else if (g_bleRtcmEnabled) {
-    sendChunk("led-off'></span><strong>Status:</strong>&nbsp;");
-    sendChunk(g_bleRtcm.isScanning() ? "Scanning..." : "Waiting");
-  } else {
-    sendChunk("led-off'></span><strong>Status:</strong>&nbsp;Disabled");
-  }
-  sendChunk("</div>");
-  sendChunk("<div style='margin-top:8px;'>");
-  sendChunk("<button onclick='startBleOut()' class='btn-success' style='min-height:44px;padding:10px 18px;font-size:1em;'>&#x25BA; Start BLE OUT</button> ");
-  sendChunk("<button onclick='stopBleOut()' class='btn-danger' style='min-height:44px;padding:10px 18px;font-size:1em;'>&#x25A0; Stop BLE OUT</button>");
-  sendChunk("</div>");
-
-  sendChunk("<hr style='margin:14px 0;border:none;border-top:1px solid #ecf0f1;'>");
-  sendChunk("<a href='/base/outputs' style='display:block;text-align:center;min-height:48px;line-height:48px;font-size:1.05em;background:#3498db;color:white;border-radius:4px;text-decoration:none;'>&#x2699; Manage RTCM Outputs</a>");
-  sendChunk("</div>"); // end Outputs card
 
   sendFooter();
 }
@@ -1953,8 +2031,9 @@ static void handleBaseStationsPage() {
   sendChunk("</form></div>");
   
   // Saved Bases
+  int baseLast=-1;
   std::vector<BaseRec> bases;
-  loadBases(bases);
+  loadBases(bases, baseLast);
 
   // Load antennas for display
   std::vector<AntennaRec> antennas;
@@ -1962,14 +2041,24 @@ static void handleBaseStationsPage() {
 
   sendChunk("<div class='card'><h2>&#x1F5FA; Saved Base Stations</h2>");
 
+  // Default station indicator
+  sendChunk("<p><strong>Default station:</strong> ");
+  if (baseLast>=0 && baseLast<(int)bases.size()) {
+    sendChunk("<span class='badge'>" + htmlEscape(bases[baseLast].name) + "</span> <small style='color:#555;'>(used by Start Base Mode)</small>");
+  } else {
+    sendChunk("<em style='color:#e74c3c;'>None &mdash; press Select on a station below</em>");
+  }
+  sendChunk("</p>");
+
   if (!bases.empty()) {
     sendChunk("<div class='responsive-table'>");
     sendChunk("<table><tr><th>#</th><th>STID</th><th>Name</th><th>Lat</th><th>Lon</th><th>H ground [m]</th><th>H ARP [m]</th><th>Antenna</th><th>RTCM</th><th>Actions</th></tr>");
     for (size_t i=0;i<bases.size();++i){
       auto& b=bases[i];
-      String row = "<tr><td data-label='#'>" + String(i) + "</td>";
+      bool isSel = (baseLast == (int)i);
+      String row = "<tr" + String(isSel ? " style='font-weight:bold;'" : "") + "><td data-label='#'>" + String(i) + "</td>";
       row += "<td data-label='STID'>" + String(b.stid) + "</td>";
-      row += "<td data-label='Name'>" + htmlEscape(b.name) + "</td>";
+      row += "<td data-label='Name'>" + htmlEscape(b.name) + (isSel ? " <span class='badge' style='background:#27ae60;'>&#x2713;</span>" : "") + "</td>";
       row += "<td data-label='Lat'>" + String(b.lat,8) + "</td>";
       row += "<td data-label='Lon'>" + String(b.lon,8) + "</td>";
       row += "<td data-label='H ground [m]'>" + String(b.altGround,3) + "</td>";
@@ -1982,7 +2071,7 @@ static void handleBaseStationsPage() {
       String rtcmType = (b.rtcmType == 0) ? "MSM7 4c" : "MSM4 3c";
       row += "<td data-label='RTCM'>" + rtcmType + "</td>";
       row += "<td data-label='Actions'>";
-      row += "<button onclick='confirmStartBase(" + String(i) + ")' class='btn btn-small btn-success'>&#x25BA; Start</button> ";
+      row += "<a href='/bases/select?idx=" + String(i) + "' class='btn btn-small" + (isSel ? " btn-success" : "") + "'>&#x2713; Select</a> ";
       row += "<a href='/bases/edit?idx=" + String(i) + "' class='btn btn-small'>&#x270F; Edit</a> ";
       row += "<a href='/bases/del?idx=" + String(i) + "' class='btn btn-small btn-danger' onclick='return confirm(\"Delete " + escapeForOnclick(b.name) + "?\")'>&#x274C; Delete</a>";
       row += "</td></tr>";
@@ -2283,6 +2372,39 @@ static void handleBaseOutputsPage() {
   sendChunk("function stopBleOut(){fetch('/api/blertcm/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
   sendChunk("</script>");
 
+  // --- Auto-start con Modalità Base ---
+  {
+    BaseAutoStart as = loadBaseAutoStart();
+    std::vector<NtripOut> outList; int outLast=-1; loadNtripOutList(outList, outLast);
+    std::vector<TcpOutClient> tcpList; int tcpLast=-1; loadTcpOutClientList(tcpList, tcpLast);
+
+    sendChunk("<div class='card' style='border-left:4px solid #27ae60;'>");
+    sendChunk("<h2>&#x26A1; Auto-start with Base Mode</h2>");
+    sendChunk("<p style='font-size:0.9em;color:#555;'>Select which outputs start automatically when <strong>Start Base Mode</strong> is pressed.</p>");
+    sendChunk("<form method='POST' action='/api/base-autostart'>");
+
+    // NTRIP OUT
+    String ntripLabel = (outLast>=0&&outLast<(int)outList.size()) ? htmlEscape(outList[outLast].name) : "<em>no profile selected</em>";
+    sendChunk("<label style='display:flex;align-items:center;gap:8px;margin:8px 0;'>");
+    sendChunk("<input type='checkbox' name='ntrip' value='1'" + String(as.ntrip?" checked":"") + ">");
+    sendChunk("<span><strong>NTRIP OUT</strong>: " + ntripLabel + "</span></label>");
+
+    // TCP Client OUT
+    String tcpLabel = (tcpLast>=0&&tcpLast<(int)tcpList.size()) ? htmlEscape(tcpList[tcpLast].name) : "<em>no profile selected</em>";
+    sendChunk("<label style='display:flex;align-items:center;gap:8px;margin:8px 0;'>");
+    sendChunk("<input type='checkbox' name='tcp' value='1'" + String(as.tcp?" checked":"") + ">");
+    sendChunk("<span><strong>TCP Client OUT</strong>: " + tcpLabel + "</span></label>");
+
+    // BLE OUT
+    sendChunk("<label style='display:flex;align-items:center;gap:8px;margin:8px 0;'>");
+    sendChunk("<input type='checkbox' name='ble' value='1'" + String(as.ble?" checked":"") + ">");
+    sendChunk("<span><strong>BLE RTCM OUT</strong></span></label>");
+
+    sendChunk("<button type='submit' class='btn-success' style='margin-top:10px;'>&#x1F4BE; Save Auto-start</button>");
+    sendChunk("</form>");
+    sendChunk("</div>");
+  }
+
   // --- NTRIP OUT Profiles ---
   std::vector<NtripOut> outList; int outLast=-1;
   loadNtripOutList(outList, outLast);
@@ -2314,10 +2436,9 @@ static void handleBaseOutputsPage() {
       row += "<td data-label='Mount'>" + htmlEscape(n.mount) + "</td>";
       row += "<td data-label='TCP Port'>" + String(n.tcpPort) + "</td>";
       row += "<td data-label='Actions'>";
-      row += "<a href='/baseout/select?idx=" + String(i) + "' class='btn btn-small'>&#x2713; Select</a> ";
+      row += "<a href='/baseout/select?idx=" + String(i) + "' class='btn btn-small" + String(outLast==(int)i?" btn-success":"") + "'>&#x2713; Select</a> ";
       row += "<a href='/baseout/edit?idx=" + String(i) + "' class='btn btn-small'>&#x270F; Edit</a> ";
-      row += "<a href='/baseout/del?idx=" + String(i) + "' class='btn btn-small btn-danger' onclick='return confirm(\"Delete " + escapeForOnclick(n.name) + "?\")'>&#x274C; Delete</a> ";
-      row += "<a href='/baseout/start?id=" + String(i) + "' class='btn btn-small btn-success'>&#x25BA; Start</a>";
+      row += "<a href='/baseout/del?idx=" + String(i) + "' class='btn btn-small btn-danger' onclick='return confirm(\"Delete " + escapeForOnclick(n.name) + "?\")'>&#x274C; Delete</a>";
       row += "</td></tr>";
       sendChunk(row);
     }
@@ -2367,10 +2488,9 @@ static void handleBaseOutputsPage() {
       row += "<td data-label='Host'>" + htmlEscape(t.host) + "</td>";
       row += "<td data-label='Port'>" + String(t.port) + "</td>";
       row += "<td data-label='Actions'>";
-      row += "<a href='/tcpclient/select?idx=" + String(i) + "' class='btn btn-small'>&#x2713; Select</a> ";
+      row += "<a href='/tcpclient/select?idx=" + String(i) + "' class='btn btn-small" + String(tcpClientLast==(int)i?" btn-success":"") + "'>&#x2713; Select</a> ";
       row += "<a href='/tcpclient/edit?idx=" + String(i) + "' class='btn btn-small'>&#x270F; Edit</a> ";
-      row += "<a href='/tcpclient/del?idx=" + String(i) + "' class='btn btn-small btn-danger' onclick='return confirm(\"Delete " + escapeForOnclick(t.name) + "?\")'>&#x274C; Delete</a> ";
-      row += "<a href='/tcpclient/start?id=" + String(i) + "' class='btn btn-small btn-success'>&#x25BA; Start</a>";
+      row += "<a href='/tcpclient/del?idx=" + String(i) + "' class='btn btn-small btn-danger' onclick='return confirm(\"Delete " + escapeForOnclick(t.name) + "?\")'>&#x274C; Delete</a>";
       row += "</td></tr>";
       sendChunk(row);
     }
@@ -2440,13 +2560,6 @@ static void renderBluetoothCard() {
     sendChunk("<option value='0' selected>OFF</option>");
   }
   sendChunk("</select>");
-  sendChunk("</div>");
-  
-  // Device Name Input
-  sendChunk("<div class='form-row' style='margin-top:10px'>");
-  sendChunk("<label>Device Name:</label>");
-  sendChunk("<input type='text' name='ble_name' value='" + htmlEscape(String(g_bleDeviceName)) + "' maxlength='20' placeholder='RTKino' style='width:220px' />");
-  sendChunk("<br><small style='color:#666'>Max 20 characters (a-z A-Z 0-9 _ -)</small>");
   sendChunk("</div>");
   
   // Pairing PIN Input
@@ -2726,80 +2839,119 @@ static void renderEspNowCard() {
 // SETTINGS PAGE (/settings) - WiFi, NTP, ZED rate, System
 // ========================================================================
 
+// ========================================================================
+// SETTINGS HUB — /settings
+// ========================================================================
+
 static void handleSettingsPage() {
   sendHeader("Settings", "settings");
-  
-  // System Controls Card (at top of settings)
-  sendChunk("<div class='card'><h2>⚙️ System Controls</h2>");
-  
-  // ZED-F9P Reset buttons
-  sendChunk("<h3>ZED-F9P Reset</h3>");
-  sendChunk("<button onclick=\"resetZed('hot')\" class='btn'>🔄 Hot Reset</button> ");
-  sendChunk("<button onclick=\"resetZed('cold')\" class='btn btn-warning'>🔄 Cold Reset</button>");
-  sendChunk("<p style='font-size:0.85em;color:#666;margin-top:8px;'>");
-  sendChunk("⚠️ <b>Hot Reset:</b> Keeps ephemeris, fast restart (~5s)<br>");
-  sendChunk("⚠️ <b>Cold Reset:</b> Clears everything, slow restart (~30s)");
-  sendChunk("</p>");
-  
-  // ESP32 Reboot button
-  sendChunk("<h3>ESP32</h3>");
-  sendChunk("<button onclick=\"rebootEsp()\" class='btn btn-danger'>🔄 Reboot ESP32</button>");
-  sendChunk("<p style='font-size:0.85em;color:#666;margin-top:8px;'>");
-  sendChunk("⚠️ Connection will be lost during reboot.");
-  sendChunk("</p>");
-  
-  // JavaScript for confirmations
-  sendChunk("<script>");
-  sendChunk("function resetZed(type){");
-  sendChunk("var coldMsg='Cold Reset will clear all ephemeris data.\\nFix will take ~30 seconds.\\n\\nContinue?';");
-  sendChunk("var hotMsg='Hot Reset will restart ZED-F9P keeping ephemeris.\\n\\nContinue?';");
-  sendChunk("var msg=type==='cold'?coldMsg:hotMsg;");
-  sendChunk("if(confirm('⚠️ '+msg)){");
-  sendChunk("fetch('/api/zed/reset?type='+type)");
-  sendChunk(".then(r=>r.text())");
-  sendChunk(".then(t=>{alert(t);location.reload();})");
-  sendChunk(".catch(err=>{alert('Error resetting ZED: '+(err.message||err));});");
-  sendChunk("}");
-  sendChunk("}");
-  sendChunk("function rebootEsp(){");
-  sendChunk("if(confirm('⚠️ Reboot ESP32?\\nConnection will be lost.')){");
-  sendChunk("location.href='/reboot';");
-  sendChunk("}");
-  sendChunk("}");
-  sendChunk("</script>");
-  
+
+  sendChunk("<h2 class='settings-hub-title'>Settings</h2>");
+  sendChunk("<p class='settings-hub-sub'>Select a category to configure.</p>");
+  sendChunk("<div class='settings-grid'>");
+
+  // --- Connectivity card ---
+  {
+    std::vector<WifiCred> wl;
+    WifiProfiles::loadFromFlash(wl);
+    String summary = String(wl.size()) + " WiFi network" + (wl.size() != 1 ? "s" : "");
+    summary += " &middot; BLE: " + String(g_bleEnabled ? "ON" : "OFF");
+    String mdns = String(g_mdnsName);
+    if (mdns.length() == 0) mdns = "rtkino";
+    summary += " &middot; " + htmlEscape(mdns) + ".local";
+    sendChunk("<a href='/settings/connectivity' class='settings-card' style='border-left-color:#3498db'>");
+    sendChunk("<div class='settings-card-body'>");
+    sendChunk("<span class='settings-card-title'>Connectivity</span>");
+    sendChunk("<span class='settings-card-summary'>" + summary + "</span>");
+    sendChunk("</div><span class='settings-card-arrow'>&#8250;</span></a>");
+  }
+
+  // --- GNSS card ---
+  {
+    String summary = "Rate: " + (lastRateSet.length() ? lastRateSet : "default");
+    summary += " &middot; TCP: " + String(getStreamModeName());
+    sendChunk("<a href='/settings/gnss' class='settings-card' style='border-left-color:#27ae60'>");
+    sendChunk("<div class='settings-card-body'>");
+    sendChunk("<span class='settings-card-title'>GNSS</span>");
+    sendChunk("<span class='settings-card-summary'>" + summary + "</span>");
+    sendChunk("</div><span class='settings-card-arrow'>&#8250;</span></a>");
+  }
+
+  // --- Survey card ---
+  {
+    std::vector<AntennaRec> antennas;
+    loadAntennas(antennas);
+    int catCount = PointCodes::getCategoryCount();
+    String summary = String(antennas.size()) + " antenna" + (antennas.size() != 1 ? "s" : "");
+    summary += " &middot; " + String(catCount) + " code categor" + (catCount != 1 ? "ies" : "y");
+    sendChunk("<a href='/settings/survey' class='settings-card' style='border-left-color:#e67e22'>");
+    sendChunk("<div class='settings-card-body'>");
+    sendChunk("<span class='settings-card-title'>Survey</span>");
+    sendChunk("<span class='settings-card-summary'>" + summary + "</span>");
+    sendChunk("</div><span class='settings-card-arrow'>&#8250;</span></a>");
+  }
+
+  // --- Time card ---
+  {
+    String srv = String(g_ntpServer);
+    if (srv.length() == 0) srv = "not set";
+    String summary = "NTP: " + htmlEscape(srv);
+    summary += " &middot; " + String(timeSourceName(g_timeSource));
+    sendChunk("<a href='/settings/time' class='settings-card' style='border-left-color:#9b59b6'>");
+    sendChunk("<div class='settings-card-body'>");
+    sendChunk("<span class='settings-card-title'>Time</span>");
+    sendChunk("<span class='settings-card-summary'>" + summary + "</span>");
+    sendChunk("</div><span class='settings-card-arrow'>&#8250;</span></a>");
+  }
+
+  // --- System card ---
+  {
+    bool buzzerOn = (g_buzzer && g_buzzer->isEnabled());
+    String summary = String(buzzerOn ? "Audio: ON" : "Audio: OFF");
+    summary += " &middot; " + String(OTAManager::getCurrentPartitionInfo());
+    sendChunk("<a href='/settings/system' class='settings-card' style='border-left-color:#e74c3c'>");
+    sendChunk("<div class='settings-card-body'>");
+    sendChunk("<span class='settings-card-title'>System</span>");
+    sendChunk("<span class='settings-card-summary'>" + summary + "</span>");
+    sendChunk("</div><span class='settings-card-arrow'>&#8250;</span></a>");
+  }
+
   sendChunk("</div>");
-  
-  // ===== BLE (Bluetooth Low Energy) Section - MOVED HERE (second position) =====
-  renderBluetoothCard();
-  renderBleRtcmCard();
-  
-  // WiFi Configuration
+  sendFooter();
+}
+
+// ========================================================================
+// SETTINGS — CONNECTIVITY  /settings/connectivity
+// ========================================================================
+
+static void handleSettingsConnectivity() {
+  sendHeader("Settings - Connectivity", "settings");
+
+  sendChunk("<div class='settings-breadcrumb'><a href='/settings' class='btn btn-secondary btn-small'>&#8592; Settings</a></div>");
+
+  // WiFi Networks
   std::vector<WifiCred> wifiList;
   WifiProfiles::loadFromFlash(wifiList);
   WifiProfiles::sortByPriority(wifiList);
-  
+
   sendChunk("<div class='card'><h2>WiFi Networks</h2>");
-  
   if (!wifiList.empty()) {
     sendChunk("<div class='responsive-table'>");
     sendChunk("<table><tr><th>#</th><th>Priority</th><th>SSID</th><th>Actions</th></tr>");
-    for (size_t i=0;i<wifiList.size();++i){
+    for (size_t i = 0; i < wifiList.size(); ++i) {
       String row = "<tr><td data-label='#'>" + String(i) + "</td>";
       row += "<td data-label='Priority'>" + String(wifiList[i].priority) + "</td>";
       row += "<td data-label='SSID'>" + htmlEscape(wifiList[i].ssid) + "</td>";
       row += "<td data-label='Actions'>";
-      row += "<a href='/wifi/edit?idx=" + String(i) + "' class='btn btn-small'>✏️ Edit</a> ";
-      row += "<a href='/wifi/del?idx=" + String(i) + "' class='btn btn-small btn-danger' onclick='return confirm(\"Delete " + escapeForOnclick(wifiList[i].ssid) + "?\")'>❌ Delete</a>";
+      row += "<a href='/wifi/edit?idx=" + String(i) + "' class='btn btn-small'>&#9998; Edit</a> ";
+      row += "<a href='/wifi/del?idx=" + String(i) + "' class='btn btn-small btn-danger' onclick='return confirm(\"Delete " + escapeForOnclick(wifiList[i].ssid) + "?\")'>&#10006; Delete</a>";
       row += "</td></tr>";
       sendChunk(row);
     }
-    sendChunk("</table>");
-    sendChunk("</div>");
+    sendChunk("</table></div>");
   } else {
     sendChunk("<p><em>No WiFi networks saved.</em></p>");
   }
-  
   sendChunk("<h3>Add WiFi Network</h3>");
   sendChunk("<form method='POST' action='/wifi/add'>");
   sendChunk("<label>Priority:</label><input name='prio' type='number' value='10' style='width:100px'><br>");
@@ -2808,10 +2960,156 @@ static void handleSettingsPage() {
   sendChunk("<button type='submit'>Add Network</button>");
   sendChunk("</form></div>");
 
-  // ===== ESP-NOW (after WiFi networks, as requested) =====
+  // BLE
+  renderBluetoothCard();
+  renderBleRtcmCard();
+
+  // ESP-NOW
   renderEspNowCard();
-  
-  // NTP / Time
+
+  // AP Credentials
+  sendChunk("<div class='card'><h2>Access Point (AP)</h2>");
+  sendChunk("<p>Credentials for RTKino local AP (used when no WiFi is available or via the &ldquo;Start AP&rdquo; button on the home page).</p>");
+  sendChunk("<p><strong>IP:</strong> <code>http://192.168.4.1</code></p>");
+  sendChunk("<form method='POST' action='/api/ap/config'>");
+  sendChunk("<label>SSID:</label>");
+  sendChunk("<input name='ap_ssid' value='" + htmlEscape(String(g_apSsid)) + "' maxlength='32' required style='width:220px' placeholder='rtkino_AP'><br>");
+  sendChunk("<label>Password:</label>");
+  sendChunk("<input name='ap_pass' type='password' value='" + htmlEscape(String(g_apPass)) + "' maxlength='63' style='width:220px' placeholder='Leave empty for open network'><br>");
+  sendChunk("<small style='color:#666'>Min 8 characters for WPA2, or leave empty for open network.</small><br>");
+  sendChunk("<button type='submit' class='btn' style='margin-top:12px'>Save AP Credentials</button>");
+  sendChunk("</form>");
+  sendChunk("<p style='font-size:0.85em;color:#888;margin-top:10px'>Takes effect on next AP start.</p>");
+  sendChunk("</div>");
+
+  sendFooter();
+}
+
+// ========================================================================
+// SETTINGS — GNSS  /settings/gnss
+// ========================================================================
+
+static void handleSettingsGnss() {
+  sendHeader("Settings - GNSS", "settings");
+
+  sendChunk("<div class='settings-breadcrumb'><a href='/settings' class='btn btn-secondary btn-small'>&#8592; Settings</a></div>");
+
+  // Update Rate
+  sendChunk("<div class='card'><h2>ZED-F9P Update Rate</h2>");
+  sendChunk("<p><strong>Last rate set:</strong> " + lastRateSet + "</p>");
+  sendChunk("<form method='POST' action='/setrate'>");
+  sendChunk("<label>Select frequency:</label><br>");
+  sendChunk("<select name='rate'>");
+  sendChunk("<option value='1000'>1 Hz</option>");
+  sendChunk("<option value='500'>2 Hz</option>");
+  sendChunk("<option value='200'>5 Hz</option>");
+  sendChunk("<option value='100'>10 Hz</option>");
+  sendChunk("<option value='66'>15 Hz</option>");
+  sendChunk("</select><br>");
+  sendChunk("<button type='submit'>Set Rate</button>");
+  sendChunk("</form></div>");
+
+  // ZED-F9P Reset
+  sendChunk("<div class='card'><h2>ZED-F9P Reset</h2>");
+  sendChunk("<button onclick=\"resetZed('hot')\" class='btn'>Hot Reset</button> ");
+  sendChunk("<button onclick=\"resetZed('cold')\" class='btn btn-danger'>Cold Reset</button>");
+  sendChunk("<p style='font-size:0.85em;color:#666;margin-top:8px'>");
+  sendChunk("<b>Hot Reset:</b> Keeps ephemeris, fast restart (~5s)<br>");
+  sendChunk("<b>Cold Reset:</b> Clears everything, slow restart (~30s)");
+  sendChunk("</p>");
+  sendChunk("<script>");
+  sendChunk("function resetZed(type){");
+  sendChunk("var coldMsg='Cold Reset will clear all ephemeris data.\\nFix will take ~30 seconds.\\n\\nContinue?';");
+  sendChunk("var hotMsg='Hot Reset will restart ZED-F9P keeping ephemeris.\\n\\nContinue?';");
+  sendChunk("var msg=type==='cold'?coldMsg:hotMsg;");
+  sendChunk("if(confirm('WARNING: '+msg)){");
+  sendChunk("fetch('/api/zed/reset?type='+type).then(r=>r.text()).then(t=>{alert(t);location.reload();})");
+  sendChunk(".catch(err=>{alert('Error resetting ZED: '+(err.message||err));});}}");
+  sendChunk("</script></div>");
+
+  // TCP Stream Mode
+  sendChunk("<div class='card'><h2>TCP Stream Mode</h2>");
+  sendChunk("<p>Data format sent over TCP stream to connected viewer apps.</p>");
+  sendChunk("<p><strong>Current mode:</strong> " + String(getStreamModeName()) + "</p>");
+  sendChunk("<button onclick='setMode(\"nmea\")' class='btn'>NMEA+UBX/RTCM</button> ");
+  sendChunk("<button onclick='setMode(\"raw\")' class='btn'>RAW (UBX)</button>");
+  sendChunk("<script>function setMode(m){fetch('/stream?mode='+m).then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}</script>");
+  sendChunk("</div>");
+
+  sendFooter();
+}
+
+// ========================================================================
+// SETTINGS — SURVEY  /settings/survey
+// ========================================================================
+
+static void handleSettingsSurvey() {
+  sendHeader("Settings - Survey", "settings");
+
+  sendChunk("<div class='settings-breadcrumb'><a href='/settings' class='btn btn-secondary btn-small'>&#8592; Settings</a></div>");
+
+  // Antenna Models
+  std::vector<AntennaRec> antennas;
+  loadAntennas(antennas);
+
+  sendChunk("<div class='card'><h2>Antenna Models</h2>");
+  sendChunk("<p>Antenna models with ARP to phase center offsets.</p>");
+  if (!antennas.empty()) {
+    sendChunk("<div class='responsive-table'>");
+    sendChunk("<table><tr><th>#</th><th>Name</th><th>Offset (m)</th><th>Actions</th></tr>");
+    for (size_t i = 0; i < antennas.size(); ++i) {
+      auto& a = antennas[i];
+      String row = "<tr><td data-label='#'>" + String(i) + "</td>";
+      row += "<td data-label='Name'>" + htmlEscape(a.name) + "</td>";
+      row += "<td data-label='Offset (m)'>" + String(a.offset, 3) + "</td>";
+      row += "<td data-label='Actions'>";
+      row += "<a href='/antennas/edit?idx=" + String(i) + "' class='btn btn-small'>&#9998; Edit</a> ";
+      row += "<a href='/antennas/del?idx=" + String(i) + "' class='btn btn-small btn-danger' onclick='return confirm(\"Delete " + escapeForOnclick(a.name) + "?\")'>&#10006; Delete</a>";
+      row += "</td></tr>";
+      sendChunk(row);
+    }
+    sendChunk("</table></div>");
+  } else {
+    sendChunk("<p><em>No antenna models configured.</em></p>");
+  }
+  sendChunk("<h3>Add Antenna Model</h3>");
+  sendChunk("<form method='POST' action='/antennas/add'>");
+  sendChunk("<label>Name:</label><input name='name' required placeholder='e.g. u-blox ANN-MB'><br>");
+  sendChunk("<label>Offset (m):</label><input name='offset' type='number' step='0.001' value='0.000' style='width:150px' required> (ARP to phase center)<br>");
+  sendChunk("<button type='submit'>Add Antenna</button>");
+  sendChunk("</form></div>");
+
+  // Point Codes
+  sendChunk("<div class='card'><h2>Point Codes</h2>");
+  sendChunk("<p style='color:#666;font-size:13px'>Categories and codes used during the survey. Freely editable; use &ldquo;Reset&rdquo; to restore defaults.</p>");
+  sendChunk("<textarea id='codes-ta' style='width:100%;height:300px;font-family:monospace;font-size:12px;border:1px solid #ddd;border-radius:4px;padding:8px'>Loading...</textarea>");
+  sendChunk("<div style='margin-top:12px'>");
+  sendChunk("<button onclick='saveCodes()' class='btn'>Save</button>");
+  sendChunk("<button onclick='resetCodes()' class='btn' style='margin-left:8px;background:#e67e22'>Reset default</button>");
+  sendChunk("</div></div>");
+  sendChunk("<script>");
+  sendChunk("function loadCodesEditor(){fetch('/api/codes').then(r=>r.json()).then(d=>{var ta=document.getElementById('codes-ta');if(ta)ta.value=JSON.stringify(d,null,2);}).catch(function(){});}");
+  sendChunk("function saveCodes(){var ta=document.getElementById('codes-ta');if(!ta)return;");
+  sendChunk("fetch('/api/codes',{method:'POST',headers:{'Content-Type':'application/json'},body:ta.value})");
+  sendChunk(".then(r=>r.json()).then(d=>{alert(d.ok?'Saved!':'Error: '+(d.error||'?'));}).catch(e=>{alert('Network error: '+e);});}");
+  sendChunk("function resetCodes(){if(!confirm('Restore default codes?'))return;");
+  sendChunk("fetch('/api/codes/reset',{method:'POST'}).then(r=>r.json()).then(d=>{if(d.ok){alert('Reset OK');loadCodesEditor();}}).catch(e=>{alert('Error: '+e);});}");
+  sendChunk("loadCodesEditor();");
+  sendChunk("</script>");
+
+  sendFooter();
+}
+
+// ========================================================================
+// SETTINGS — TIME  /settings/time
+// ========================================================================
+
+static void handleSettingsTime() {
+  sendHeader("Settings - Time", "settings");
+
+  sendChunk("<div class='settings-breadcrumb'><a href='/settings' class='btn btn-secondary btn-small'>&#8592; Settings</a></div>");
+
+  // Refresh globals from flash
   String fromFile;
   if (loadNtpServerFile(fromFile)) {
     strncpy(g_ntpServer, fromFile.c_str(), sizeof(g_ntpServer) - 1);
@@ -2822,7 +3120,7 @@ static void handleSettingsPage() {
     strncpy(g_ntpTz, tzFromFile.c_str(), sizeof(g_ntpTz) - 1);
     g_ntpTz[sizeof(g_ntpTz) - 1] = 0;
   }
-  
+
   time_t nowEpoch = time(nullptr);
   String nowStr = "n/a";
   if (nowEpoch > 1700000000) {
@@ -2834,7 +3132,6 @@ static void handleSettingsPage() {
              lt.tm_hour, lt.tm_min, lt.tm_sec);
     nowStr = buf;
   }
-  
   String lastStr = "n/a";
   if ((time_t)g_lastSyncEpoch > 1700000000) {
     time_t t = (time_t)g_lastSyncEpoch;
@@ -2846,12 +3143,12 @@ static void handleSettingsPage() {
              lt2.tm_hour, lt2.tm_min, lt2.tm_sec);
     lastStr = buf2;
   }
-  
+
   sendChunk("<div class='card'><h2>NTP / Time</h2>");
   sendChunk("<p><strong>Current Time:</strong> " + nowStr + "</p>");
   sendChunk("<p><strong>Source:</strong> " + String(timeSourceName(g_timeSource)) + "</p>");
   sendChunk("<p><strong>Last Sync:</strong> " + lastStr + "</p>");
-  
+
   sendChunk("<h3>NTP Server</h3>");
   sendChunk("<form method='POST' action='/ntp/save'>");
   sendChunk("<label>Server:</label><input name='server' value='" + htmlEscape(String(g_ntpServer)) + "' style='width:320px'><br>");
@@ -2885,373 +3182,231 @@ static void handleSettingsPage() {
     { "Pacific US (PST/PDT)",                 "PST8PDT,M3.2.0,M11.1.0"                   },
   };
   String curTz = String(g_ntpTz);
-  for (int i = 0; i < (int)(sizeof(TZ_LIST)/sizeof(TZ_LIST[0])); i++) {
+  for (int i = 0; i < (int)(sizeof(TZ_LIST) / sizeof(TZ_LIST[0])); i++) {
     String sel = (curTz == TZ_LIST[i].posix) ? " selected" : "";
     sendChunk("<option value='" + htmlEscape(String(TZ_LIST[i].posix)) + "'" + sel + ">" +
               htmlEscape(String(TZ_LIST[i].label)) + "</option>");
   }
   sendChunk("</select><br>");
   sendChunk("<button type='submit'>Save</button>");
-  sendChunk("</form>");
-  sendChunk("</div>");
-  
-  // ZED Rate
-  sendChunk("<div class='card'><h2>ZED-F9P Update Rate</h2>");
-  sendChunk("<p><strong>Last rate set:</strong> " + lastRateSet + "</p>");
-  sendChunk("<form method='POST' action='/setrate'>");
-  sendChunk("<label>Select frequency:</label><br>");
-  sendChunk("<select name='rate'>");
-  sendChunk("<option value='1000'>1 Hz</option>");
-  sendChunk("<option value='500'>2 Hz</option>");
-  sendChunk("<option value='200'>5 Hz</option>");
-  sendChunk("<option value='100'>10 Hz</option>");
-  sendChunk("<option value='66'>15 Hz</option>");
-  sendChunk("</select><br>");
-  sendChunk("<button type='submit'>Set Rate</button>");
   sendChunk("</form></div>");
-  
-  // Antenna Models
-  std::vector<AntennaRec> antennas;
-  loadAntennas(antennas);
-  
-  sendChunk("<div class='card'><h2>📡 Antenna Models</h2>");
-  sendChunk("<p>Manage antenna models with ARP to phase center offsets</p>");
-  
-  if (!antennas.empty()) {
-    sendChunk("<div class='responsive-table'>");
-    sendChunk("<table><tr><th>#</th><th>Name</th><th>Offset (m)</th><th>Actions</th></tr>");
-    for (size_t i=0;i<antennas.size();++i){
-      auto& a=antennas[i];
-      String row = "<tr><td data-label='#'>" + String(i) + "</td>";
-      row += "<td data-label='Name'>" + htmlEscape(a.name) + "</td>";
-      row += "<td data-label='Offset (m)'>" + String(a.offset,3) + "</td>";
-      row += "<td data-label='Actions'>";
-      row += "<a href='/antennas/edit?idx=" + String(i) + "' class='btn btn-small'>✏️ Edit</a> ";
-      row += "<a href='/antennas/del?idx=" + String(i) + "' class='btn btn-small btn-danger' onclick='return confirm(\"Delete " + escapeForOnclick(a.name) + "?\")'>❌ Delete</a>";
-      row += "</td></tr>";
-      sendChunk(row);
-    }
-    sendChunk("</table>");
-    sendChunk("</div>");
-  } else {
-    sendChunk("<p><em>No antenna models configured.</em></p>");
+
+  sendFooter();
+}
+
+// ========================================================================
+// SETTINGS — SYSTEM  /settings/system
+// ========================================================================
+
+static void handleDeviceNameSave() {
+  if (!_server->hasArg("device_name")) {
+    _server->send(400, "text/plain", "Missing device_name");
+    return;
   }
-  
-  sendChunk("<h3>Add Antenna Model</h3>");
-  sendChunk("<form method='POST' action='/antennas/add'>");
-  sendChunk("<label>Name:</label><input name='name' required placeholder='e.g. u-blox ANN-MB'><br>");
-  sendChunk("<label>Offset (m):</label><input name='offset' type='number' step='0.001' value='0.000' style='width:150px' required> (ARP to phase center)<br>");
-  sendChunk("<button type='submit'>Add Antenna</button>");
-  sendChunk("</form></div>");
+  String name = _server->arg("device_name");
+  name.trim();
+  if (name.length() == 0) name = "RTKino";
+  if (name.length() > 20) {
+    _server->send(400, "text/plain", "Name too long (max 20 chars)");
+    return;
+  }
+  for (size_t i = 0; i < name.length(); i++) {
+    char c = name[i];
+    if (!isalnum(c) && c != '-' && c != '_') {
+      _server->send(400, "text/plain", "Invalid characters (a-z A-Z 0-9 - _)");
+      return;
+    }
+  }
+  extern bool saveDeviceName(const char*);
+  extern void applyDeviceName(const char*);
+  if (!saveDeviceName(name.c_str())) {
+    _server->send(500, "text/plain", "Failed to save device name");
+    return;
+  }
+  applyDeviceName(name.c_str());
+  // Restart BLE with new name if active
+  extern bool g_bleEnabled;
+  extern uint32_t g_blePasskey;
+  if (g_bleEnabled) {
+    BLESerial::end();
+    delay(300);
+    BLESerial::begin(g_bleDeviceName, g_blePasskey);
+    extern HardwareSerial RTCMSerial;
+    BLESerial::setRxCallback([](const uint8_t* data, size_t len) {
+      if (len > 0) RTCMSerial.write(data, len);
+    });
+  }
+  _server->sendHeader("Location", "/settings/system");
+  _server->send(303);
+}
 
-  // Point Codes card
-  sendChunk("<div class='card'>");
-  sendChunk("<h2>&#128205; Point Codes</h2>");
-  sendChunk("<p style='color:#666;font-size:13px'>List of categories and codes used during the survey. Freely editable; use &ldquo;Reset&rdquo; to restore defaults.</p>");
-  sendChunk("<div id='codes-editor'>");
-  sendChunk("<textarea id='codes-ta' style='width:100%;height:300px;font-family:monospace;font-size:12px;border:1px solid #ddd;border-radius:4px;padding:8px'>Loading...</textarea>");
-  sendChunk("</div>");
-  sendChunk("<div style='margin-top:12px'>");
-  sendChunk("<button onclick='saveCodes()' class='btn'>&#128190; Save</button>");
-  sendChunk("<button onclick='resetCodes()' class='btn' style='margin-left:8px;background:#e67e22'>&#128260; Reset default</button>");
-  sendChunk("</div>");
-  sendChunk("</div>");
+static void handleSettingsSystem() {
+  sendHeader("Settings - System", "settings");
 
-  // Backup & Restore
-  sendChunk("<div class='card'>");
-  sendChunk("<h2>&#128190; Backup &amp; Restore</h2>");
-  
-  // Export
-  sendChunk("<div style='margin-bottom:20px'>");
-  sendChunk("<button onclick=\"window.location='/api/config/export'\" class='btn'>📥 Export Config</button>");
-  sendChunk("<span style='margin-left:10px;color:#666'>Download all settings as JSON</span>");
-  sendChunk("</div>");
-  
-  // Sync Flash→SD
-  sendChunk("<div style='margin-bottom:20px'>");
-  sendChunk("<button onclick=\"syncToSD()\" class='btn'>💾 Sync Flash→SD</button>");
-  sendChunk("<span style='margin-left:10px;color:#666'>Copia subito i settings dalla flash alla SD card</span>");
-  sendChunk("<p id='syncStatus' style='margin-top:8px'></p>");
-  sendChunk("</div>");
-  
-  // Import
-  sendChunk("<div>");
-  sendChunk("<input type='file' id='importFile' accept='.json' style='margin-bottom:10px'><br>");
-  sendChunk("<button onclick='importConfig()' class='btn'>📤 Import Config</button>");
-  sendChunk("<span style='margin-left:10px;color:#666'>Upload and restore settings</span>");
-  sendChunk("<p id='importStatus' style='margin-top:10px'></p>");
-  sendChunk("</div>");
-  
-  sendChunk("</div>");
-  
-  // JavaScript for import and sync
-  sendChunk("<script>");
-  sendChunk("function importConfig(){");
-  sendChunk("const f=document.getElementById('importFile').files[0];");
-  sendChunk("if(!f){alert('Select a file first');return;}");
-  sendChunk("const r=new FileReader();");
-  sendChunk("r.onload=function(e){");
-  sendChunk("fetch('/api/config/import',{method:'POST',body:e.target.result,headers:{'Content-Type':'application/json'}})");
-  sendChunk(".then(r=>r.json()).then(d=>{");
-  sendChunk("if(d.success){document.getElementById('importStatus').innerHTML='<span style=\"color:green\">✅ Import successful! Reboot recommended.</span>';}");
-  sendChunk("else{document.getElementById('importStatus').innerHTML='<span style=\"color:red\">❌ Import failed: '+d.errors+'</span>';}");
-  sendChunk("}).catch(e=>{document.getElementById('importStatus').innerHTML='<span style=\"color:red\">❌ Error: '+e+'</span>';});");
-  sendChunk("};");
-  sendChunk("r.readAsText(f);");
-  sendChunk("}");
-  sendChunk("function syncToSD(){");
-  sendChunk("document.getElementById('syncStatus').innerHTML='<span style=\"color:#888\">&#9203; Sync in corso...</span>';");
-  sendChunk("fetch('/api/config/sync')");
-  sendChunk(".then(r=>r.text())");
-  sendChunk(".then(t=>{document.getElementById('syncStatus').innerHTML='<span style=\"color:green\">&#10003; '+t+'</span>';})");
-  sendChunk(".catch(e=>{document.getElementById('syncStatus').innerHTML='<span style=\"color:red\">&#9888; Error: '+e+'</span>';});");
-  sendChunk("}");
-  sendChunk("function loadCodesEditor(){");
-  sendChunk("  fetch('/api/codes').then(function(r){return r.json();}).then(function(d){");
-  sendChunk("    var ta=document.getElementById('codes-ta');");
-  sendChunk("    if(ta)ta.value=JSON.stringify(d,null,2);");
-  sendChunk("  }).catch(function(){});");
-  sendChunk("}");
-  sendChunk("function saveCodes(){");
-  sendChunk("  var ta=document.getElementById('codes-ta');");
-  sendChunk("  if(!ta)return;");
-  sendChunk("  fetch('/api/codes',{method:'POST',headers:{'Content-Type':'application/json'},body:ta.value})");
-  sendChunk("    .then(function(r){return r.json();}).then(function(d){");
-  sendChunk("      alert(d.ok?'Saved!':'Error: '+(d.error||'?'));");
-  sendChunk("    }).catch(function(e){alert('Network error: '+e);});");
-  sendChunk("}");
-  sendChunk("function resetCodes(){");
-  sendChunk("  if(!confirm('Restore default codes?'))return;");
-  sendChunk("  fetch('/api/codes/reset',{method:'POST'}).then(function(r){return r.json();}).then(function(d){");
-  sendChunk("    if(d.ok){alert('Reset OK');loadCodesEditor();}");
-  sendChunk("  }).catch(function(e){alert('Error: '+e);});");
-  sendChunk("}");
-  sendChunk("loadCodesEditor();");
-  sendChunk("</script>");
+  sendChunk("<div class='settings-breadcrumb'><a href='/settings' class='btn btn-secondary btn-small'>&#8592; Settings</a></div>");
 
-  // ===== Factory Reset Section =====
-  sendChunk("<div class='card'>");
-  sendChunk("<h2>&#9888;&#65039; Factory Reset</h2>");
-  sendChunk("<p style='color:#888;font-size:13px;margin-bottom:15px'>Erase all configuration, survey data, and stakeout files from internal flash. RTKino will restart as if it were brand new.</p>");
-
-  // Flash-only reset
-  sendChunk("<div style='margin-bottom:15px'>");
-  sendChunk("<button onclick='factoryReset(false)' class='btn btn-warning'>&#128465; Reset Flash Only</button>");
-  sendChunk("<span style='margin-left:10px;color:#666'>Keeps SD card data intact</span>");
+  // Device Name
+  sendChunk("<div class='card'><h2>Device Name</h2>");
+  sendChunk("<p>Identifies this device in the WebUI header, BLE advertising and mDNS (<code>.local</code>).</p>");
+  sendChunk("<p><strong>Current:</strong> <code>" + htmlEscape(String(g_deviceName)) + "</code> &nbsp; mDNS: <code>http://" + htmlEscape(String(g_deviceName)) + ".local/</code></p>");
+  sendChunk("<form method='POST' action='/api/device/name'>");
+  sendChunk("<label>Name (a-z A-Z 0-9 - _, max 20 chars):</label>");
+  sendChunk("<input name='device_name' value='" + htmlEscape(String(g_deviceName)) + "' maxlength='20' required style='width:220px'><br>");
+  sendChunk("<small style='color:#666'>Examples: RTKino-Base1 &nbsp; Rover-2 &nbsp; Base-Office</small><br>");
+  sendChunk("<button type='submit' class='btn' style='margin-top:10px'>Save &amp; Apply</button>");
+  sendChunk("</form>");
+  sendChunk("<p style='font-size:0.85em;color:#888;margin-top:8px'>BLE restarts automatically. mDNS applies immediately.</p>");
   sendChunk("</div>");
 
-  // Flash + SD reset
-  sendChunk("<div>");
-  sendChunk("<button onclick='factoryReset(true)' class='btn btn-danger'>&#128465; Reset Flash + SD</button>");
-  sendChunk("<span style='margin-left:10px;color:#666'>Wipes everything (config, surveys, stakeout) from both flash and SD</span>");
+  // ESP32 Reboot
+  sendChunk("<div class='card'><h2>ESP32</h2>");
+  sendChunk("<button onclick=\"rebootEsp()\" class='btn btn-danger'>Reboot ESP32</button>");
+  sendChunk("<p style='font-size:0.85em;color:#666;margin-top:8px'>Connection will be lost during reboot.</p>");
+  sendChunk("<script>function rebootEsp(){if(confirm('Reboot ESP32?\\nConnection will be lost.')){location.href='/reboot';}}</script>");
   sendChunk("</div>");
 
-  sendChunk("<p id='resetStatus' style='margin-top:12px'></p>");
-  sendChunk("</div>");
-
-  sendChunk("<script>");
-  sendChunk("function factoryReset(wipeSD){");
-  sendChunk("  var msg=wipeSD?'⚠️ This will ERASE ALL DATA from flash AND SD card.\\n\\nWiFi, NTRIP, bases, surveys, stakeout — everything will be lost.\\n\\nAre you absolutely sure?'");
-  sendChunk("                :'⚠️ This will ERASE ALL DATA from internal flash.\\n\\nWiFi, NTRIP, bases, surveys, stakeout config will be lost.\\nSD card data will NOT be erased.\\n\\nContinue?';");
-  sendChunk("  if(!confirm(msg))return;");
-  sendChunk("  if(wipeSD&&!confirm('LAST CHANCE — Wipe SD card too?\\n\\nThis cannot be undone.'))return;");
-  sendChunk("  document.getElementById('resetStatus').innerHTML='<span style=\"color:#e67e22\">&#9203; Factory reset in progress...</span>';");
-  sendChunk("  fetch('/api/factory-reset?wipeSD='+(wipeSD?'1':'0'))");
-  sendChunk("  .then(r=>r.json()).then(d=>{");
-  sendChunk("    if(d.status==='ok'){");
-  sendChunk("      document.getElementById('resetStatus').innerHTML='<span style=\"color:green\">&#10003; Reset complete. Rebooting...</span>';");
-  sendChunk("      setTimeout(function(){location.reload();},5000);");
-  sendChunk("    }else{");
-  sendChunk("      document.getElementById('resetStatus').innerHTML='<span style=\"color:red\">&#9888; Error: '+(d.error||'unknown')+'</span>';");
-  sendChunk("    }");
-  sendChunk("  }).catch(e=>{document.getElementById('resetStatus').innerHTML='<span style=\"color:red\">&#9888; '+e+'</span>';});");
-  sendChunk("}");
-  sendChunk("</script>");
-
-  // ===== NEW: System Logs Section =====
-  sendChunk("<div class='card'><h2>📝 System Logs</h2>");
-  sendChunk("<p>View and download system event logs (max 3 files)</p>");
-  sendChunk("<div id='logsList'>");
-  sendChunk("<p>Loading...</p>");
-  sendChunk("</div>");
-  sendChunk("</div>");
-  
-  // ===== NEW: Audio/Buzzer Section =====
-  sendChunk("<div class='card'><h2>🔊 Audio Settings</h2>");
+  // Audio Settings
+  sendChunk("<div class='card'><h2>Audio Settings</h2>");
   sendChunk("<p><em>Buzzer configuration for RTK events (GPIO 5)</em></p>");
   sendChunk("<form method='POST' action='/audio/save'>");
-  
-  // Check current buzzer state
   bool buzzerEnabled = (g_buzzer && g_buzzer->isEnabled());
   String checkedAttr = buzzerEnabled ? " checked" : "";
   sendChunk("<label><input type='checkbox' name='enabled' value='1'" + checkedAttr + "> Enable Audio Alerts</label><br>");
-  
   sendChunk("<p style='margin-top:10px'><strong>Sound Events:</strong></p>");
-  sendChunk("<p>• RTK Fix Acquired: 2 ascending beeps</p>");
-  sendChunk("<p>• RTK Fix Lost: 3 descending beeps</p>");
+  sendChunk("<p>&#8226; RTK Fix Acquired: 2 ascending beeps</p>");
+  sendChunk("<p>&#8226; RTK Fix Lost: 3 descending beeps</p>");
   sendChunk("<button type='submit' class='btn'>Save Audio Settings</button>");
   sendChunk("</form>");
-  
-  // Custom Melody Upload
   sendChunk("<h4 style='margin-top:20px'>Custom Melody (JSON)</h4>");
   sendChunk("<form action='/audio/upload' method='POST' enctype='multipart/form-data'>");
   sendChunk("<input type='file' name='melody' accept='.json'>");
   sendChunk("<button type='submit' class='btn'>Upload</button>");
   sendChunk("</form>");
-  sendChunk("<p style='font-size:0.85em;color:#666;'>");
-  sendChunk("Format: {\"name\":\"RTK Fixed\",\"tones\":[{\"freq\":880,\"duration\":100},{\"freq\":1318,\"duration\":150}]}");
-  sendChunk("</p>");
-  
+  sendChunk("<p style='font-size:0.85em;color:#666'>Format: {\"name\":\"RTK Fixed\",\"tones\":[{\"freq\":880,\"duration\":100}]}</p>");
   sendChunk("</div>");
-  
-  // JavaScript for loading system logs
+
+  // Backup & Restore
+  sendChunk("<div class='card'><h2>Backup &amp; Restore</h2>");
+  sendChunk("<div style='margin-bottom:20px'>");
+  sendChunk("<button onclick=\"window.location='/api/config/export'\" class='btn'>Export Config</button>");
+  sendChunk("<span style='margin-left:10px;color:#666'>Download all settings as JSON</span>");
+  sendChunk("</div>");
+  sendChunk("<div style='margin-bottom:20px'>");
+  sendChunk("<button onclick='syncToSD()' class='btn'>Sync Flash&#8594;SD</button>");
+  sendChunk("<span style='margin-left:10px;color:#666'>Copy settings from flash to SD card</span>");
+  sendChunk("<p id='syncStatus' style='margin-top:8px'></p>");
+  sendChunk("</div>");
+  sendChunk("<div>");
+  sendChunk("<input type='file' id='importFile' accept='.json' style='margin-bottom:10px'><br>");
+  sendChunk("<button onclick='importConfig()' class='btn'>Import Config</button>");
+  sendChunk("<span style='margin-left:10px;color:#666'>Upload and restore settings</span>");
+  sendChunk("<p id='importStatus' style='margin-top:10px'></p>");
+  sendChunk("</div></div>");
   sendChunk("<script>");
-  sendChunk("function loadLogs(){");
-  sendChunk("fetch('/api/logs').then(r=>r.json()).then(d=>{");
-  sendChunk("let html='';");
-  sendChunk("if(d.files && d.files.length>0){");
-  sendChunk("html='<ul class=\"log-list\">';");
-  sendChunk("for(let f of d.files){");
-  sendChunk("html+='<li><strong>'+f+'</strong><br>';");
-  sendChunk("html+='<a href=\"/api/logs/download?file='+encodeURIComponent(f)+'\" class=\"btn btn-small\">Download</a> ';");
-  sendChunk("html+='<a href=\"/api/logs/delete?file='+encodeURIComponent(f)+'\" class=\"btn btn-small btn-danger\" onclick=\"return confirm(\\'Delete log?\\');\">Delete</a>';");
-  sendChunk("html+='</li>';");
-  sendChunk("}");
-  sendChunk("html+='</ul>';");
-  sendChunk("}else{html='<p><em>No system logs found.</em></p>';}");
-  sendChunk("document.getElementById('logsList').innerHTML=html;");
-  sendChunk("}).catch(e=>{document.getElementById('logsList').innerHTML='<p style=\"color:red\">Error loading logs</p>';});");
-  sendChunk("}");
-  sendChunk("loadLogs();");
+  sendChunk("function importConfig(){const f=document.getElementById('importFile').files[0];");
+  sendChunk("if(!f){alert('Select a file first');return;}");
+  sendChunk("const r=new FileReader();r.onload=function(e){");
+  sendChunk("fetch('/api/config/import',{method:'POST',body:e.target.result,headers:{'Content-Type':'application/json'}})");
+  sendChunk(".then(r=>r.json()).then(d=>{");
+  sendChunk("if(d.success){document.getElementById('importStatus').innerHTML='<span style=\"color:green\">Import successful! Reboot recommended.</span>';}");
+  sendChunk("else{document.getElementById('importStatus').innerHTML='<span style=\"color:red\">Import failed: '+d.errors+'</span>';}");
+  sendChunk("}).catch(e=>{document.getElementById('importStatus').innerHTML='<span style=\"color:red\">Error: '+e+'</span>';});};r.readAsText(f);}");
+  sendChunk("function syncToSD(){document.getElementById('syncStatus').innerHTML='<span style=\"color:#888\">Syncing...</span>';");
+  sendChunk("fetch('/api/config/sync').then(r=>r.text()).then(t=>{document.getElementById('syncStatus').innerHTML='<span style=\"color:green\">'+t+'</span>';})");
+  sendChunk(".catch(e=>{document.getElementById('syncStatus').innerHTML='<span style=\"color:red\">Error: '+e+'</span>';});}");
   sendChunk("</script>");
 
-  // ===== mDNS Hostname Section =====
-  {
-    String mdns = String(g_mdnsName);
-    if (mdns.length() == 0) mdns = "rtkino";
-    sendChunk("<div class='card'><h2>🌐 mDNS Hostname</h2>");
-    sendChunk("<p>Access RTKino on the LAN without knowing the IP:</p>");
-    sendChunk("<p><strong>Current:</strong> <code>http://" + htmlEscape(mdns) + ".local/</code></p>");
-    sendChunk("<form method='POST' action='/mdns/save'>");
-    sendChunk("<label>Hostname (letters, numbers, hyphen):</label>");
-    sendChunk("<input name='hostname' value='" + htmlEscape(mdns) + "' style='width:220px' required> <span style='color:#666'>.local</span><br>");
-    sendChunk("<button type='submit' class='btn'>Save</button>");
-    sendChunk("</form>");
-    sendChunk("<p style='font-size:0.85em;color:#666;margin-top:10px'>Changes take effect immediately if Wi-Fi is connected. Some networks may block mDNS.</p>");
-    sendChunk("</div>");
-  }
-  
-  // ===== AP Credentials Section =====
-  {
-    sendChunk("<div class='card'><h2>📶 Access Point (AP)</h2>");
-    sendChunk("<p>Credenziali dell'AP locale di RTKino (usato in assenza di WiFi o con il pulsante \"Avvia AP\" nella home).</p>");
-    sendChunk("<p><strong>IP:</strong> <code>http://192.168.4.1</code> &nbsp; <strong>Canale:</strong> stesso di ESP-NOW (configurabile in ESP-NOW Settings)</p>");
-    sendChunk("<form method='POST' action='/api/ap/config'>");
-    sendChunk("<div class='form-row'><label>SSID:</label>");
-    sendChunk("<input name='ap_ssid' value='" + htmlEscape(String(g_apSsid)) + "' maxlength='32' required style='width:220px' placeholder='rtkino_AP'></div>");
-    sendChunk("<div class='form-row' style='margin-top:8px'><label>Password:</label>");
-    sendChunk("<input name='ap_pass' type='password' value='" + htmlEscape(String(g_apPass)) + "' maxlength='63' style='width:220px' placeholder='Lascia vuoto = rete aperta'>");
-    sendChunk("<br><small style='color:#666'>Min 8 caratteri per WPA2, oppure vuoto per rete aperta.</small></div>");
-    sendChunk("<button type='submit' class='btn' style='margin-top:12px'>Salva credenziali AP</button>");
-    sendChunk("</form>");
-    sendChunk("<p style='font-size:0.85em;color:#888;margin-top:10px'>Le credenziali entrano in vigore al prossimo avvio dell'AP (\"Avvia AP\" o assenza di WiFi).</p>");
-    sendChunk("</div>");
-  }
-
-  // ===== Firmware OTA Section =====
-  sendChunk("<div class='card'><h2>🔄 Firmware Update (OTA)</h2>");
-  sendChunk("<p>Update RTKino firmware over-the-air via web browser</p>");
-  
-  // Current Partition Info
+  // Firmware OTA
+  sendChunk("<div class='card'><h2>Firmware Update (OTA)</h2>");
+  sendChunk("<p>Update RTKino firmware over-the-air via web browser.</p>");
   sendChunk("<div style='background:#f8f9fa;padding:12px;border-radius:4px;margin:12px 0;'>");
-  sendChunk("<strong>📍 Current:</strong> ");
-  sendChunk(OTAManager::getCurrentPartitionInfo());
-  sendChunk("<br><strong>📍 Next:</strong> ");
-  sendChunk(OTAManager::getNextPartitionInfo());
+  sendChunk("<strong>Current:</strong> " + String(OTAManager::getCurrentPartitionInfo()));
+  sendChunk("<br><strong>Next:</strong> " + String(OTAManager::getNextPartitionInfo()));
   sendChunk("</div>");
-  
-  // Web Upload Form
-  sendChunk("<h3>Upload Firmware</h3>");
-  sendChunk("<p>Select and upload a <code>firmware.bin</code> file:</p>");
-  
   sendChunk("<form id='otaUploadForm' method='POST' action='/firmware/upload' enctype='multipart/form-data'>");
   sendChunk("<input type='file' name='firmware' id='otaFirmwareFile' accept='.bin' required style='margin-bottom:10px;'><br>");
-  sendChunk("<button type='submit' id='otaUploadBtn' class='btn btn-success'>📤 Upload & Update</button>");
+  sendChunk("<button type='submit' id='otaUploadBtn' class='btn btn-success'>Upload &amp; Update</button>");
   sendChunk("</form>");
-  
-  // Progress bar
   sendChunk("<div id='otaProgressContainer' style='display:none;margin-top:16px;'>");
   sendChunk("<div style='background:#e9ecef;border-radius:4px;height:24px;overflow:hidden;'>");
   sendChunk("<div id='otaProgressBar' style='background:#28a745;height:100%;width:0%;transition:width 0.3s;text-align:center;line-height:24px;color:white;font-weight:bold;'></div>");
   sendChunk("</div>");
-  sendChunk("<p id='otaProgressText' style='margin-top:8px;'></p>");
-  sendChunk("</div>");
-  
-  // Warnings
+  sendChunk("<p id='otaProgressText' style='margin-top:8px;'></p></div>");
   sendChunk("<div style='background:#fff3cd;border-left:4px solid #ffc107;padding:12px;margin-top:16px;'>");
-  sendChunk("<strong>⚠️ Important:</strong>");
-  sendChunk("<ul style='margin:8px 0;padding-left:20px;'>");
+  sendChunk("<strong>Important:</strong><ul style='margin:8px 0;padding-left:20px;'>");
   sendChunk("<li>Do NOT disconnect power during update (2-3 minutes)</li>");
   sendChunk("<li>Device will reboot automatically after update</li>");
   sendChunk("<li>All settings on SD card are preserved</li>");
   sendChunk("<li>Failed updates rollback automatically to previous firmware</li>");
-  sendChunk("</ul>");
-  sendChunk("</div>");
-  
-  // JavaScript for OTA upload
+  sendChunk("</ul></div>");
   sendChunk("<script>");
-  
-  // Upload handler
-  sendChunk("document.getElementById('otaUploadForm').addEventListener('submit',function(e){");
-  sendChunk("e.preventDefault();");
+  sendChunk("document.getElementById('otaUploadForm').addEventListener('submit',function(e){e.preventDefault();");
   sendChunk("var file=document.getElementById('otaFirmwareFile').files[0];");
   sendChunk("if(!file){alert('Please select a file');return;}");
   sendChunk("if(!file.name.endsWith('.bin')){alert('Please select a .bin file');return;}");
   sendChunk("var sizeMB=(file.size/(1024*1024)).toFixed(2);");
-  sendChunk("if(!confirm('⚠️ Update firmware?\\n\\nFile: '+file.name+' ('+sizeMB+' MB)\\n\\nDevice will reboot after update.\\nDo NOT disconnect power!')){return;}");
+  sendChunk("if(!confirm('Update firmware?\\nFile: '+file.name+' ('+sizeMB+' MB)\\nDevice will reboot after update.')){return;}");
   sendChunk("document.getElementById('otaUploadBtn').disabled=true;");
   sendChunk("document.getElementById('otaProgressContainer').style.display='block';");
-  sendChunk("var formData=new FormData();");
-  sendChunk("formData.append('firmware',file);");
+  sendChunk("var formData=new FormData();formData.append('firmware',file);");
   sendChunk("var xhr=new XMLHttpRequest();");
-  sendChunk("xhr.upload.addEventListener('progress',function(e){");
-  sendChunk("if(e.lengthComputable){");
+  sendChunk("xhr.upload.addEventListener('progress',function(e){if(e.lengthComputable){");
   sendChunk("var percent=Math.round((e.loaded/e.total)*100);");
   sendChunk("document.getElementById('otaProgressBar').style.width=percent+'%';");
   sendChunk("document.getElementById('otaProgressBar').textContent=percent+'%';");
-  sendChunk("document.getElementById('otaProgressText').textContent='Uploading: '+percent+'% ('+Math.round(e.loaded/1024)+' / '+Math.round(e.total/1024)+' KB)';");
-  sendChunk("}");
-  sendChunk("});");
-  sendChunk("xhr.addEventListener('load',function(){");
-  sendChunk("if(xhr.status===200){");
-  sendChunk("document.getElementById('otaProgressText').innerHTML='<span style=\"color:#28a745\">✓ Update successful! Rebooting...</span>';");
-  sendChunk("setTimeout(function(){location.href='/';},5000);");
-  sendChunk("}else{");
-  sendChunk("document.getElementById('otaProgressText').innerHTML='<span style=\"color:#dc3545\">✗ Failed: '+xhr.responseText+'</span>';");
-  sendChunk("document.getElementById('otaUploadBtn').disabled=false;");
-  sendChunk("}");
-  sendChunk("});");
-  sendChunk("xhr.addEventListener('error',function(){");
-  sendChunk("document.getElementById('otaProgressText').innerHTML='<span style=\"color:#dc3545\">✗ Upload error</span>';");
-  sendChunk("document.getElementById('otaUploadBtn').disabled=false;");
-  sendChunk("});");
-  sendChunk("xhr.open('POST','/firmware/upload',true);");
-  sendChunk("xhr.send(formData);");
-  sendChunk("});");
-  
+  sendChunk("document.getElementById('otaProgressText').textContent='Uploading: '+percent+'%';}});");
+  sendChunk("xhr.addEventListener('load',function(){if(xhr.status===200){");
+  sendChunk("document.getElementById('otaProgressText').innerHTML='<span style=\"color:#28a745\">Update successful! Rebooting...</span>';");
+  sendChunk("setTimeout(function(){location.href='/';},5000);}else{");
+  sendChunk("document.getElementById('otaProgressText').innerHTML='<span style=\"color:#dc3545\">Failed: '+xhr.responseText+'</span>';");
+  sendChunk("document.getElementById('otaUploadBtn').disabled=false;}});");
+  sendChunk("xhr.addEventListener('error',function(){document.getElementById('otaProgressText').innerHTML='<span style=\"color:#dc3545\">Upload error</span>';");
+  sendChunk("document.getElementById('otaUploadBtn').disabled=false;});");
+  sendChunk("xhr.open('POST','/firmware/upload',true);xhr.send(formData);});");
+  sendChunk("</script></div>");
+
+  // Factory Reset
+  sendChunk("<div class='card'><h2>Factory Reset</h2>");
+  sendChunk("<p style='color:#888;font-size:13px;margin-bottom:15px'>Erase all configuration, survey data, and stakeout files from internal flash. RTKino will restart as if it were brand new.</p>");
+  sendChunk("<div style='margin-bottom:15px'>");
+  sendChunk("<button onclick='factoryReset(false)' class='btn btn-danger'>Reset Flash Only</button>");
+  sendChunk("<span style='margin-left:10px;color:#666'>Keeps SD card data intact</span>");
+  sendChunk("</div><div>");
+  sendChunk("<button onclick='factoryReset(true)' class='btn btn-danger'>Reset Flash + SD</button>");
+  sendChunk("<span style='margin-left:10px;color:#666'>Wipes everything from both flash and SD</span>");
+  sendChunk("</div>");
+  sendChunk("<p id='resetStatus' style='margin-top:12px'></p></div>");
+  sendChunk("<script>");
+  sendChunk("function factoryReset(wipeSD){");
+  sendChunk("var msg=wipeSD?'WARNING: This will ERASE ALL DATA from flash AND SD card.\\n\\nWiFi, NTRIP, bases, surveys, stakeout - everything will be lost.\\n\\nAre you absolutely sure?'");
+  sendChunk(":'WARNING: This will ERASE ALL DATA from internal flash.\\n\\nSD card data will NOT be erased.\\n\\nContinue?';");
+  sendChunk("if(!confirm(msg))return;");
+  sendChunk("if(wipeSD&&!confirm('LAST CHANCE - Wipe SD card too?\\nThis cannot be undone.'))return;");
+  sendChunk("document.getElementById('resetStatus').innerHTML='<span style=\"color:#e67e22\">Factory reset in progress...</span>';");
+  sendChunk("fetch('/api/factory-reset?wipeSD='+(wipeSD?'1':'0')).then(r=>r.json()).then(d=>{");
+  sendChunk("if(d.status==='ok'){document.getElementById('resetStatus').innerHTML='<span style=\"color:green\">Reset complete. Rebooting...</span>';");
+  sendChunk("setTimeout(function(){location.reload();},5000);}");
+  sendChunk("else{document.getElementById('resetStatus').innerHTML='<span style=\"color:red\">Error: '+(d.error||'unknown')+'</span>';}");
+  sendChunk("}).catch(e=>{document.getElementById('resetStatus').innerHTML='<span style=\"color:red\">'+e+'</span>';});}");
   sendChunk("</script>");
-  
-  sendChunk("</div>");
-  
-  // TCP Stream Mode (Viewer) card
-  sendChunk("<div class='card'><h2>📡 TCP Stream Mode (Viewer)</h2>");
-  sendChunk("<p>Select the data format sent over TCP stream to connected viewer apps.</p>");
-  sendChunk("<p><strong>Current mode:</strong> " + String(getStreamModeName()) + "</p>");
-  sendChunk("<button onclick='setMode(\"nmea\")' class='btn'>NMEA+UBX/RTCM</button> ");
-  sendChunk("<button onclick='setMode(\"raw\")' class='btn'>RAW (UBX)</button>");
-  sendChunk("<script>function setMode(m){fetch('/stream?mode='+m).then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error changing mode: '+(err.message||err));})}</script>");
-  sendChunk("</div>");
-  
+
+  // System Logs
+  sendChunk("<div class='card'><h2>System Logs</h2>");
+  sendChunk("<p>View and download system event logs (max 3 files).</p>");
+  sendChunk("<div id='logsList'><p>Loading...</p></div></div>");
+  sendChunk("<script>");
+  sendChunk("function loadLogs(){fetch('/api/logs').then(r=>r.json()).then(d=>{");
+  sendChunk("let html='';");
+  sendChunk("if(d.files&&d.files.length>0){html='<ul class=\"log-list\">';");
+  sendChunk("for(let f of d.files){html+='<li><strong>'+f+'</strong><br>';");
+  sendChunk("html+='<a href=\"/api/logs/download?file='+encodeURIComponent(f)+'\" class=\"btn btn-small\">Download</a> ';");
+  sendChunk("html+='<a href=\"/api/logs/delete?file='+encodeURIComponent(f)+'\" class=\"btn btn-small btn-danger\" onclick=\"return confirm(\\'Delete log?\\');\">Delete</a>';");
+  sendChunk("html+='</li>';}html+='</ul>';}else{html='<p><em>No system logs found.</em></p>';}");
+  sendChunk("document.getElementById('logsList').innerHTML=html;");
+  sendChunk("}).catch(e=>{document.getElementById('logsList').innerHTML='<p style=\"color:red\">Error loading logs</p>';});}");
+  sendChunk("loadLogs();");
+  sendChunk("</script>");
+
   sendFooter();
 }
 
@@ -3582,7 +3737,7 @@ static void handleWifiAdd() {
   list.push_back(c);
   WifiProfiles::sortByPriority(list);
   WifiProfiles::saveToFlash(list);
-  _server->sendHeader("Location", "/settings");
+  _server->sendHeader("Location", "/settings/connectivity");
   _server->send(303);
 }
 
@@ -3593,7 +3748,7 @@ static void handleWifiDel() {
     _server->send(400,"text/plain","Delete failed");
     return;
   }
-  _server->sendHeader("Location", "/settings");
+  _server->sendHeader("Location", "/settings/connectivity");
   _server->send(303);
 }
 
@@ -3615,7 +3770,7 @@ static void handleWifiEdit() {
   sendChunk("<label>SSID:</label><input name='ssid' value='" + htmlEscape(String(c.ssid)) + "'><br>");
   sendChunk("<label>Password:</label><input name='pass' type='password' value='" + htmlEscape(String(c.password)) + "'><br>");
   sendChunk("<button type='submit'>Save Changes</button> ");
-  sendChunk("<a class='btn' href='/settings'>Cancel</a>");
+  sendChunk("<a class='btn' href='/settings/connectivity'>Cancel</a>");
   sendChunk("</form></div>");
   sendFooter();
 }
@@ -3641,7 +3796,7 @@ static void handleWifiUpdate() {
   WifiProfiles::sortByPriority(list);
   WifiProfiles::saveToFlash(list);
 
-  _server->sendHeader("Location", "/settings");
+  _server->sendHeader("Location", "/settings/connectivity");
   _server->send(303);
 }
 
@@ -3667,8 +3822,7 @@ static void handleAntennaAdd() {
     _server->send(500, "text/plain", "Save failed");
     return;
   }
-  
-  _server->sendHeader("Location", "/settings");
+  _server->sendHeader("Location", "/settings/survey");
   _server->send(303);
 }
 
@@ -3688,13 +3842,11 @@ static void handleAntennaDel() {
   }
   
   v.erase(v.begin() + idx);
-  
   if (!saveAntennas(v)) {
     _server->send(500, "text/plain", "Save failed");
     return;
   }
-  
-  _server->sendHeader("Location", "/settings");
+  _server->sendHeader("Location", "/settings/survey");
   _server->send(303);
 }
 
@@ -3723,7 +3875,7 @@ static void handleAntennaEdit() {
   sendChunk("<label>Offset (m):</label><input name='offset' type='number' step='0.001' value='" + 
             String(a.offset, 3) + "' style='width:150px' required><br>");
   sendChunk("<button type='submit'>Save</button> ");
-  sendChunk("<a class='btn' href='/settings'>Cancel</a>");
+  sendChunk("<a class='btn' href='/settings/survey'>Cancel</a>");
   sendChunk("</form></div>");
   sendFooter();
 }
@@ -3750,8 +3902,7 @@ static void handleAntennaUpdate() {
     _server->send(500, "text/plain", "Save failed");
     return;
   }
-  
-  _server->sendHeader("Location", "/settings");
+  _server->sendHeader("Location", "/settings/survey");
   _server->send(303);
 }
 
@@ -3769,7 +3920,7 @@ static void handleNtpSave() {
   strncpy(g_ntpServer, s.c_str(), sizeof(g_ntpServer) - 1);
   g_ntpServer[sizeof(g_ntpServer) - 1] = 0;
 
-  _server->sendHeader("Location", "/settings");
+  _server->sendHeader("Location", "/settings/time");
   _server->send(303);
 }
 
@@ -3794,7 +3945,7 @@ static void handleNtpTzSave() {
   g_ntpTz[sizeof(g_ntpTz) - 1] = 0;
   applyTimezone();
 
-  _server->sendHeader("Location", "/settings");
+  _server->sendHeader("Location", "/settings/time");
   _server->send(303);
 }
 
@@ -3824,7 +3975,7 @@ static void handleMdnsSave() {
   // Best effort: apply immediately (if Wi-Fi is up). Ignore failure and still redirect.
   (void)applyMdnsHostname(g_mdnsName);
 
-  _server->sendHeader("Location", "/settings");
+  _server->sendHeader("Location", "/settings/system");
   _server->send(303);
 }
 
@@ -3834,33 +3985,15 @@ static void handleMdnsSave() {
 
 static void handleBleSettings() {
   // Validate parameters
-  if (!_server->hasArg("ble_enable") || !_server->hasArg("ble_name") || !_server->hasArg("ble_pin")) {
+  if (!_server->hasArg("ble_enable") || !_server->hasArg("ble_pin")) {
     _server->send(400, "text/plain", "Missing parameters");
     return;
   }
-  
+
   bool newEnabled = (_server->arg("ble_enable") == "1");
-  String newName = _server->arg("ble_name");
   String newPinStr = _server->arg("ble_pin");
-  newName.trim();
   newPinStr.trim();
-  
-  // Validate device name
-  if (newName.length() == 0) newName = "RTKino";
-  if (newName.length() > 20) {
-    _server->send(400, "text/plain", "Name too long (max 20 chars)");
-    return;
-  }
-  
-  // Validate characters (alphanumeric + _ -)
-  for (size_t i = 0; i < newName.length(); i++) {
-    char c = newName[i];
-    if (!isalnum(c) && c != '_' && c != '-') {
-      _server->send(400, "text/plain", "Invalid characters in name (use a-z A-Z 0-9 _ -)");
-      return;
-    }
-  }
-  
+
   // Validate PIN
   if (newPinStr.length() != 6) {
     _server->send(400, "text/plain", "PIN must be exactly 6 digits");
@@ -3880,19 +4013,13 @@ static void handleBleSettings() {
     return;
   }
   
-  // Save device name and PIN to flash (persistent)
-  if (!saveBleName(newName.c_str())) {
-    _server->send(500, "text/plain", "Failed to save BLE name");
-    return;
-  }
-  
+  // Save PIN to flash (persistent)
   if (!saveBlePin(newPin)) {
     _server->send(500, "text/plain", "Failed to save PIN");
     return;
   }
   
-  // Apply new name and PIN
-  applyBleName(newName.c_str());
+  // Apply new PIN
   g_blePasskey = newPin;
   
   // Enable/disable BLE (runtime only - NOT saved to SD)
@@ -3934,7 +4061,7 @@ static void handleBleSettings() {
   }
   
   // Redirect to settings
-  _server->sendHeader("Location", "/settings");
+  _server->sendHeader("Location", "/settings/connectivity");
   _server->send(303, "text/plain", "Bluetooth settings saved");
 }
 
@@ -3998,12 +4125,124 @@ static void handleBleRtcmSettings() {
     startBleRtcm(newTarget, newPin);
   }
 
-  _server->sendHeader("Location", "/settings");
+  _server->sendHeader("Location", "/settings/connectivity");
   _server->send(303, "text/plain", "BLE RTCM settings saved");
 }
 
 // ========================================================================
 // NTRIP IN CRUD HANDLERS
+// ========================================================================
+
+// ========================================================================
+// NTRIP SOURCETABLE BROWSER
+// ========================================================================
+
+static bool isJsonNumber(const String& s) {
+  if (s.isEmpty()) return false;
+  int i = 0;
+  if (s[i] == '-') i++;
+  if (i >= (int)s.length() || !isdigit((unsigned char)s[i])) return false;
+  bool dot = false;
+  for (; i < (int)s.length(); i++) {
+    if (s[i] == '.') { if (dot) return false; dot = true; }
+    else if (!isdigit((unsigned char)s[i])) return false;
+  }
+  return true;
+}
+
+static String _b64st(const String& in) {
+  static const char t[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  String o; uint8_t b[3]; int i;
+  for (size_t x = 0; x < in.length();) {
+    i = 0; memset(b, 0, 3);
+    while (i < 3 && x < in.length()) b[i++] = in[x++];
+    o += t[(b[0]&0xfc)>>2]; o += t[((b[0]&3)<<4)|((b[1]&0xf0)>>4)];
+    o += (i>1) ? t[((b[1]&0xf)<<2)|((b[2]&0xc0)>>6)] : '=';
+    o += (i>2) ? t[b[2]&0x3f] : '=';
+  }
+  return o;
+}
+
+static void handleNtripSourcetable() {
+  if (WiFi.status() != WL_CONNECTED) {
+    _server->send(503, "application/json", F("{\"ok\":false,\"err\":\"WiFi non connesso\"}"));
+    return;
+  }
+  String host = _server->arg("host");
+  int port = _server->arg("port").toInt();
+  if (host.isEmpty() || port == 0) {
+    _server->send(400, "application/json", F("{\"ok\":false,\"err\":\"host e porta richiesti\"}"));
+    return;
+  }
+  String user = _server->arg("user");
+  String pass = _server->arg("pass");
+
+  WiFiClient cl;
+  cl.setTimeout(1000);
+  if (!cl.connect(host.c_str(), port)) {
+    _server->send(502, "application/json", F("{\"ok\":false,\"err\":\"Impossibile connettersi al caster\"}"));
+    return;
+  }
+  cl.setNoDelay(true);
+  cl.print("GET / HTTP/1.0\r\nUser-Agent: NTRIP RTKino/1.0\r\nAuthorization: Basic ");
+  cl.print(_b64st(user + ":" + pass));
+  cl.print("\r\n\r\n");
+
+  // Skip HTTP/NTRIP header — wait for blank line, check for 200
+  bool is200 = false;
+  uint32_t t0 = millis();
+  while (cl.connected() && millis() - t0 < 6000) {
+    String line = cl.readStringUntil('\n');
+    line.trim();
+    if (line.startsWith("SOURCETABLE 200") ||
+        (line.startsWith("HTTP/") && line.indexOf(" 200 ") > 0)) {
+      is200 = true;
+    }
+    if (line.isEmpty()) break;
+  }
+  if (!is200) {
+    cl.stop();
+    _server->send(502, "application/json", F("{\"ok\":false,\"err\":\"Caster ha rifiutato la richiesta (credenziali errate?)\"}"));
+    return;
+  }
+
+  // Stream-parse STR lines, build JSON
+  String json = "{\"ok\":true,\"mounts\":[";
+  bool first = true;
+  int count = 0;
+  t0 = millis();
+  while (cl.connected() && millis() - t0 < 10000 && count < 300) {
+    String line = cl.readStringUntil('\n');
+    if (line.isEmpty() && !cl.available()) { delay(20); continue; }
+    line.trim();
+    if (line.startsWith("ENDSOURCETABLE")) break;
+    if (!line.startsWith("STR;")) continue;
+
+    // STR;id(1);identifier(2);format(3);fmtdetail(4);carrier(5);nav(6);network(7);country(8);lat(9);lon(10);...
+    String f[17]; int fc = 0, fp = 0;
+    for (int i = 0; i < (int)line.length() && fc < 16; i++) {
+      if (line[i] == ';') { f[fc++] = line.substring(fp, i); fp = i + 1; }
+    }
+    f[fc] = line.substring(fp);
+
+    for (int j = 0; j <= min(fc, 16); j++) f[j].trim();
+    if (f[1].isEmpty()) continue;
+    if (!first) json += ',';
+    first = false;
+    json += "{\"id\":\"" + jsonEscape(f[1]) + "\"";
+    if (fc >= 3  && f[3].length())  json += ",\"fmt\":\"" + jsonEscape(f[3])  + "\"";
+    if (fc >= 6  && f[6].length())  json += ",\"nav\":\"" + jsonEscape(f[6])  + "\"";
+    if (fc >= 8  && f[8].length())  json += ",\"ctr\":\"" + jsonEscape(f[8])  + "\"";
+    if (fc >= 9  && isJsonNumber(f[9]))  json += ",\"lat\":" + f[9];
+    if (fc >= 10 && isJsonNumber(f[10])) json += ",\"lon\":" + f[10];
+    json += '}';
+    count++;
+  }
+  cl.stop();
+  json += "]}";
+  _server->send(200, "application/json", json);
+}
+
 // ========================================================================
 
 static void handleNtripAdd() {
@@ -4018,9 +4257,11 @@ static void handleNtripAdd() {
   n.user = _server->arg("user");
   n.pass = _server->arg("pwd");
   std::vector<NtripIn> v; int last=-1; loadNtripInList(v,last);
-  v.push_back(n); if (last<0) last=0;
-  if(!saveNtripInList(v,last)){ _server->send(500,"text/plain","Save failed"); return; }
-  _server->sendHeader("Location","/rover/connections"); _server->send(303);
+  int newIdx = (int)v.size();  // index of the profile we're about to add
+  v.push_back(n);
+  if(!saveNtripInList(v, last)){ _server->send(500,"text/plain","Save failed"); return; }
+  // Auto-select the new profile so ntripClient is ready to use immediately
+  _server->sendHeader("Location", "/ntrip/select?idx=" + String(newIdx)); _server->send(303);
 }
 
 static void handleNtripDel() {
@@ -4046,14 +4287,37 @@ static void handleNtripEdit() {
   sendChunk("<form method='POST' action='/ntrip/update'>");
   sendChunk("<input type='hidden' name='idx' value='" + String(idx) + "'>");
   sendChunk("<label>Name:</label><input name='name' value='" + htmlEscape(n.name) + "' required><br>");
-  sendChunk("<label>Host:</label><input name='host' value='" + htmlEscape(n.host) + "' required><br>");
-  sendChunk("<label>Port:</label><input name='port' type='number' value='" + String(n.port) + "' required><br>");
-  sendChunk("<label>Mountpoint:</label><input name='mount' value='" + htmlEscape(n.mount) + "' required><br>");
-  sendChunk("<label>User:</label><input name='user' value='" + htmlEscape(n.user) + "'><br>");
-  sendChunk("<label>Password:</label><input name='pwd' type='password' value='" + htmlEscape(n.pass) + "'><br>");
+  sendChunk("<label>Host:</label><input id='eHost' name='host' value='" + htmlEscape(n.host) + "' required><br>");
+  sendChunk("<label>Port:</label><input id='ePort' name='port' type='number' value='" + String(n.port) + "' required><br>");
+  sendChunk("<label>User:</label><input id='eUser' name='user' value='" + htmlEscape(n.user) + "'><br>");
+  sendChunk("<label>Password:</label><input id='ePwd' name='pwd' type='password' value='" + htmlEscape(n.pass) + "'><br>");
+  sendChunk("<label>Mountpoint:</label><div style='display:flex;gap:6px;align-items:center;max-width:320px;'>");
+  sendChunk("<input id='eMount' name='mount' value='" + htmlEscape(n.mount) + "' required style='flex:1;'>");
+  sendChunk("<button type='button' id='eBrowseBtn' onclick='browseMount(\"eMount\",\"eHost\",\"ePort\",\"eUser\",\"ePwd\",\"eStResult\",\"eBrowseBtn\")'>Browse</button>");
+  sendChunk("</div><div id='eStResult' style='margin-top:8px;overflow-x:auto;'></div><br>");
   sendChunk("<button type='submit'>Save</button> ");
   sendChunk("<a class='btn' href='/rover/connections'>Cancel</a>");
   sendChunk("</form></div>");
+  sendChunk("<script>");
+  sendChunk("function browseMount(mId,hId,pId,uId,wId,rId,bId){");
+  sendChunk("var h=document.getElementById(hId).value.trim(),p=document.getElementById(pId).value.trim();");
+  sendChunk("if(!h||!p){alert('Inserisci host e porta prima di sfogliare');return;}");
+  sendChunk("var btn=document.getElementById(bId);btn.disabled=true;btn.textContent='Caricamento...';");
+  sendChunk("var u=document.getElementById(uId).value.trim(),w=document.getElementById(wId).value.trim();");
+  sendChunk("fetch('/ntrip/sourcetable?host='+encodeURIComponent(h)+'&port='+p+'&user='+encodeURIComponent(u)+'&pass='+encodeURIComponent(w))");
+  sendChunk(".then(function(r){return r.json();}).then(function(d){");
+  sendChunk("btn.disabled=false;btn.textContent='Browse';");
+  sendChunk("var div=document.getElementById(rId);");
+  sendChunk("if(!d.ok){div.innerHTML='<p style=\"color:red\">'+d.err+'</p>';return;}");
+  sendChunk("if(!d.mounts||d.mounts.length===0){div.innerHTML='<p><em>Nessun mountpoint trovato</em></p>';return;}");
+  sendChunk("var html='<table style=\"font-size:13px\"><tr><th>ID</th><th>Formato</th><th>Nav</th><th>Paese</th><th>Lat</th><th>Lon</th></tr>';");
+  sendChunk("d.mounts.forEach(function(m){");
+  sendChunk("html+='<tr style=\"cursor:pointer\" onclick=\"document.getElementById(\\''+mId+'\\').value=\\''+m.id+'\\'\">'+");
+  sendChunk("'<td><strong>'+m.id+'</strong></td><td>'+(m.fmt||'')+'</td><td>'+(m.nav||'')+'</td><td>'+(m.ctr||'')+'</td><td>'+(m.lat||'')+'</td><td>'+(m.lon||'')+'</td></tr>';");
+  sendChunk("});html+='</table><p style=\"font-size:12px;color:#666\">Clicca una riga per selezionare il mountpoint</p>';");
+  sendChunk("div.innerHTML=html;");
+  sendChunk("}).catch(function(e){btn.disabled=false;btn.textContent='Browse';alert('Errore: '+e.message);});}");
+  sendChunk("</script>");
   sendFooter();
 }
 
@@ -4281,19 +4545,23 @@ static void handleBasesAdd() {
   b.hARP=_server->hasArg("harp")?_server->arg("harp").toFloat():0.0f;
   b.antennaIdx=_server->hasArg("antenna_idx")?_server->arg("antenna_idx").toInt():-1;
   int rt=_server->hasArg("rtcm_type")?_server->arg("rtcm_type").toInt():0; if (rt<0||rt>1) rt=0; b.rtcmType=(uint8_t)rt;
-  std::vector<BaseRec> v; loadBases(v); v.push_back(b);
+  int baseLast=-1; std::vector<BaseRec> v; loadBases(v, baseLast);
+  uint16_t selStid = (baseLast>=0 && baseLast<(int)v.size()) ? v[baseLast].stid : 0;
+  v.push_back(b);
   std::sort(v.begin(), v.end(), [](const BaseRec&a,const BaseRec&b){return a.stid<b.stid;});
-  if(!saveBases(v)){ _server->send(500,"text/plain","Save failed"); return; }
+  if (selStid>0) { baseLast=-1; for(int i=0;i<(int)v.size();i++) if(v[i].stid==selStid){baseLast=i;break;} }
+  if(!saveBases(v, baseLast)){ _server->send(500,"text/plain","Save failed"); return; }
   _server->sendHeader("Location","/base/stations"); _server->send(303);
 }
 
 static void handleBasesDel() {
   if(!_server->hasArg("idx")){ _server->send(400,"text/plain","idx missing"); return; }
   int idx=_server->arg("idx").toInt();
-  std::vector<BaseRec> v; loadBases(v);
+  int baseLast=-1; std::vector<BaseRec> v; loadBases(v, baseLast);
   if(idx<0||idx>=(int)v.size()){ _server->send(400,"text/plain","Index out of range"); return; }
   v.erase(v.begin()+idx);
-  if(!saveBases(v)){ _server->send(500,"text/plain","Save failed"); return; }
+  if(baseLast==idx) baseLast=-1; else if(baseLast>idx) baseLast--;
+  if(!saveBases(v, baseLast)){ _server->send(500,"text/plain","Save failed"); return; }
   _server->sendHeader("Location","/base/stations"); _server->send(303);
 }
 
@@ -4337,11 +4605,12 @@ static void handleBasesUpdate() {
   if(!_server->hasArg("idx")||!_server->hasArg("name")||!_server->hasArg("lat")||!_server->hasArg("lon")||!_server->hasArg("alt")){
     _server->send(400,"text/plain","Parameters missing"); return;
   }
-  int idx=_server->arg("idx").toInt(); std::vector<BaseRec> v; loadBases(v);
+  int idx=_server->arg("idx").toInt(); int baseLast=-1; std::vector<BaseRec> v; loadBases(v, baseLast);
   if(idx<0||idx>=(int)v.size()){ _server->send(400,"text/plain","Index out of range"); return; }
+  uint16_t selStid = (baseLast>=0 && baseLast<(int)v.size()) ? v[baseLast].stid : 0;
   BaseRec b; b.name=clampSemi(_server->arg("name"));
-  b.lat=_server->arg("lat").toDouble(); 
-  b.lon=_server->arg("lon").toDouble(); 
+  b.lat=_server->arg("lat").toDouble();
+  b.lon=_server->arg("lon").toDouble();
   b.altGround=_server->arg("alt").toDouble();
   int st=_server->hasArg("stid")?_server->arg("stid").toInt():1; if (st<=0||st>=4096) st=1; b.stid=(uint16_t)st;
   b.hARP=_server->hasArg("harp")?_server->arg("harp").toFloat():0.0f;
@@ -4349,7 +4618,8 @@ static void handleBasesUpdate() {
   int rt=_server->hasArg("rtcm_type")?_server->arg("rtcm_type").toInt():0; if (rt<0||rt>1) rt=0; b.rtcmType=(uint8_t)rt;
   v[idx]=b;
   std::sort(v.begin(), v.end(), [](const BaseRec&a,const BaseRec&b){return a.stid<b.stid;});
-  if(!saveBases(v)){ _server->send(500,"text/plain","Save failed"); return; }
+  if (selStid>0) { baseLast=-1; for(int i=0;i<(int)v.size();i++) if(v[i].stid==selStid){baseLast=i;break;} }
+  if(!saveBases(v, baseLast)){ _server->send(500,"text/plain","Save failed"); return; }
   _server->sendHeader("Location","/base/stations"); _server->send(303);
 }
 
@@ -4411,6 +4681,67 @@ static void handleBasesStartConfirm() {
   msg += "RTCM Type: " + String(b.rtcmType == 0 ? "MSM7 (4 const)" : "MSM4 (3 const)");
   
   _server->send(200, "text/plain", msg);
+}
+
+static void handleBasesSelect() {
+  if(!_server->hasArg("idx")){ _server->send(400,"text/plain","idx missing"); return; }
+  int idx=_server->arg("idx").toInt();
+  int baseLast=-1; std::vector<BaseRec> v; loadBases(v, baseLast);
+  if(idx<0||idx>=(int)v.size()){ _server->send(400,"text/plain","Index out of range"); return; }
+  if(!saveBases(v, idx)){ _server->send(500,"text/plain","Save failed"); return; }
+  _server->sendHeader("Location","/base/stations"); _server->send(303);
+}
+
+static void handleApiStartBaseMode() {
+  int baseLast=-1; std::vector<BaseRec> v; loadBases(v, baseLast);
+  if(baseLast<0||baseLast>=(int)v.size()){
+    _server->send(400,"text/plain","No base station selected. Go to Base Stations and select one."); return;
+  }
+  const auto& b=v[baseLast];
+  std::vector<AntennaRec> antennas; loadAntennas(antennas);
+  float antennaOffset=0.0f;
+  if(b.antennaIdx>=0&&b.antennaIdx<(int)antennas.size()) antennaOffset=antennas[b.antennaIdx].offset;
+  double h=b.altGround+b.hARP+antennaOffset;
+  applyBaseFixedLLH(b.lat, b.lon, h, b.stid, b.rtcmType);
+  _server->send(200,"text/plain","OK");
+}
+
+static void handleApiStartAllOutputs() {
+  BaseAutoStart as=loadBaseAutoStart();
+  String result="";
+  if(as.ntrip){
+    std::vector<NtripOut> outList; int outLast=-1; loadNtripOutList(outList,outLast);
+    if(outLast>=0&&outLast<(int)outList.size()){
+      const auto& n=outList[outLast];
+      bool okC=startCasterOut(n.host,(uint16_t)n.port,n.mount,n.pass);
+      bool okT=startTcpOut((uint16_t)n.tcpPort);
+      result+="NTRIP OUT: "+(String)(okC?"OK":"FAIL")+" / TCP: "+(okT?"OK":"FAIL")+". ";
+    } else { result+="NTRIP OUT: no profile selected. "; }
+  }
+  if(as.tcp){
+    std::vector<TcpOutClient> tcpList; int tcpLast=-1; loadTcpOutClientList(tcpList,tcpLast);
+    if(tcpLast>=0&&tcpLast<(int)tcpList.size()){
+      const auto& t=tcpList[tcpLast];
+      bool ok=startTcpOutClient(t.host,(uint16_t)t.port);
+      result+="TCP Client: "+(String)(ok?"OK":"FAIL")+". ";
+    } else { result+="TCP Client: no profile selected. "; }
+  }
+  if(as.ble){
+    if(String(g_bleRtcmTargetName).length()>0){
+      startBleRtcm(String(g_bleRtcmTargetName),g_bleRtcmPasskey);
+      result+="BLE OUT: started. ";
+    } else { result+="BLE OUT: target not configured. "; }
+  }
+  _server->send(200,"text/plain",result.length()?result:"No outputs configured for auto-start.");
+}
+
+static void handleApiSaveAutoStart() {
+  BaseAutoStart s;
+  s.ntrip = _server->hasArg("ntrip") && _server->arg("ntrip")=="1";
+  s.tcp   = _server->hasArg("tcp")   && _server->arg("tcp")=="1";
+  s.ble   = _server->hasArg("ble")   && _server->arg("ble")=="1";
+  if(!saveBaseAutoStart(s)){ _server->send(500,"text/plain","Save failed"); return; }
+  _server->sendHeader("Location","/base/outputs"); _server->send(303);
 }
 
 // ========================================================================
@@ -4638,7 +4969,7 @@ static void handleRateSubmit() {
   if (_server->hasArg("rate")) {
     uint16_t rateMs = _server->arg("rate").toInt();
     sendCfgRateToZED(rateMs);
-    _server->sendHeader("Location", "/settings");
+    _server->sendHeader("Location", "/settings/gnss");
     _server->send(303);
   } else {
     _server->send(400, "text/plain", "Parameter rate missing");
@@ -5250,11 +5581,11 @@ static void handleAudioUploadComplete() {
     sendChunk("<p style='color:#e74c3c'><strong>Error:</strong> ");
     sendChunk(htmlEscape(g_audioUploadErrorMsg));
     sendChunk("</p>");
-    sendChunk("<p><a href='/settings' class='btn'>Back to Settings</a></p>");
+    sendChunk("<p><a href='/settings/system' class='btn'>Back to Settings</a></p>");
     sendChunk("</div>");
     sendFooter();
   } else {
-    _server->sendHeader("Location", "/settings");
+    _server->sendHeader("Location", "/settings/system");
     _server->send(303);
   }
 }
@@ -6644,6 +6975,12 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
   _server->on("/base/outputs", HTTP_GET, handleBaseOutputsPage);
   _server->on("/base/stop", HTTP_GET, handleBaseStop);
   _server->on("/settings", HTTP_GET, handleSettingsPage);
+  _server->on("/settings/connectivity", HTTP_GET, handleSettingsConnectivity);
+  _server->on("/settings/gnss",         HTTP_GET, handleSettingsGnss);
+  _server->on("/settings/survey",       HTTP_GET, handleSettingsSurvey);
+  _server->on("/settings/time",         HTTP_GET, handleSettingsTime);
+  _server->on("/settings/system",       HTTP_GET, handleSettingsSystem);
+  _server->on("/api/device/name",       HTTP_POST, handleDeviceNameSave);
   _server->on("/firmware", HTTP_GET, handleFirmwarePage);
   _server->on("/logs", HTTP_GET, handleLogsPage);
   _server->on("/logs/deleteall", HTTP_GET, handleDeleteAllLogs);
@@ -6655,6 +6992,7 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
   _server->on("/api/status", HTTP_GET, handleApiStatus);
   _server->on("/api/position", HTTP_GET, handleApiPosition);
   _server->on("/api/rtcm", HTTP_GET, handleApiRtcm);
+  _server->on("/api/rtcm/reset", HTTP_POST, handleApiRtcmReset);
   _server->on("/api/antennas", HTTP_GET, handleApiAntennas);
   _server->on("/api/bases", HTTP_GET, handleApiBasesIdx);
   _server->on("/api/zed/tmode", HTTP_GET, handleApiZedTmode);
@@ -6705,8 +7043,8 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
   _server->on("/api/codes/reset", HTTP_POST, handleResetCodes);
   
   // Compatibility redirects
-  _server->on("/wifi", HTTP_GET, [](){ _server->sendHeader("Location", "/settings"); _server->send(303); });
-  _server->on("/ntp", HTTP_GET, [](){ _server->sendHeader("Location", "/settings"); _server->send(303); });
+  _server->on("/wifi", HTTP_GET, [](){ _server->sendHeader("Location", "/settings/connectivity"); _server->send(303); });
+  _server->on("/ntp", HTTP_GET, [](){ _server->sendHeader("Location", "/settings/time"); _server->send(303); });
   _server->on("/ntrip", HTTP_GET, [](){ _server->sendHeader("Location", "/rover"); _server->send(303); });
   _server->on("/base", HTTP_GET, [](){ _server->sendHeader("Location", "/base-cfg"); _server->send(303); });
   _server->on("/bases", HTTP_GET, [](){ _server->sendHeader("Location", "/base-cfg"); _server->send(303); });
@@ -6722,7 +7060,7 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
   _server->on("/tcpclient/stop", HTTP_GET, handleTcpClientStop);
 
   _server->on("/lanin", HTTP_GET, [](){ _server->sendHeader("Location", "/rover"); _server->send(303); });
-  _server->on("/rate", HTTP_GET, [](){ _server->sendHeader("Location", "/settings"); _server->send(303); });
+  _server->on("/rate", HTTP_GET, [](){ _server->sendHeader("Location", "/settings/gnss"); _server->send(303); });
 
   // Wi-Fi CRUD
   _server->on("/wifi/add", HTTP_POST, handleWifiAdd);
@@ -6829,6 +7167,7 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
   _server->on("/espnow/command",        HTTP_POST, handleEspNowCommand);
 
   // NTRIP IN CRUD
+  _server->on("/ntrip/sourcetable", HTTP_GET, handleNtripSourcetable);
   _server->on("/ntrip/add", HTTP_POST, handleNtripAdd);
   _server->on("/ntrip/del", HTTP_GET, handleNtripDel);
   _server->on("/ntrip/edit", HTTP_GET, handleNtripEdit);
@@ -6868,8 +7207,12 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
   _server->on("/bases/del", HTTP_GET, handleBasesDel);
   _server->on("/bases/edit", HTTP_GET, handleBasesEdit);
   _server->on("/bases/update", HTTP_POST, handleBasesUpdate);
+  _server->on("/bases/select", HTTP_GET, handleBasesSelect);
   _server->on("/bases/start", HTTP_GET, handleBasesStart);
   _server->on("/bases/start-confirm", HTTP_POST, handleBasesStartConfirm);
+  _server->on("/api/startBaseMode", HTTP_GET, handleApiStartBaseMode);
+  _server->on("/api/startAllOutputs", HTTP_GET, handleApiStartAllOutputs);
+  _server->on("/api/base-autostart", HTTP_POST, handleApiSaveAutoStart);
 
   // BASE OUT CRUD
   _server->on("/baseout/add", HTTP_POST, handleBaseOutAdd);
@@ -6915,7 +7258,7 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
       _server->send(400, "text/plain", "Password troppo lunga (max 63 caratteri)"); return;
     }
     if (saveApConfig(ssid.c_str(), pass.c_str())) {
-      _server->sendHeader("Location", "/settings");
+      _server->sendHeader("Location", "/settings/connectivity");
       _server->send(303);
     } else {
       _server->send(500, "text/plain", "Errore salvataggio credenziali AP");
@@ -7023,7 +7366,7 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
       g_buzzer->setEnabled(enabled);
     }
     
-    _server->sendHeader("Location", "/settings");
+    _server->sendHeader("Location", "/settings/system");
     _server->send(303, "text/plain", "Audio settings saved");
   });
   

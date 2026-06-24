@@ -364,10 +364,11 @@ void EspNowRtcm::broadcastRtcm(const uint8_t* data, size_t len) {
             _txPkts++;
         } else if (err == ESP_ERR_ESPNOW_NO_MEM) {
             _dropNoMem++;
-            // Radio busy — drop silently (freshness over completeness)
         }
-        // Small yield between fragments to avoid overwhelming the radio
-        taskYIELD();
+        // Duplicate each fragment: the receiver dedup cache handles the duplicate silently.
+        // Halves the probability of a fragment loss due to transient radio contention (WiFi beacon, etc.).
+        vTaskDelay(pdMS_TO_TICKS(3));
+        esp_now_send(ESPNOW_BROADCAST_MAC, (const uint8_t*)&pkt, sizeof(pkt));
     }
 
     _seq++;
