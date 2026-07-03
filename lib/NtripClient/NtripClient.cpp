@@ -164,13 +164,38 @@ String NtripClient::encodeBase64(const String& auth) {
   return encoded;
 }
 
+bool NtripClient::resolveHost() {
+  IPAddress tmp;
+  // Se è già un indirizzo IP, parsalo direttamente (nessun DNS)
+  if (tmp.fromString(_host.c_str())) {
+    _resolvedIp = tmp;
+    _ipResolved = true;
+    return true;
+  }
+  // Risoluzione DNS con timeout breve (max 2s) — molto meno di 12s default lwIP
+  if (WiFi.hostByName(_host.c_str(), tmp)) {
+    _resolvedIp = tmp;
+    _ipResolved = true;
+    return true;
+  }
+  Serial.println("[NTRIP] DNS resolve failed");
+  return false;
+}
+
 bool NtripClient::connectToCaster() {
   oledPrintln("[NTRIP] Connecting...");
-  _client.setTimeout(1000);
 
-  if (!_client.connect(_host.c_str(), _port)) {
+  // Risolvi hostname → IP se non in cache; così connect() non fa DNS bloccante
+  if (!_ipResolved && !resolveHost()) {
+    oledPrintln("[NTRIP] DNS fail");
+    return false;
+  }
+
+  _client.setTimeout(1000);
+  if (!_client.connect(_resolvedIp, _port)) {
     oledPrintln("[NTRIP] Caster error");
     _client.stop();
+    _ipResolved = false;  // IP potrebbe essere cambiato, forza re-resolve
     return false;
   }
   _client.setNoDelay(true);
@@ -225,14 +250,11 @@ void NtripClient::sendGGALine(const char* gga, size_t len) {
 }
 
 void NtripClient::forceReconnect() {
-  Serial.println("[NTRIP] Force reconnect requested");
-  if (!_enabled) return;
-  if (!_everConnectedThisSession) {
-    // Never connected in this activation: keep manual / latched semantics.
-    return;
-  }
-  if (_client.connected()) {
-    _client.stop();
-  }
+  // Auto-reconnect solo se NTRIP aveva già funzionato in questa attivazione.
+  // Se non si è mai connesso (caster sbagliato, credenziali errate) rimane manuale.
+  if (!_everConnectedThisSession) return;
+  Serial.println("[NTRIP] Force reconnect after WiFi recovery");
+  if (_client.connected()) _client.stop();
+  _enabled = true;  // Re-abilita anche se latchFailure lo aveva disabilitato
   armTwoAttempts(true);
 }

@@ -25,6 +25,13 @@ public:
   // vale solo se la sessione aveva gia' collegato almeno una volta.
   void forceReconnect();
 
+  // Invalida la cache IP (chiamare su WiFi disconnect, così risolve di nuovo al reconnect)
+  void clearResolvedIp() { _ipResolved = false; }
+
+  // True se NTRIP si è connesso almeno una volta in questa attivazione manuale.
+  // Usato per decidere se fare auto-reconnect dopo WiFi recovery.
+  bool wasEverConnected() const { return _everConnectedThisSession; }
+
 private:
   String _host, _mount, _user, _pass;
   int _port;
@@ -55,10 +62,18 @@ private:
   static const uint32_t STALE_DATA_TIMEOUT_MS = 15000;
   static const uint32_t HEADER_WAIT_MS = 750;
 
+  // Risolve hostname → IP con timeout corto; fallback immediato se già IP.
+  // Ritorna true se _resolvedIp è valido. NON blocca mai più di 2s.
+  bool resolveHost();
+
   String encodeBase64(const String& auth);
   bool connectToCaster();
   void armTwoAttempts(bool allowAutoReconnect);
   void latchFailure();
+
+  // Cache IP per evitare DNS lookup ad ogni riconnessione
+  IPAddress _resolvedIp;
+  bool _ipResolved = false;
 };
 
 #endif

@@ -16,6 +16,9 @@ public:
   void write(const uint8_t* data, size_t len);
   void forceReconnect();  // Force reconnection after WiFi recovery
 
+  // Invalida la cache IP (chiamare su WiFi disconnect)
+  void clearResolvedIp() { _ipResolved = false; }
+
 private:
   String _host, _mount, _pass, _ua;
   int _port;
@@ -40,8 +43,16 @@ private:
   };
   HandshakeVariant _successfulVariant = UNKNOWN;
 
+  bool resolveHost();
   bool connectSocket();
   bool handshakeTry(const String& req);
   bool doHandshake();
   String getHandshakeRequest(HandshakeVariant variant);
+
+  // Cache IP per evitare DNS lookup ad ogni riconnessione
+  IPAddress _resolvedIp;
+  bool _ipResolved = false;
+
+  // Indice variante corrente per il round-robin in loop() (1 variante per ciclo)
+  uint8_t _loopVariantIdx = 0;
 };

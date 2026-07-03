@@ -32,7 +32,6 @@
 #include "SystemLog.h"
 #include "OTAManager.h"
 #include "BLESerial.h"
-#include "BleRtcmClient.h"
 #include "FlashConfig.h"
 #include "SurveyPoints.h"
 #include "PointCodes.h"
@@ -101,12 +100,6 @@ bool g_bleEnabled = false;
 char g_bleDeviceName[21] = "RTKino";
 // BLE pairing PIN (persistent, saved to SD)
 uint32_t g_blePasskey = 123456;  // Default PIN
-
-// ===== BLE RTCM input (correction source from rtcm-lora radio) =====
-BleRtcmClient g_bleRtcm;
-bool g_bleRtcmEnabled = false;
-char g_bleRtcmTargetName[21] = "rtcm-lora";
-uint32_t g_bleRtcmPasskey = 123456;
 
 // ===== ESP-NOW RTCM mesh =====
 EspNowRtcm g_espNow;
@@ -617,6 +610,8 @@ void nmeaReaderTask(void* pvParameters) {
     if (ava > 0) {
       if (ava > (int)sizeof(buffer)) ava = sizeof(buffer);
       len = GNSSSerial.readBytes(buffer, ava); // short timeout (20 ms)
+    } else {
+      vTaskDelay(pdMS_TO_TICKS(1));  // cede il CPU all'IDLE task, evita starvation TWDT
     }
     if (len > 0) {
       // --- RTCM sniffer: log some key types (throttle 500 ms)
@@ -660,10 +655,6 @@ void nmeaReaderTask(void* pvParameters) {
       }
       if (g_baseTcpOn && RtcmStreamer::active()) {
         RtcmStreamer::broadcast(buffer, len);
-      }
-      // BLE RTCM output (base mode: send RTCM to rtcm-lora via BLE NUS)
-      if (g_bleRtcmEnabled && g_bleRtcm.isConnected()) {
-        g_bleRtcm.writeRtcm(buffer, len);
       }
       // ESP-NOW TX (base mode): fragment and broadcast RTCM via ESP-NOW mesh
       // Fire and forget — drops if radio busy, never buffers.
@@ -1039,10 +1030,6 @@ void uartReaderTask(void* pvParameters) {
 
 // ---------------- Controls & utils ----------------
 
-// Forward declarations for BLE RTCM (defined further below)
-bool startBleRtcm(const String& targetName, uint32_t passkey);
-void stopBleRtcm();
-
 // (PATCH) Mutual exclusion: enabling NTRIP disables TCP-IN and vice versa
 // === FIX: Thread-safe version with mutex ===
 void toggleNtrip(bool enable) {
@@ -1050,7 +1037,6 @@ void toggleNtrip(bool enable) {
     // This is done BEFORE taking the NTRIP lock to avoid unlock/relock
     if (enable) {
         toggleTcpIn(false);
-        if (g_bleRtcmEnabled) stopBleRtcm();
     }
     if (! ntripLock(500)) {
         oledPrintln("[NTRIP] busy, try again");
@@ -1134,7 +1120,6 @@ void toggleTcpIn(bool enable) {
     // Mutual exclusion: stop competing sources BEFORE acquiring tcpInMutex
     // (canonical lock order: always stop competitor before taking own mutex)
     toggleNtrip(false);
-    if (g_bleRtcmEnabled) stopBleRtcm();
     if (tcpin_host.length() && tcpin_port > 0) {
       startTcpIn(tcpin_host, tcpin_port);
     } else {
@@ -1144,59 +1129,6 @@ void toggleTcpIn(bool enable) {
     // Only if actually active, to avoid unnecessary locks
     if (tcpInEnabled || g_tcpIn) {
       stopTcpIn();
-    }
-  }
-}
-
-// ---- BLE RTCM IN (correction source from rtcm-lora radio) ----
-
-bool startBleRtcm(const String& targetName, uint32_t passkey) {
-  // Mutual exclusion: disable other correction sources
-  toggleNtrip(false);
-  toggleTcpIn(false);
-
-  strncpy(g_bleRtcmTargetName, targetName.c_str(), sizeof(g_bleRtcmTargetName) - 1);
-  g_bleRtcmTargetName[sizeof(g_bleRtcmTargetName) - 1] = '\0';
-  g_bleRtcmPasskey = passkey;
-
-  g_bleRtcm.setRxCallback([](const uint8_t* data, size_t len) {
-    if (len > 0) RTCMSerial.write(data, len);
-  });
-
-  if (!g_bleRtcm.begin(g_bleRtcmTargetName, g_bleRtcmPasskey)) {
-    oledPrintln("[BLE-RTCM] Start failed");
-    return false;
-  }
-
-  g_bleRtcmEnabled = true;
-  oledPrintln(String("[BLE-RTCM] -> ") + g_bleRtcmTargetName);
-
-  // Save config to flash
-  FlashConfig::writeFile("/config/ble_rtcm_target.txt", String(g_bleRtcmTargetName));
-  char pinBuf[8]; snprintf(pinBuf, sizeof(pinBuf), "%06u", g_bleRtcmPasskey);
-  FlashConfig::writeFile("/config/ble_rtcm_pin.txt", String(pinBuf));
-  FlashConfig::writeFile("/config/ble_rtcm_enabled.txt", "1");
-
-  return true;
-}
-
-void stopBleRtcm() {
-  g_bleRtcm.stop();  // sends STOP command before disconnecting
-  g_bleRtcmEnabled = false;
-  FlashConfig::writeFile("/config/ble_rtcm_enabled.txt", "0");
-  oledPrintln("[BLE-RTCM] Stopped");
-}
-
-void toggleBleRtcm(bool enable) {
-  if (enable) {
-    if (String(g_bleRtcmTargetName).length() > 0) {
-      startBleRtcm(String(g_bleRtcmTargetName), g_bleRtcmPasskey);
-    } else {
-      oledPrintln("[BLE-RTCM] Target not set");
-    }
-  } else {
-    if (g_bleRtcmEnabled) {
-      stopBleRtcm();
     }
   }
 }
@@ -1222,7 +1154,6 @@ bool startEspNowRx() {
   // Mutual exclusion: only one RTCM source active at a time
   toggleNtrip(false);
   toggleTcpIn(false);
-  if (g_bleRtcmEnabled) stopBleRtcm();
 
   // Determine channel: always follow the radio's actual channel.
   // In STA mode the radio is locked to the connected AP's channel.
@@ -1405,6 +1336,7 @@ static bool connectAnyWifi(const std::vector<WifiCred>& list, uint32_t perNetTim
       Serial.printf("[WiFi] Best match: %s (prio=%d, RSSI=%d)\n",
                     best->ssid.c_str(), best->priority, bestRSSI);
       WiFi.begin(best->ssid.c_str(), best->password.c_str());
+      WiFi.setAutoReconnect(true);
       uint32_t t0 = millis();
       while (WiFi.status() != WL_CONNECTED && (millis() - t0) < perNetTimeoutMs) delay(200);
       if (WiFi.status() == WL_CONNECTED) {
@@ -1430,6 +1362,7 @@ static bool connectAnyWifi(const std::vector<WifiCred>& list, uint32_t perNetTim
     const auto& w = list[i];
     oledPrintln(String("[WiFi] Trying: ") + w.ssid);
     WiFi.begin(w.ssid.c_str(), w.password.c_str());
+    WiFi.setAutoReconnect(true);
     uint32_t t0 = millis();
     while (WiFi.status() != WL_CONNECTED && (millis() - t0) < perNetTimeoutMs) delay(200);
     if (WiFi.status() == WL_CONNECTED) return true;
@@ -2118,9 +2051,20 @@ bool getSurveyResults(SurveyResults& out) {
 // Force all network services to reconnect (called after WiFi recovery)
 void forceReconnectAllServices() {
   Serial.println("[NET] WiFi back online, forcing service reconnection...");
-  // NTRIP stays manual: when WiFi comes back we do NOT auto-reconnect to the caster here.
-  // This protects WebUI/local services from bad caster settings or unstable WAN links.
-  // Force NtripPusher reconnect  
+
+  // NTRIP client (rover IN): auto-reconnect solo se era già connesso in questa sessione.
+  // Se non si è mai connesso (caster sbagliato, credenziali errate) rimane manuale,
+  // così l'utente deve abilitarlo esplicitamente e non rischia loop di retry inutili.
+  if (ntripLock(100)) {
+    if (ntripClient && ntripClient->wasEverConnected()) {
+      ntripClient->forceReconnect();
+      ntripEnabled = true;
+      oledSetNtrip(true);
+    }
+    ntripUnlock();
+  }
+
+  // NtripPusher reconnect
   if (pusherLock(100)) {
     if (g_pusher) {
       g_pusher->forceReconnect();
@@ -2150,6 +2094,11 @@ void onWiFiEvent(WiFiEvent_t event) {
       if (g_systemLog) {
         g_systemLog->logEvent("WIFI", "Disconnected");
       }
+      // Invalida cache IP: al prossimo reconnect i moduli faranno re-resolve.
+      // Sicuro da chiamare dall'event task (scrittura atomica di un bool).
+      if (ntripClient) ntripClient->clearResolvedIp();
+      if (g_pusher)    g_pusher->clearResolvedIp();
+      if (g_tcpIn)     g_tcpIn->clearResolvedIp();
       break;
       
     case ARDUINO_EVENT_WIFI_STA_GOT_IP:
@@ -2886,24 +2835,6 @@ void setup() {
   });
   Serial.printf("[BLE] Started at boot: %s (PIN: %06u)\n", g_bleDeviceName, g_blePasskey);
 
-  // ===== Load BLE RTCM config (target device name, PIN, enable state) =====
-  {
-    String tgt = FlashConfig::readFile("/config/ble_rtcm_target.txt");
-    tgt.trim();
-    if (tgt.length() > 0 && tgt.length() <= 20) {
-      strncpy(g_bleRtcmTargetName, tgt.c_str(), sizeof(g_bleRtcmTargetName) - 1);
-      g_bleRtcmTargetName[sizeof(g_bleRtcmTargetName) - 1] = '\0';
-    }
-    String pin = FlashConfig::readFile("/config/ble_rtcm_pin.txt");
-    pin.trim();
-    if (pin.length() == 6) {
-      g_bleRtcmPasskey = (uint32_t)atoi(pin.c_str());
-    }
-    Serial.printf("[BLE-RTCM] Config: target='%s' pin=%06u\n",
-                  g_bleRtcmTargetName, g_bleRtcmPasskey);
-  }
-
-
   // UARTs
   GNSSSerial.setRxBufferSize(8192);
   GNSSSerial.setTimeout(20);
@@ -3004,16 +2935,6 @@ void setup() {
     startApMode();
   }
 
-  // Auto-start BLE RTCM if previously enabled (works with or without WiFi)
-  {
-    String en = FlashConfig::readFile("/config/ble_rtcm_enabled.txt");
-    en.trim();
-    if (en == "1" && !ntripEnabled && !tcpInEnabled) {
-      Serial.printf("[BLE-RTCM] Auto-start: target='%s'\n", g_bleRtcmTargetName);
-      startBleRtcm(String(g_bleRtcmTargetName), g_bleRtcmPasskey);
-    }
-  }
-
   // Auto-start ESP-NOW if previously enabled
   {
     String enEspNow = FlashConfig::readFile("/config/espnow_enabled.txt");
@@ -3064,11 +2985,6 @@ void loop() {
         }
         tcpInUnlock();
       }
-    }
-
-    // BLE RTCM IN (rover, from rtcm-lora radio)
-    if (g_bleRtcmEnabled) {
-      g_bleRtcm.loop();
     }
 
     // Caster OUT - protected with mutex

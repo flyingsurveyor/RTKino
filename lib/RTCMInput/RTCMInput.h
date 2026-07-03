@@ -24,6 +24,9 @@ public:
   // Force reconnection after WiFi recovery
   void forceReconnect();
 
+  // Invalida la cache IP (chiamare su WiFi disconnect)
+  void clearResolvedIp() { _ipResolved = false; }
+
   // Stato
   bool isActive() const { return _active; }
   bool isConnected(); // non-const (WiFiClient::connected() non è const)
@@ -41,7 +44,11 @@ private:
 
   bool _active = false;
   uint32_t _lastReconnectMs = 0;
-  
+
+  // Cache IP per evitare DNS lookup ad ogni riconnessione
+  IPAddress _resolvedIp;
+  bool _ipResolved = false;
+
   // Static buffer for data reception (instead of stack allocation)
   uint8_t _rxBuffer[1024];
 };

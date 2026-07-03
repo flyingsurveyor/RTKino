@@ -9,7 +9,6 @@
 
 // BLE Serial (for settings page)
 #include "BLESerial.h"
-#include "BleRtcmClient.h"
 
 // Flash config (LittleFS-based config storage)
 #include "FlashConfig.h"
@@ -156,14 +155,6 @@ extern bool g_bleEnabled;
 extern char g_bleDeviceName[21];
 extern uint32_t g_blePasskey;
 
-// ===== BLE RTCM input (defined in main.cpp) =====
-extern bool g_bleRtcmEnabled;
-extern char g_bleRtcmTargetName[21];
-extern uint32_t g_bleRtcmPasskey;
-extern BleRtcmClient g_bleRtcm;
-extern bool startBleRtcm(const String& targetName, uint32_t passkey);
-extern void stopBleRtcm();
-extern void toggleBleRtcm(bool enable);
 extern bool loadBleName(char* out, size_t maxLen);
 extern bool saveBleName(const char* name);
 extern bool loadBlePin(uint32_t* out);
@@ -819,7 +810,7 @@ static bool saveBases(const std::vector<BaseRec>& v, int lastIdx = -1){
 // BASE AUTO-START CONFIG
 // ========================================================================
 
-struct BaseAutoStart { bool ntrip=false, tcp=false, ble=false; };
+struct BaseAutoStart { bool ntrip=false, tcp=false; };
 static String baseAutoStartPath(){ return "/config/base_autostart.txt"; }
 
 static BaseAutoStart loadBaseAutoStart(){
@@ -831,7 +822,6 @@ static BaseAutoStart loadBaseAutoStart(){
     String line=content.substring(pos,e); line.trim(); pos=e+1;
     if(line.startsWith("NTRIP=")) s.ntrip = line.substring(6).toInt() != 0;
     else if(line.startsWith("TCP=")) s.tcp = line.substring(4).toInt() != 0;
-    else if(line.startsWith("BLE=")) s.ble = line.substring(4).toInt() != 0;
   }
   return s;
 }
@@ -839,7 +829,6 @@ static BaseAutoStart loadBaseAutoStart(){
 static bool saveBaseAutoStart(const BaseAutoStart& s){
   String content = String("NTRIP=") + (s.ntrip?1:0) + "\n";
   content += String("TCP=") + (s.tcp?1:0) + "\n";
-  content += String("BLE=") + (s.ble?1:0) + "\n";
   return FlashConfig::writeFile(baseAutoStartPath().c_str(), content);
 }
 
@@ -1103,12 +1092,6 @@ static void handleApiStatus() {
   json += loggingActive ? "true" : "false";
   json += ",\"tcpIn\":";
   json += tcpInEnabled ? "true" : "false";
-  json += ",\"bleRtcm\":";
-  json += g_bleRtcmEnabled ? "true" : "false";
-  json += ",\"bleRtcmConnected\":";
-  json += (g_bleRtcmEnabled && g_bleRtcm.isConnected()) ? "true" : "false";
-  json += ",\"bleRtcmStreaming\":";
-  json += (g_bleRtcmEnabled && g_bleRtcm.isStreaming()) ? "true" : "false";
   json += "}";
   _server->send(200, "application/json", json);
 }
@@ -1386,8 +1369,6 @@ static void handleRoot() {
   sendChunk("function stopLog(){fetch('/log/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error stopping log: '+(err.message||err));})}");
   sendChunk("function startTcpIn(){fetch('/lanin/start').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error starting TCP-IN: '+(err.message||err));})}");
   sendChunk("function stopTcpIn(){fetch('/lanin/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error stopping TCP-IN: '+(err.message||err));})}");
-  sendChunk("function bleRtcmStart(){fetch('/api/blertcm/start').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
-  sendChunk("function bleRtcmStop(){fetch('/api/blertcm/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
   sendChunk("</script>");
   
   // Status card
@@ -1457,29 +1438,6 @@ static void handleRoot() {
   tcpInStat += "</div>";
   sendChunk(tcpInStat);
   
-  // BLE RTCM IN status
-  String bleRtcmStat = "<div class='status-row'><span class='status-led ";
-  if (g_bleRtcmEnabled && g_bleRtcm.isConnected()) {
-    bleRtcmStat += "led-on'></span><strong>BLE RTCM:</strong> ";
-    bleRtcmStat += g_bleRtcm.isStreaming() ? "Streaming" : "Connected";
-    bleRtcmStat += " (" + htmlEscape(g_bleRtcm.connectedName()) + ")";
-  } else {
-    bleRtcmStat += g_bleRtcmEnabled ? "led-off" : "led-off";
-    bleRtcmStat += "'></span><strong>BLE RTCM:</strong> ";
-    if (g_bleRtcmEnabled) {
-      if (g_bleRtcm.isReconnecting()) bleRtcmStat += "Reconnecting...";
-      else if (g_bleRtcm.isScanning()) bleRtcmStat += "Scanning...";
-      else bleRtcmStat += "Waiting";
-    } else {
-      bleRtcmStat += "Inactive";
-    }
-  }
-  bleRtcmStat += "<span style='float:right;'>";
-  bleRtcmStat += "<button onclick='bleRtcmStart()' style='background-color:#2ecc71;color:white;border:none;padding:7.2px 14.4px;border-radius:4px;cursor:pointer;margin-left:4px;font-size:1.08em;' title='Start RTCM stream'>&#x25B6;</button>";
-  bleRtcmStat += "<button onclick='bleRtcmStop()' style='background-color:#e74c3c;color:white;border:none;padding:7.2px 14.4px;border-radius:4px;cursor:pointer;margin-left:4px;font-size:1.08em;' title='Stop RTCM stream'>&#x25A0;</button>";
-  bleRtcmStat += "</span></div>";
-  sendChunk(bleRtcmStat);
-
   // Logging status
   String logStat = "<div class='status-row'><span class='status-led ";
   logStat += loggingActive ? "led-on" : "led-off";
@@ -1913,7 +1871,6 @@ static void handleBasePage() {
   sendChunk("<script>");
   sendChunk("function stopOut(){fetch('/baseout/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
   sendChunk("function stopTcpClient(){fetch('/tcpclient/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
-  sendChunk("function stopBleOut(){fetch('/api/blertcm/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
   sendChunk("function switchToRover(){if(confirm('Switch to Rover mode? This will stop RTCM OUT and restart the ZED.')){fetch('/api/switchToRover').then(r=>r.text()).then(t=>{alert(t);setTimeout(()=>location.reload(),3000);}).catch(e=>{alert('Error: '+(e.message||e));})}}");
   sendChunk("function avviaBase(){");
   sendChunk("  var btn=document.getElementById('btn-avvia-base');");
@@ -1976,8 +1933,7 @@ static void handleBasePage() {
       String t = (tcpLast>=0&&tcpLast<(int)tcpList.size()) ? htmlEscape(tcpList[tcpLast].name) : "<em>no profile selected</em>";
       sendChunk("<li>TCP Client OUT: " + t + "</li>");
     }
-    if (as.ble) sendChunk("<li>BLE RTCM OUT</li>");
-    if (!as.ntrip && !as.tcp && !as.ble) sendChunk("<li style='color:#95a5a6;'>No outputs configured &mdash; set them in RTCM Outputs</li>");
+    if (!as.ntrip && !as.tcp) sendChunk("<li style='color:#95a5a6;'>No outputs configured &mdash; set them in RTCM Outputs</li>");
     sendChunk("</ul></p>");
 
     bool canStart = (baseLast>=0 && baseLast<(int)bases.size());
@@ -2368,8 +2324,6 @@ static void handleBaseOutputsPage() {
   sendChunk("function stopOut(){fetch('/baseout/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
   sendChunk("function startTcpClient(){fetch('/tcpclient/start').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
   sendChunk("function stopTcpClient(){fetch('/tcpclient/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
-  sendChunk("function startBleOut(){fetch('/api/blertcm/start').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
-  sendChunk("function stopBleOut(){fetch('/api/blertcm/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
   sendChunk("</script>");
 
   // --- Auto-start con Modalità Base ---
@@ -2394,11 +2348,6 @@ static void handleBaseOutputsPage() {
     sendChunk("<label style='display:flex;align-items:center;gap:8px;margin:8px 0;'>");
     sendChunk("<input type='checkbox' name='tcp' value='1'" + String(as.tcp?" checked":"") + ">");
     sendChunk("<span><strong>TCP Client OUT</strong>: " + tcpLabel + "</span></label>");
-
-    // BLE OUT
-    sendChunk("<label style='display:flex;align-items:center;gap:8px;margin:8px 0;'>");
-    sendChunk("<input type='checkbox' name='ble' value='1'" + String(as.ble?" checked":"") + ">");
-    sendChunk("<span><strong>BLE RTCM OUT</strong></span></label>");
 
     sendChunk("<button type='submit' class='btn-success' style='margin-top:10px;'>&#x1F4BE; Save Auto-start</button>");
     sendChunk("</form>");
@@ -2508,35 +2457,6 @@ static void handleBaseOutputsPage() {
   sendChunk("<button type='submit'>Add TCP Client OUT Profile</button>");
   sendChunk("</form></div>");
 
-  // --- BLE RTCM OUT ---
-  sendChunk("<div class='card'><h2>&#x1F4E1; BLE RTCM OUT</h2>");
-  sendChunk("<p>Send RTCM corrections to rtcm-lora Base via Bluetooth LE (replaces TCP/WiFi connection).</p>");
-
-  sendChunk("<div class='status-row'><span class='status-led ");
-  if (g_bleRtcmEnabled && g_bleRtcm.isConnected()) {
-    sendChunk("led-on'></span><strong>BLE RTCM OUT:</strong>&nbsp;Connected");
-    sendChunk(" (" + htmlEscape(g_bleRtcm.connectedName()) + ")");
-    char txBuf[48]; snprintf(txBuf, sizeof(txBuf), " &mdash; TX: %lu B", (unsigned long)g_bleRtcm.getTxBytes());
-    sendChunk(txBuf);
-  } else if (g_bleRtcmEnabled) {
-    sendChunk("led-off'></span><strong>BLE RTCM OUT:</strong>&nbsp;");
-    sendChunk(g_bleRtcm.isScanning() ? "Scanning..." : "Waiting");
-  } else {
-    sendChunk("led-off'></span><strong>BLE RTCM OUT:</strong>&nbsp;Disabled");
-  }
-  sendChunk("</div>");
-
-  sendChunk("<div style='margin-top:10px'>");
-  sendChunk("<button onclick='startBleOut()' class='btn-success'>&#x25BA; Start BLE OUT</button> ");
-  sendChunk("<button onclick='stopBleOut()' class='btn-danger'>&#x25A0; Stop BLE OUT</button>");
-  sendChunk("</div>");
-
-  sendChunk("<div style='margin-top:12px; padding:10px; background:#d1ecf1; border-left:4px solid #17a2b8; border-radius:4px; font-size:0.9em;'>");
-  sendChunk("Configure the rtcm-lora device name and PIN in <a href='/settings'>Settings &rarr; BLE RTCM Input</a>.<br>");
-  sendChunk("In base mode, RTCM data is sent to rtcm-lora via BLE NUS instead of TCP.");
-  sendChunk("</div>");
-  sendChunk("</div>"); // end BLE card
-
   sendFooter();
 }
 
@@ -2612,99 +2532,6 @@ static void renderBluetoothCard() {
   sendChunk("</div>");
   
   sendChunk("</div>");  // End card
-}
-
-// ========================================================================
-// BLE RTCM Input Card (Settings page)
-// ========================================================================
-
-static void renderBleRtcmCard() {
-  sendChunk("<div class='card'><h2>&#x1F4E1; BLE RTCM Input</h2>");
-  sendChunk("<div style='margin-bottom:10px;color:#666;font-size:0.9em;'>");
-  sendChunk("Receive RTCM corrections from a rtcm-lora radio bridge via Bluetooth LE.<br>");
-  sendChunk("This is a correction source, like NTRIP or TCP-IN. Only one can be active.");
-  sendChunk("</div>");
-
-  sendChunk("<form method='POST' action='/settings/blertcm'>");
-
-  // Enable toggle
-  sendChunk("<div class='form-row'>");
-  sendChunk("<label>BLE RTCM Enable:</label>");
-  sendChunk("<select name='blertcm_enable'>");
-  if (g_bleRtcmEnabled) {
-    sendChunk("<option value='1' selected>ON</option><option value='0'>OFF</option>");
-  } else {
-    sendChunk("<option value='1'>ON</option><option value='0' selected>OFF</option>");
-  }
-  sendChunk("</select></div>");
-
-  // Target device name
-  sendChunk("<div class='form-row' style='margin-top:10px'>");
-  sendChunk("<label>rtcm-lora Device Name:</label>");
-  sendChunk("<input type='text' name='blertcm_target' value='" + htmlEscape(String(g_bleRtcmTargetName)) + "' maxlength='20' placeholder='rtcm-lora' style='width:220px' />");
-  sendChunk("<br><small style='color:#666'>Name of the rtcm-lora BLE device to connect to</small>");
-  sendChunk("</div>");
-
-  // Pairing PIN
-  sendChunk("<div class='form-row' style='margin-top:10px'>");
-  sendChunk("<label>Pairing PIN:</label>");
-  char pinStr[8]; snprintf(pinStr, sizeof(pinStr), "%06u", g_bleRtcmPasskey);
-  sendChunk("<input type='text' name='blertcm_pin' value='");
-  sendChunk(pinStr);
-  sendChunk("' maxlength='6' pattern='[0-9]{6}' placeholder='123456' style='width:150px' />");
-  sendChunk("<br><small style='color:#666'>Must match the PIN set on the rtcm-lora device</small>");
-  sendChunk("</div>");
-
-  sendChunk("<button type='submit' class='btn btn-primary' style='margin-top:15px'>Apply BLE RTCM Settings</button>");
-  sendChunk("</form>");
-
-  // Scan / Refresh button
-  sendChunk("<div style='margin-top:12px'>");
-  sendChunk("<button onclick='bleRtcmScan()' class='btn' style='margin-right:8px'>&#x1F50D; Scan for device</button>");
-  sendChunk("<button onclick='bleRtcmDisconnect()' class='btn btn-danger'>Disconnect</button>");
-  sendChunk("</div>");
-  sendChunk("<script>");
-  sendChunk("function bleRtcmScan(){fetch('/api/blertcm/scan').then(r=>r.text()).then(t=>{alert(t);setTimeout(()=>location.reload(),3000);}).catch(err=>{alert('Error: '+err);})}");
-  sendChunk("function bleRtcmDisconnect(){fetch('/api/blertcm/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+err);})}");
-  sendChunk("</script>");
-
-  // Status display
-  if (g_bleRtcmEnabled) {
-    sendChunk("<div style='margin-top:15px; padding:10px; background:#d4edda; border-left:4px solid #28a745; border-radius:4px;'>");
-    sendChunk("<strong>&#x2713; BLE RTCM Active</strong><br>");
-    sendChunk("Target: <strong>" + htmlEscape(String(g_bleRtcmTargetName)) + "</strong><br>");
-    sendChunk("Status: ");
-    if (g_bleRtcm.isConnected()) {
-      sendChunk("<span style='color:green;'>Connected to " + htmlEscape(g_bleRtcm.connectedName()) + "");
-      if (g_bleRtcm.isStreaming()) sendChunk(" &mdash; Streaming");
-      sendChunk("</span><br>");
-      char buf[96];
-      snprintf(buf, sizeof(buf), "RX: %lu B (%lu chunks) &bull; TX: %lu B (%lu chunks)",
-               (unsigned long)g_bleRtcm.getRxBytes(), (unsigned long)g_bleRtcm.getRxChunks(),
-               (unsigned long)g_bleRtcm.getTxBytes(), (unsigned long)g_bleRtcm.getTxChunks());
-      sendChunk(buf);
-    } else if (g_bleRtcm.isReconnecting()) {
-      sendChunk("<span style='color:orange;'>Reconnecting...</span>");
-    } else if (g_bleRtcm.isScanning()) {
-      sendChunk("<span style='color:orange;'>Scanning...</span>");
-    } else {
-      sendChunk("<span style='color:orange;'>Waiting for next scan</span>");
-    }
-    sendChunk("</div>");
-  }
-
-  // Info box
-  sendChunk("<div style='margin-top:15px; padding:12px; background:#d1ecf1; border-left:4px solid #17a2b8; border-radius:4px;'>");
-  sendChunk("<strong>&#x2139;&#xFE0F; How it works:</strong><br>");
-  sendChunk("1. Enable BLE on rtcm-lora (Rover role) and note its device name and PIN<br>");
-  sendChunk("2. Enter that name and PIN here, then enable<br>");
-  sendChunk("3. RTKino scans, pairs and connects automatically<br>");
-  sendChunk("4. Use the &#x25B6;/&#x25A0; buttons on the Dashboard to start/stop RTCM flow<br>");
-  sendChunk("5. Data path: Base &rarr; LoRa &rarr; rtcm-lora &rarr; BLE &rarr; ZED-F9P<br>");
-  sendChunk("<br><small>Enabling BLE RTCM disables NTRIP and TCP-IN (one correction source at a time).</small>");
-  sendChunk("</div>");
-
-  sendChunk("</div>");
 }
 
 // ========================================================================
@@ -2962,7 +2789,6 @@ static void handleSettingsConnectivity() {
 
   // BLE
   renderBluetoothCard();
-  renderBleRtcmCard();
 
   // ESP-NOW
   renderEspNowCard();
@@ -4066,70 +3892,6 @@ static void handleBleSettings() {
 }
 
 // ========================================================================
-// BLE RTCM SETTINGS HANDLER
-// ========================================================================
-
-static void handleBleRtcmSettings() {
-  if (!_server->hasArg("blertcm_enable") || !_server->hasArg("blertcm_target") || !_server->hasArg("blertcm_pin")) {
-    _server->send(400, "text/plain", "Missing parameters");
-    return;
-  }
-
-  bool newEnabled = (_server->arg("blertcm_enable") == "1");
-  String newTarget = _server->arg("blertcm_target");
-  String newPinStr = _server->arg("blertcm_pin");
-  newTarget.trim();
-  newPinStr.trim();
-
-  if (newTarget.length() == 0) newTarget = "rtcm-lora";
-  if (newTarget.length() > 20) {
-    _server->send(400, "text/plain", "Name too long (max 20 chars)");
-    return;
-  }
-  for (size_t i = 0; i < newTarget.length(); i++) {
-    char c = newTarget[i];
-    if (!isalnum(c) && c != '_' && c != '-') {
-      _server->send(400, "text/plain", "Invalid characters in name");
-      return;
-    }
-  }
-  if (newPinStr.length() != 6) {
-    _server->send(400, "text/plain", "PIN must be exactly 6 digits");
-    return;
-  }
-  for (char c : newPinStr) {
-    if (!isdigit(c)) {
-      _server->send(400, "text/plain", "PIN must contain only digits");
-      return;
-    }
-  }
-  uint32_t newPin = (uint32_t)atoi(newPinStr.c_str());
-
-  // Save config
-  strncpy(g_bleRtcmTargetName, newTarget.c_str(), sizeof(g_bleRtcmTargetName) - 1);
-  g_bleRtcmTargetName[sizeof(g_bleRtcmTargetName) - 1] = '\0';
-  g_bleRtcmPasskey = newPin;
-
-  FlashConfig::writeFile("/config/ble_rtcm_target.txt", newTarget);
-  char pinBuf[8]; snprintf(pinBuf, sizeof(pinBuf), "%06u", newPin);
-  FlashConfig::writeFile("/config/ble_rtcm_pin.txt", String(pinBuf));
-
-  // Toggle
-  if (newEnabled && !g_bleRtcmEnabled) {
-    startBleRtcm(newTarget, newPin);
-  } else if (!newEnabled && g_bleRtcmEnabled) {
-    stopBleRtcm();
-  } else if (newEnabled && g_bleRtcmEnabled) {
-    stopBleRtcm();
-    delay(200);
-    startBleRtcm(newTarget, newPin);
-  }
-
-  _server->sendHeader("Location", "/settings/connectivity");
-  _server->send(303, "text/plain", "BLE RTCM settings saved");
-}
-
-// ========================================================================
 // NTRIP IN CRUD HANDLERS
 // ========================================================================
 
@@ -4726,12 +4488,6 @@ static void handleApiStartAllOutputs() {
       result+="TCP Client: "+(String)(ok?"OK":"FAIL")+". ";
     } else { result+="TCP Client: no profile selected. "; }
   }
-  if(as.ble){
-    if(String(g_bleRtcmTargetName).length()>0){
-      startBleRtcm(String(g_bleRtcmTargetName),g_bleRtcmPasskey);
-      result+="BLE OUT: started. ";
-    } else { result+="BLE OUT: target not configured. "; }
-  }
   _server->send(200,"text/plain",result.length()?result:"No outputs configured for auto-start.");
 }
 
@@ -4739,7 +4495,6 @@ static void handleApiSaveAutoStart() {
   BaseAutoStart s;
   s.ntrip = _server->hasArg("ntrip") && _server->arg("ntrip")=="1";
   s.tcp   = _server->hasArg("tcp")   && _server->arg("tcp")=="1";
-  s.ble   = _server->hasArg("ble")   && _server->arg("ble")=="1";
   if(!saveBaseAutoStart(s)){ _server->send(500,"text/plain","Save failed"); return; }
   _server->sendHeader("Location","/base/outputs"); _server->send(303);
 }
@@ -7084,77 +6839,6 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
 
   // BLE
   _server->on("/settings/ble", HTTP_POST, handleBleSettings);
-  _server->on("/settings/blertcm", HTTP_POST, handleBleRtcmSettings);
-
-  // BLE RTCM API (start/stop streaming + status)
-  _server->on("/api/blertcm/start", HTTP_GET, []() {
-    if (!g_bleRtcmEnabled) {
-      // Not enabled yet — try to start the whole connection
-      if (String(g_bleRtcmTargetName).length() > 0) {
-        startBleRtcm(String(g_bleRtcmTargetName), g_bleRtcmPasskey);
-        _server->send(200, "text/plain", "BLE RTCM started");
-      } else {
-        _server->send(400, "text/plain", "BLE RTCM target not configured");
-      }
-      return;
-    }
-    // Already enabled — send START command to rtcm-lora
-    if (g_bleRtcm.isConnected()) {
-      if (g_bleRtcm.sendStart()) {
-        _server->send(200, "text/plain", "RTCM streaming started");
-      } else {
-        _server->send(500, "text/plain", "Failed to send START command");
-      }
-    } else {
-      _server->send(200, "text/plain", "BLE RTCM enabled, waiting for connection...");
-    }
-  });
-
-  _server->on("/api/blertcm/stop", HTTP_GET, []() {
-    if (!g_bleRtcmEnabled) {
-      _server->send(200, "text/plain", "BLE RTCM already inactive");
-      return;
-    }
-    // Send STOP command (connection stays alive)
-    if (g_bleRtcm.isConnected()) {
-      g_bleRtcm.sendStop();
-    }
-    _server->send(200, "text/plain", "RTCM streaming stopped");
-  });
-
-  _server->on("/api/blertcm/status", HTTP_GET, []() {
-    String json = "{\"enabled\":";
-    json += g_bleRtcmEnabled ? "true" : "false";
-    json += ",\"connected\":";
-    json += (g_bleRtcmEnabled && g_bleRtcm.isConnected()) ? "true" : "false";
-    json += ",\"streaming\":";
-    json += (g_bleRtcmEnabled && g_bleRtcm.isStreaming()) ? "true" : "false";
-    json += ",\"scanning\":";
-    json += (g_bleRtcmEnabled && g_bleRtcm.isScanning()) ? "true" : "false";
-    json += ",\"reconnecting\":";
-    json += (g_bleRtcmEnabled && g_bleRtcm.isReconnecting()) ? "true" : "false";
-    json += ",\"target\":\"" + htmlEscape(String(g_bleRtcmTargetName)) + "\"";
-    json += ",\"connected_name\":\"" + htmlEscape(g_bleRtcm.connectedName()) + "\"";
-    json += ",\"rx_bytes\":" + String((unsigned long)g_bleRtcm.getRxBytes());
-    json += ",\"rx_chunks\":" + String((unsigned long)g_bleRtcm.getRxChunks());
-    json += ",\"tx_bytes\":" + String((unsigned long)g_bleRtcm.getTxBytes());
-    json += ",\"tx_chunks\":" + String((unsigned long)g_bleRtcm.getTxChunks());
-    json += "}";
-    _server->send(200, "application/json", json);
-  });
-
-  _server->on("/api/blertcm/scan", HTTP_GET, []() {
-    if (!g_bleRtcmEnabled) {
-      _server->send(400, "text/plain", "BLE RTCM not enabled");
-      return;
-    }
-    if (g_bleRtcm.isConnected()) {
-      _server->send(200, "text/plain", "Already connected to " + g_bleRtcm.connectedName());
-      return;
-    }
-    g_bleRtcm.triggerScan();
-    _server->send(200, "text/plain", "Scan triggered, please wait...");
-  });
 
   // ESP-NOW Mesh API
   _server->on("/api/espnow/status",     HTTP_GET,  handleEspNowStatus);

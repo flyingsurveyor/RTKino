@@ -17,11 +17,30 @@ static bool responseIsAuthError(const String& resp) {
 NtripPusher::NtripPusher(const String& host, int port, const String& mount, const String& pass, const String& ua)
 : _host(host), _mount(mount), _pass(pass), _ua(ua), _port(port) {}
 
+bool NtripPusher::resolveHost() {
+  IPAddress tmp;
+  if (tmp.fromString(_host.c_str())) {
+    _resolvedIp = tmp;
+    _ipResolved = true;
+    return true;
+  }
+  if (WiFi.hostByName(_host.c_str(), tmp)) {
+    _resolvedIp = tmp;
+    _ipResolved = true;
+    return true;
+  }
+  Serial.println("[NTRIP-PUSH] DNS resolve failed");
+  return false;
+}
+
 bool NtripPusher::connectSocket() {
+  if (WiFi.status() != WL_CONNECTED) return false;
   if (_cli.connected()) _cli.stop();
-  _cli.setTimeout(3000);  // 3 second timeout for all socket operations
-  if (!_cli.connect(_host.c_str(), _port)) {
+  if (!_ipResolved && !resolveHost()) return false;
+  _cli.setTimeout(1000);
+  if (!_cli.connect(_resolvedIp, _port)) {
     Serial.println("[NTRIP-PUSH] socket connect FAIL");
+    _ipResolved = false;  // Forza re-resolve al prossimo tentativo
     return false;
   }
   _cli.setNoDelay(true);
@@ -33,7 +52,7 @@ bool NtripPusher::handshakeTry(const String& req) {
 
   uint32_t t0 = millis();
   String resp;
-  while (millis() - t0 < 2000) {
+  while (millis() - t0 < 1000) {
     while (_cli.available()) resp += (char)_cli.read();
     if (responseIsOK(resp)) {
       Serial.println("[NTRIP-PUSH] OK");
@@ -138,7 +157,10 @@ bool NtripPusher::isConnected() {
 void NtripPusher::loop() {
   // Auto-reconnect if enabled and disconnected
   if (!_autoReconnect) return;
-  
+
+  // Non tentare nulla se WiFi non è up
+  if (WiFi.status() != WL_CONNECTED) return;
+
   // Health check: if connected but no successful write for 30s, force reconnect
   if (_cli.connected() && _lastSuccessfulWriteMs > 0) {
     if (millis() - _lastSuccessfulWriteMs > STALE_TIMEOUT_MS) {
@@ -147,20 +169,40 @@ void NtripPusher::loop() {
       _lastSuccessfulWriteMs = 0;
     }
   }
-  
+
   if (!_cli.connected()) {
     uint32_t now = millis();
     if (now - _lastReconnectAttemptMs >= RECONNECT_DELAY_MS) {
       _lastReconnectAttemptMs = now;
-      Serial.println("[NTRIP-PUSH] Reconnecting...");
-      
-      if (connectSocket()) {
-        if (doHandshake()) {
-          Serial.println("[NTRIP-PUSH] Reconnected successfully");
-          _lastSuccessfulWriteMs = millis();  // Reset health check timer on successful reconnect
-        } else {
-          _cli.stop();
+
+      if (!connectSocket()) return;
+
+      // Prova UNA SOLA variante per ciclo (max blocco: 1s connect + 1s handshake = 2s)
+      // invece di 4 varianti in sequenza (che bloccava fino a 48s)
+      static const HandshakeVariant varOrder[] = {V2_SLASH, V2_NOSLASH, V1_SLASH, V1_NOSLASH};
+      HandshakeVariant toTry;
+      if (_successfulVariant != UNKNOWN) {
+        // Usa la variante già nota
+        toTry = _successfulVariant;
+      } else {
+        // Round-robin: una variante diversa ad ogni ciclo
+        toTry = varOrder[_loopVariantIdx % 4];
+        _loopVariantIdx++;
+      }
+
+      Serial.printf("[NTRIP-PUSH] Reconnecting (variant %d)...\n", (int)toTry);
+      if (handshakeTry(getHandshakeRequest(toTry))) {
+        _successfulVariant = toTry;
+        _loopVariantIdx = 0;
+        _lastSuccessfulWriteMs = millis();
+        Serial.println("[NTRIP-PUSH] Reconnected successfully");
+      } else {
+        if (_successfulVariant != UNKNOWN) {
+          // La variante nota ha fallito: reset e riprova dall'inizio
+          _successfulVariant = UNKNOWN;
+          _loopVariantIdx = 0;
         }
+        _cli.stop();
       }
     }
   }

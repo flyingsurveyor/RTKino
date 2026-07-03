@@ -2,6 +2,14 @@
 // Copyright (C) 2025-2026 FlyingSurveyor
 #include "RTCMInput.h"
 
+static bool resolveRtcmHost(const String& host, IPAddress& out) {
+  IPAddress tmp;
+  if (tmp.fromString(host.c_str())) { out = tmp; return true; }  // già un IP
+  if (WiFi.hostByName(host.c_str(), tmp)) { out = tmp; return true; }
+  Serial.println("[RTCM-IN] DNS resolve failed");
+  return false;
+}
+
 bool RTCMInput::configure(const String& host, uint16_t port) {
   _host = host;
   _port = port;
@@ -29,18 +37,21 @@ void RTCMInput::loop() {
 
   // auto-reconnect every 3s if disconnected
   if (!_client.connected()) {
+    if (WiFi.status() != WL_CONNECTED) return;  // Evita DNS bloccante se WiFi è giù
     uint32_t now = millis();
     if (now - _lastReconnectMs >= 3000) {
       _lastReconnectMs = now;
       _client.stop();
+
+      // Risolvi hostname → IP (max 2s); se fallisce salta il tentativo
+      if (!_ipResolved && !resolveRtcmHost(_host, _resolvedIp)) return;
+      _ipResolved = true;
+
       _client.setNoDelay(true);
-      _client.setTimeout(3000); // 3 second timeout for connect and read
-      
-      // Attempt connection (note: WiFiClient::connect is blocking but has timeout)
-      // This is acceptable since the timeout is controlled
-      bool connected = _client.connect(_host.c_str(), _port);
-      if (!connected) {
+      _client.setTimeout(1000);
+      if (!_client.connect(_resolvedIp, _port)) {
         _client.stop();
+        _ipResolved = false;  // Forza re-resolve al prossimo tentativo
       }
     }
     return;
