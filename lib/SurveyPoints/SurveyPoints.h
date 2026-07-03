@@ -112,6 +112,9 @@ namespace SurveyPoints {
     // ---- Delete a point ----
     bool deletePoint(const String& sid, const String& pid);
 
+    // ---- Edit a point's name/codice (coordinates untouched) ----
+    bool editPoint(const String& sid, const String& pid, const String& name, const String& codice);
+
     // ---- Download ----
     String getSurveyGeoJSON(const String& sid);
     String getSurveyCSV(const String& sid);

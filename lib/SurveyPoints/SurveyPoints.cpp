@@ -518,6 +518,51 @@ bool deletePoint(const String& sid, const String& pid) {
     return saveSurveyJSON(sid, newJson);
 }
 
+// ---- editPoint ----
+bool editPoint(const String& sid, const String& pid, const String& name, const String& codice) {
+    String json = loadSurveyJSON(sid);
+    if (json.isEmpty()) return false;
+
+    String needle = "\"id\":\"" + pid + "\"";
+    int    idx    = json.indexOf(needle);
+    if (idx < 0) return false;
+
+    int featureStart = -1;
+    for (int i = idx; i >= 1; i--) {
+        if (json[i] == '{') { featureStart = i; break; }
+    }
+    if (featureStart < 0) return false;
+
+    int depth = 0, featureEnd = -1;
+    for (int i = featureStart; i < (int)json.length(); i++) {
+        if (json[i] == '{') depth++;
+        else if (json[i] == '}') { depth--; if (depth == 0) { featureEnd = i; break; } }
+    }
+    if (featureEnd < 0) return false;
+
+    String feature = json.substring(featureStart, featureEnd + 1);
+
+    auto replaceStrField = [](String& s, const String& key, const String& newVal) {
+        String nd = "\"" + key + "\":\"";
+        int    ki = s.indexOf(nd);
+        if (ki < 0) return;
+        int vs = ki + nd.length();
+        int ve = s.indexOf("\"", vs);
+        if (ve < 0) return;
+        s = s.substring(0, vs) + jsonEscape(newVal) + s.substring(ve);
+    };
+
+    String nameToSave = name;
+    nameToSave.trim();
+    if (nameToSave.isEmpty()) nameToSave = pid;
+
+    replaceStrField(feature, "name",   nameToSave);
+    replaceStrField(feature, "codice", codice);
+
+    String newJson = json.substring(0, featureStart) + feature + json.substring(featureEnd + 1);
+    return saveSurveyJSON(sid, newJson);
+}
+
 // ---- getSurveyGeoJSON ----
 String getSurveyGeoJSON(const String& sid) {
     return loadSurveyJSON(sid);

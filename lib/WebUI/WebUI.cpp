@@ -5508,7 +5508,7 @@ static void handleSurveyPage() {
   sendChunk("        if(res){res.style.display='';");
   sendChunk("          res.innerHTML=d.status==='done'?'<b style=color:green>&#10003; Saved: '+d.lastPointId+'</b>':'<span style=color:red>&#9888; Error: '+d.errorMsg+'</span>';}");
   sendChunk("        document.getElementById('btn-measure').disabled=false;");
-  sendChunk("        if(d.status==='done'){autoIncrementName();");
+  sendChunk("        if(d.status==='done'){autoIncrementName();addPointCard(d.lastPointId);");
   sendChunk("          setTimeout(function(){");
   sendChunk("            var r2=document.getElementById('meas-result');if(r2)r2.style.display='none';");
   sendChunk("            var b2=document.getElementById('meas-bar');if(b2){b2.style.width='0%';b2.style.background='#2ecc71';}");
@@ -5580,6 +5580,95 @@ static void handleSurveyPage() {
   sendChunk("  var m=n.value.match(/^(.*?)(\\d+)$/);");
   sendChunk("  if(m){var num=parseInt(m[2],10)+1;var pad=m[2].length;");
   sendChunk("    n.value=m[1]+(''+num).padStart(pad,'0');}");
+  sendChunk("}");
+
+  sendChunk("function getActiveSid(){var b=document.getElementById('active-banner');return b?b.getAttribute('data-sid'):'';}");
+
+  // Render (or re-render) a card's static view from its data-* attributes
+  sendChunk("function buildCardBody(card){");
+  sendChunk("  card.innerHTML='';");
+  sendChunk("  var pid=card.getAttribute('data-pid'),name=card.getAttribute('data-name')||'',");
+  sendChunk("      codice=card.getAttribute('data-codice')||'',rtk=card.getAttribute('data-rtk')||'',");
+  sendChunk("      lat=card.getAttribute('data-lat')||'0',lon=card.getAttribute('data-lon')||'0',");
+  sendChunk("      alt=card.getAttribute('data-alt')||'0',hacc=card.getAttribute('data-hacc')||'0',");
+  sendChunk("      nsamp=card.getAttribute('data-nsamp')||'0';");
+  sendChunk("  var rl=rtk.toLowerCase(),isFix=rl.indexOf('fix')>=0,isFloat=rl.indexOf('float')>=0;");
+  sendChunk("  var badgeClass=isFix?'rtk-fix':isFloat?'rtk-float':'rtk-none';");
+  sendChunk("  var rtkLabel=isFix?'FIX \\u2713':isFloat?'FLOAT ~':'NO RTK';");
+  sendChunk("  var hdr=document.createElement('div');hdr.className='sv-card-header';");
+  sendChunk("  var title=document.createElement('span');title.className='sv-card-title';");
+  sendChunk("  title.textContent=name+(codice?(' \\u2014 '+codice):'');");
+  sendChunk("  var badge=document.createElement('span');badge.className='rtk-badge '+badgeClass;badge.textContent=rtkLabel;");
+  sendChunk("  hdr.appendChild(title);hdr.appendChild(badge);");
+  sendChunk("  var meta1=document.createElement('div');meta1.className='sv-card-meta';");
+  sendChunk("  meta1.textContent='\\u{1F30D} '+lat+'\\u00B0  '+lon+'\\u00B0';");
+  sendChunk("  var meta2=document.createElement('div');meta2.className='sv-card-meta';");
+  sendChunk("  meta2.textContent='H: '+alt+' m | hAcc: '+hacc+' m | '+nsamp+' samples';");
+  sendChunk("  var actions=document.createElement('div');actions.style.textAlign='right';actions.style.marginTop='4px';");
+  sendChunk("  var editBtn=document.createElement('button');editBtn.className='btn btn-small';editBtn.innerHTML='&#9998;';");
+  sendChunk("  editBtn.onclick=function(){startEditPoint(card);};");
+  sendChunk("  var delBtn=document.createElement('button');delBtn.className='btn btn-small btn-danger';delBtn.innerHTML='&#128465;';");
+  sendChunk("  delBtn.onclick=function(){delPoint(getActiveSid(),pid);};");
+  sendChunk("  actions.appendChild(editBtn);actions.appendChild(delBtn);");
+  sendChunk("  card.appendChild(hdr);card.appendChild(meta1);card.appendChild(meta2);card.appendChild(actions);");
+  sendChunk("}");
+
+  // Swap a card into inline name/code editing mode
+  sendChunk("function startEditPoint(card){");
+  sendChunk("  var name=card.getAttribute('data-name')||'',codice=card.getAttribute('data-codice')||'';");
+  sendChunk("  card.innerHTML='';");
+  sendChunk("  var row=document.createElement('div');row.style.display='flex';row.style.gap='6px';row.style.flexWrap='wrap';");
+  sendChunk("  var inp=document.createElement('input');inp.type='text';inp.value=name;inp.style.flex='1';inp.style.minWidth='100px';");
+  sendChunk("  var sel=document.createElement('select');sel.style.flex='1';sel.style.minWidth='140px';");
+  sendChunk("  var optNone=document.createElement('option');optNone.value='';optNone.textContent='-- no code --';sel.appendChild(optNone);");
+  sendChunk("  if(_codesData&&_codesData.categorie){_codesData.categorie.forEach(function(cat){");
+  sendChunk("    var og=document.createElement('optgroup');og.label=cat.label;");
+  sendChunk("    (cat.codici||[]).forEach(function(c){");
+  sendChunk("      var o=document.createElement('option');o.value=c.cod;o.textContent=c.cod+' \\u2014 '+c.label;");
+  sendChunk("      if(c.cod===codice)o.selected=true;og.appendChild(o);");
+  sendChunk("    });sel.appendChild(og);");
+  sendChunk("  });}");
+  sendChunk("  row.appendChild(inp);row.appendChild(sel);");
+  sendChunk("  var actions=document.createElement('div');actions.style.marginTop='8px';actions.style.textAlign='right';");
+  sendChunk("  var saveBtn=document.createElement('button');saveBtn.className='btn btn-small btn-success';saveBtn.textContent='Save';");
+  sendChunk("  var cancelBtn=document.createElement('button');cancelBtn.className='btn btn-small btn-secondary';cancelBtn.textContent='Cancel';");
+  sendChunk("  saveBtn.onclick=function(){saveEditPoint(card,inp.value,sel.value);};");
+  sendChunk("  cancelBtn.onclick=function(){buildCardBody(card);};");
+  sendChunk("  actions.appendChild(saveBtn);actions.appendChild(cancelBtn);");
+  sendChunk("  card.appendChild(row);card.appendChild(actions);");
+  sendChunk("}");
+
+  sendChunk("function saveEditPoint(card,name,codice){");
+  sendChunk("  var sid=getActiveSid(),pid=card.getAttribute('data-pid');");
+  sendChunk("  fetch('/api/pts/point/edit?sid='+sid+'&pid='+pid+'&name='+encodeURIComponent(name)+'&codice='+encodeURIComponent(codice),{method:'POST'})");
+  sendChunk("    .then(function(r){return r.json();}).then(function(d){");
+  sendChunk("      if(d.ok){card.setAttribute('data-name',name);card.setAttribute('data-codice',codice);buildCardBody(card);}");
+  sendChunk("      else alert('Error: '+(d.error||'unknown'));");
+  sendChunk("    }).catch(function(e){alert('Network error: '+e);});");
+  sendChunk("}");
+
+  // Prepend the just-saved point as a card, without reloading the page
+  sendChunk("function addPointCard(pid){");
+  sendChunk("  var sid=getActiveSid();if(!sid)return;");
+  sendChunk("  fetch('/api/pts/points?sid='+sid).then(function(r){return r.json();}).then(function(geo){");
+  sendChunk("    var feat=(geo.features||[]).filter(function(f){return f.id===pid;})[0];");
+  sendChunk("    if(!feat)return;");
+  sendChunk("    var list=document.getElementById('pts-list');if(!list)return;");
+  sendChunk("    var ph=document.getElementById('pts-empty');if(ph)ph.remove();");
+  sendChunk("    var p=feat.properties||{};var c=(feat.geometry&&feat.geometry.coordinates)||[0,0,0];");
+  sendChunk("    var div=document.createElement('div');div.className='sv-card';");
+  sendChunk("    div.setAttribute('data-pid',pid);");
+  sendChunk("    div.setAttribute('data-name',p.name||'');");
+  sendChunk("    div.setAttribute('data-codice',p.codice||'');");
+  sendChunk("    div.setAttribute('data-rtk',(p.TPV&&p.TPV.rtk)||'');");
+  sendChunk("    div.setAttribute('data-lon',c[0]);div.setAttribute('data-lat',c[1]);div.setAttribute('data-alt',c[2]||0);");
+  sendChunk("    div.setAttribute('data-hacc',(p.HPPOSLLH&&p.HPPOSLLH.hAcc)||0);");
+  sendChunk("    div.setAttribute('data-nsamp',(p.sampling&&p.sampling.n_samples)||0);");
+  sendChunk("    buildCardBody(div);");
+  sendChunk("    list.insertBefore(div,list.firstChild);");
+  sendChunk("    var cnt=document.getElementById('active-pts-count');");
+  sendChunk("    if(cnt){var n=parseInt(cnt.textContent,10);if(!isNaN(n))cnt.textContent=n+1;}");
+  sendChunk("  }).catch(function(){});");
   sendChunk("}");
 
   sendChunk("function startMeasureRequest(force){");
@@ -5717,12 +5806,17 @@ static void handleSurveyPage() {
   // ---- Card-based point list for active survey ----
   if (!activeSid.isEmpty()) {
     sendChunk("<div class='card'><h2>&#128203; Recorded points</h2>");
+    sendChunk("<div id='pts-list'>");
 
     int ptCount = SurveyPoints::getSurveyPointCount(activeSid);
     if (ptCount == 0) {
-      sendChunk("<p style='color:#888;font-size:0.9em'>No points recorded yet.</p>");
+      sendChunk("<p id='pts-empty' style='color:#888;font-size:0.9em'>No points recorded yet.</p>");
     } else {
       String json = SurveyPoints::loadSurveyJSON(activeSid);
+
+      struct PtRow { String pid, name, codice, rtk, lat, lon, alt, hacc, nsamp; };
+      std::vector<PtRow> rows;
+
       int pos = 0;
       while (true) {
         int fi = json.indexOf("\"type\":\"Feature\"", pos);
@@ -5748,46 +5842,82 @@ static void handleSurveyPage() {
           return json.substring(vs,ve);
         };
 
-        String pid    = getStr("id",    featureStart);
-        String name   = getStr("name",  featureStart);
-        String codice = getStr("codice",featureStart);
-        String rtk    = getStr("rtk",   featureStart);
+        PtRow row;
+        row.pid    = getStr("id",    featureStart);
+        row.name   = getStr("name",  featureStart);
+        row.codice = getStr("codice",featureStart);
+        row.rtk    = getStr("rtk",   featureStart);
         int propsPos  = json.indexOf("\"properties\":", featureStart);
         int from      = propsPos>0 ? propsPos : featureStart;
 
         int geomPos   = json.indexOf("\"coordinates\":", featureStart);
-        String lat_s="0", lon_s="0", alt_s="0";
+        row.lat="0"; row.lon="0"; row.alt="0";
         if (geomPos>0) {
           int bp=json.indexOf("[",geomPos);
           if(bp>0){int eb=json.indexOf("]",bp); String coords=json.substring(bp+1,eb);
             int c1=coords.indexOf(","); int c2=coords.indexOf(",",c1+1);
-            lon_s=coords.substring(0,c1); lat_s=coords.substring(c1+1,c2>0?c2:coords.length());
-            if(c2>0) alt_s=coords.substring(c2+1); lat_s.trim(); lon_s.trim(); alt_s.trim();}
+            row.lon=coords.substring(0,c1); row.lat=coords.substring(c1+1,c2>0?c2:coords.length());
+            if(c2>0) row.alt=coords.substring(c2+1); row.lat.trim(); row.lon.trim(); row.alt.trim();}
         }
 
+        row.hacc  = getNum("hAcc", from);
+        row.nsamp = getNum("n_samples", from);
+
+        rows.push_back(row);
+        pos = featureEnd + 1;
+      }
+
+      // Newest point first (features are appended in chronological order)
+      std::reverse(rows.begin(), rows.end());
+
+      const int PAGE_SIZE = 20;
+      int total      = (int)rows.size();
+      int totalPages = (total + PAGE_SIZE - 1) / PAGE_SIZE;
+      int ppage = _server->hasArg("ppage") ? _server->arg("ppage").toInt() : 0;
+      if (ppage < 0) ppage = 0;
+      if (ppage > totalPages - 1) ppage = totalPages - 1;
+      int startIdx = ppage * PAGE_SIZE;
+      int endIdx   = std::min(startIdx + PAGE_SIZE, total);
+
+      for (int i = startIdx; i < endIdx; i++) {
+        const PtRow& r = rows[i];
+
         // RTK badge: compute class and label in a single pass
-        String rtkLower = rtk; rtkLower.toLowerCase();
+        String rtkLower = r.rtk; rtkLower.toLowerCase();
         bool isFix   = rtkLower.indexOf("fix")   >= 0;
         bool isFloat = rtkLower.indexOf("float") >= 0;
         String badgeClass = isFix ? "rtk-fix" : isFloat ? "rtk-float" : "rtk-none";
         String rtkLabel   = isFix ? "FIX &#10003;" : isFloat ? "FLOAT ~" : "NO RTK";
 
-        String hacc_s = getNum("hAcc", from);
-        String nSamp  = getNum("n_samples", from);
+        String nameEsc   = htmlEscape(r.name);
+        String codiceEsc = htmlEscape(r.codice);
 
-        sendChunk("<div class='sv-card' data-pid='" + pid + "'>");
+        sendChunk("<div class='sv-card' data-pid='" + r.pid + "' data-name='" + nameEsc + "' data-codice='" + codiceEsc +
+                  "' data-rtk='" + r.rtk + "' data-lat='" + r.lat + "' data-lon='" + r.lon + "' data-alt='" + r.alt +
+                  "' data-hacc='" + r.hacc + "' data-nsamp='" + r.nsamp + "'>");
         sendChunk("<div class='sv-card-header'>");
-        sendChunk("<span class='sv-card-title'>" + name + (codice.isEmpty() ? "" : " &mdash; " + codice) + "</span>");
+        sendChunk("<span class='sv-card-title'>" + nameEsc + (codiceEsc.isEmpty() ? "" : " &mdash; " + codiceEsc) + "</span>");
         sendChunk("<span class='rtk-badge " + badgeClass + "'>" + rtkLabel + "</span>");
         sendChunk("</div>");
-        sendChunk("<div class='sv-card-meta'>&#127757; " + lat_s + "&#176; &nbsp; " + lon_s + "&#176;</div>");
-        sendChunk("<div class='sv-card-meta'>H: " + alt_s + " m &nbsp;|&nbsp; hAcc: " + hacc_s + " m &nbsp;|&nbsp; " + nSamp + " samples</div>");
+        sendChunk("<div class='sv-card-meta'>&#127757; " + r.lat + "&#176; &nbsp; " + r.lon + "&#176;</div>");
+        sendChunk("<div class='sv-card-meta'>H: " + r.alt + " m &nbsp;|&nbsp; hAcc: " + r.hacc + " m &nbsp;|&nbsp; " + r.nsamp + " samples</div>");
         sendChunk("<div style='text-align:right;margin-top:4px'>");
-        sendChunk("<button class='btn btn-small btn-danger' onclick=\"delPoint('" + activeSid + "','" + pid + "')\">&#128465;</button>");
+        sendChunk("<button class='btn btn-small' onclick=\"startEditPoint(this.closest('.sv-card'))\">&#9998;</button> ");
+        sendChunk("<button class='btn btn-small btn-danger' onclick=\"delPoint('" + activeSid + "','" + r.pid + "')\">&#128465;</button>");
         sendChunk("</div></div>");
-        pos = featureEnd + 1;
+      }
+
+      if (totalPages > 1) {
+        sendChunk("<div style='display:flex;justify-content:space-between;align-items:center;margin-top:10px;font-size:0.9em;color:#555'>");
+        if (ppage > 0) sendChunk("<a class='btn btn-small' href='/survey?ppage=" + String(ppage-1) + "'>&#8592; Prev</a>");
+        else sendChunk("<span></span>");
+        sendChunk("<span>Page " + String(ppage+1) + " / " + String(totalPages) + " (" + String(total) + " pts)</span>");
+        if (ppage < totalPages-1) sendChunk("<a class='btn btn-small' href='/survey?ppage=" + String(ppage+1) + "'>Next &#8594;</a>");
+        else sendChunk("<span></span>");
+        sendChunk("</div>");
       }
     }
+    sendChunk("</div>"); // end pts-list
 
     // ---- Download buttons ----
     sendChunk("<div class='sv-dl-row' style='margin-top:10px'>");
@@ -5903,6 +6033,17 @@ static void handlePtsPointDelete() {
   String pid = _server->hasArg("pid") ? _server->arg("pid") : "";
   if (sid.isEmpty() || pid.isEmpty()) { _server->send(400,"application/json","{\"error\":\"Missing sid/pid\"}"); return; }
   bool ok = SurveyPoints::deletePoint(sid, pid);
+  _server->send(200, "application/json", ok ? "{\"ok\":true}" : "{\"error\":\"Not found\"}");
+}
+
+// ---- Survey API: edit point (name/codice only) ----
+static void handlePtsPointEdit() {
+  String sid    = _server->hasArg("sid")    ? _server->arg("sid")    : "";
+  String pid    = _server->hasArg("pid")    ? _server->arg("pid")    : "";
+  String name   = _server->hasArg("name")   ? _server->arg("name")   : "";
+  String codice = _server->hasArg("codice") ? _server->arg("codice") : "";
+  if (sid.isEmpty() || pid.isEmpty()) { _server->send(400,"application/json","{\"error\":\"Missing sid/pid\"}"); return; }
+  bool ok = SurveyPoints::editPoint(sid, pid, name, codice);
   _server->send(200, "application/json", ok ? "{\"ok\":true}" : "{\"error\":\"Not found\"}");
 }
 
@@ -6774,6 +6915,7 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
   _server->on("/api/pts/measure/status",  HTTP_GET,  handlePtsMeasureStatus);
   _server->on("/api/pts/points",          HTTP_GET,  handlePtsPoints);
   _server->on("/api/pts/point/delete",    HTTP_POST, handlePtsPointDelete);
+  _server->on("/api/pts/point/edit",      HTTP_POST, handlePtsPointEdit);
   _server->on("/api/pts/download",        HTTP_GET,  handlePtsDownload);
   _server->on("/api/pts/download/csv",    HTTP_GET,  handlePtsDownloadCSV);
   _server->on("/api/pts/sync",            HTTP_GET,  handlePtsSync);
