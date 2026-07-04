@@ -36,6 +36,7 @@
 #include "SurveyPoints.h"
 #include "PointCodes.h"
 #include "Stakeout.h"
+#include "TrackRecorder.h"
 #include "EspNowRtcm.h"
 #if ENC_CLK_GPIO > 0 && ENC_DT_GPIO > 0 && ENC_SW_GPIO > 0
 #include "RotaryInput.h"
@@ -285,6 +286,8 @@ TaskHandle_t uartTaskHandle = NULL;
 TaskHandle_t sdTaskHandle = NULL;
 
 TaskHandle_t nmeaTaskHandle = NULL;
+
+TaskHandle_t trackTaskHandle = NULL;
 
 static std::vector<WifiCred> wifiList;
 
@@ -2610,6 +2613,35 @@ void setup() {
     return String(buf);
   };
 
+  // Tracking action callbacks
+  OledMenu::onTrackStartStop = []() {
+    if (TrackRecorder::isRecording()) TrackRecorder::stop();
+    else                              TrackRecorder::start();
+  };
+  OledMenu::onSetTrackTrigger = [](int mode) {
+    TrackRecorder::setTriggerMode((TrackTriggerMode)mode);
+  };
+  OledMenu::onSetTrackThreshold = [](float value) {
+    TrackConfig cfg = TrackRecorder::getConfig();
+    if (cfg.triggerMode == TRACK_TRIGGER_TIME) TrackRecorder::setIntervalSec(value);
+    else                                       TrackRecorder::setDistanceM(value);
+  };
+
+  // Tracking state readers
+  OledMenu::getTrackRecording   = []() -> bool { return TrackRecorder::isRecording(); };
+  OledMenu::getTrackTriggerMode = []() -> int  { return (int)TrackRecorder::getConfig().triggerMode; };
+  OledMenu::getTrackStatusString = []() -> String {
+    TrackStatus st = TrackRecorder::getStatus();
+    if (!st.recording) {
+      if (!st.lastError.isEmpty()) return "Error:\n" + st.lastError;
+      return "Not recording";
+    }
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%lu pts\n%.0fm  %lus",
+             (unsigned long)st.pointCount, st.distanceM, (unsigned long)st.durationSec);
+    return String(buf);
+  };
+
   // ---- Quick measure (double-click from home) ----
   OledMenu::onQuickMeasure = []() {
     MeasureParams mp;
@@ -2760,6 +2792,10 @@ void setup() {
   Stakeout::begin(sd, sdMutex, sdOK);
   Stakeout::positionProvider = takeStakeoutPosition;
 
+  // Initialize TrackRecorder (uses LittleFS for storage, SD is backup-only)
+  TrackRecorder::begin(sd, sdMutex, sdOK);
+  TrackRecorder::positionProvider = takeStakeoutPosition;
+
   // Initialize PointCodes (uses LittleFS, loads defaults if not present)
   PointCodes::begin();
 #if ENC_CLK_GPIO > 0 && ENC_DT_GPIO > 0 && ENC_SW_GPIO > 0
@@ -2772,6 +2808,7 @@ void setup() {
     FlashConfig::syncToSD(sd, sdMutex, true);
     SurveyPoints::syncToSD();
     Stakeout::syncToSD();
+    TrackRecorder::periodicSync(true);
     Serial.println("[Flash] Boot sync flash→SD completed");
   }
 
@@ -2851,6 +2888,7 @@ void setup() {
   xTaskCreatePinnedToCore(uartReaderTask, "UARTReader", 12288, NULL, 2, &uartTaskHandle, 0);
   xTaskCreatePinnedToCore(sdWriterTask,   "SDWriter",   4096,  NULL, 1, &sdTaskHandle, 1);
   xTaskCreatePinnedToCore(nmeaReaderTask, "NMEAReader", 6144,  NULL, 1, &nmeaTaskHandle, 1);
+  xTaskCreatePinnedToCore(TrackRecorder::backgroundTask, "TrackRec", 6144, NULL, 1, &trackTaskHandle, 1);
 
   // Wi-Fi + Web + NTRIP (rover IN)
   WifiProfiles::loadFromFlash(wifiList);
@@ -3217,10 +3255,15 @@ void loop() {
       UBaseType_t stackFree = uxTaskGetStackHighWaterMark(sdTaskHandle);
       Serial.printf("[Stack] SDWriter: %d bytes free\n", stackFree);
     }
+    if (trackTaskHandle) {
+      UBaseType_t stackFree = uxTaskGetStackHighWaterMark(trackTaskHandle);
+      Serial.printf("[Stack] TrackRec: %d bytes free\n", stackFree);
+    }
   }
   
   // Periodic survey sync to SD (every 5 minutes)
   if (!loggingActive) {
     SurveyPoints::periodicSync();
+    TrackRecorder::periodicSync();
   }
 }

@@ -70,6 +70,14 @@ namespace OledMenu {
   int    (*getStakeoutPointCount)()     = nullptr;
   String (*getStakeoutPointLabel)(int)  = nullptr;
   String (*getStakeoutNavString) ()     = nullptr;
+
+  // Tracking
+  void   (*onTrackStartStop)    ()      = nullptr;
+  void   (*onSetTrackTrigger)   (int)   = nullptr;
+  void   (*onSetTrackThreshold) (float) = nullptr;
+  bool   (*getTrackRecording)   ()      = nullptr;
+  int    (*getTrackTriggerMode) ()      = nullptr;
+  String (*getTrackStatusString)()      = nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,11 +100,12 @@ static const int MAX_DISP_CHARS = 21;
 // Index 2 = Stakeout
 // Index 3 = Base
 // Index 4 = Settings
-// Index 5 = Back
+// Index 5 = Tracking
+// Index 6 = Back
 static const char* MAIN_ITEMS[] = {
-  "Misura punto", "Surveys", "Stakeout", "Base", "Settings", "Back"
+  "Misura punto", "Surveys", "Stakeout", "Base", "Settings", "Tracking", "Back"
 };
-static const int MAIN_COUNT = 6;
+static const int MAIN_COUNT = 7;
 
 // ---------------------------------------------------------------------------
 // Settings root (4 items)
@@ -179,6 +188,21 @@ static const int   BASE_DUR_COUNT    = 4;
 // ---------------------------------------------------------------------------
 static const char* STAKEOUT_ITEMS[] = { "Naviga", "File", "Back" };
 static const int   STAKEOUT_COUNT   = 3;
+
+// ---------------------------------------------------------------------------
+// Tracking sub-menu
+// ---------------------------------------------------------------------------
+static const char* TRACK_MENU_ITEMS[]     = { "Start/Stop", "Settings", "Back" };
+static const int   TRACK_MENU_COUNT       = 3;
+static const char* TRACK_SETTINGS_ITEMS[] = { "Trigger Mode", "Threshold", "Back" };
+static const int   TRACK_SETTINGS_COUNT   = 3;
+static const char* TRACK_MODE_LABELS[]    = { "Time", "Distance" };
+static const int   TRACK_MODE_COUNT       = 2;
+static const char*  TRACK_TIME_LABELS[]  = { "1 sec", "2 sec", "5 sec", "10 sec", "30 sec", "60 sec" };
+static const float  TRACK_TIME_VALUES[]  = { 1, 2, 5, 10, 30, 60 };
+static const char*  TRACK_DIST_LABELS[]  = { "2 m", "5 m", "10 m", "20 m", "50 m", "100 m" };
+static const float  TRACK_DIST_VALUES[]  = { 2, 5, 10, 20, 50, 100 };
+static const int    TRACK_THRESHOLD_COUNT = 6;
 
 // ---------------------------------------------------------------------------
 // State machine
@@ -394,6 +418,19 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
       case OLED_STAKEOUT_NAV:
         enterMenu(OLED_STAKEOUT_MENU, STAKEOUT_COUNT);
         break;
+      // Tracking
+      case OLED_TRACK_MENU:
+        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 5);
+        break;
+      case OLED_TRACK_SETTINGS:
+        enterMenu(OLED_TRACK_MENU, TRACK_MENU_COUNT, 1);
+        break;
+      case OLED_TRACK_TRIGGER_MODE:
+        enterMenu(OLED_TRACK_SETTINGS, TRACK_SETTINGS_COUNT, 0);
+        break;
+      case OLED_TRACK_THRESHOLD:
+        enterMenu(OLED_TRACK_SETTINGS, TRACK_SETTINGS_COUNT, 1);
+        break;
       default:
         s_state = OLED_NORMAL;
         break;
@@ -433,6 +470,10 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
       case OLED_STAKEOUT_MENU:
       case OLED_STAKEOUT_FILE_LIST:
       case OLED_STAKEOUT_POINT_LIST:
+      case OLED_TRACK_MENU:
+      case OLED_TRACK_SETTINGS:
+      case OLED_TRACK_TRIGGER_MODE:
+      case OLED_TRACK_THRESHOLD:
         scrollCursor(direction);
         break;
       default:
@@ -474,7 +515,10 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
         case 4: // Settings
           enterMenu(OLED_MENU_SETTINGS, SETTINGS_ROOT_COUNT);
           break;
-        case 5: // Back
+        case 5: // Tracking
+          enterMenu(OLED_TRACK_MENU, TRACK_MENU_COUNT);
+          break;
+        case 6: // Back
           s_state = OLED_NORMAL;
           break;
       }
@@ -736,6 +780,39 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
     case OLED_STAKEOUT_NAV:
       enterMenu(OLED_STAKEOUT_MENU, STAKEOUT_COUNT);
       break;
+
+    // ---- Tracking sub-menu ----
+    case OLED_TRACK_MENU:
+      switch (s_cursor) {
+        case 0: if (OledMenu::onTrackStartStop) OledMenu::onTrackStartStop(); break;
+        case 1: enterMenu(OLED_TRACK_SETTINGS, TRACK_SETTINGS_COUNT); break;
+        case 2: enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 5); break;
+      }
+      break;
+
+    // ---- Tracking settings ----
+    case OLED_TRACK_SETTINGS:
+      switch (s_cursor) {
+        case 0: enterMenu(OLED_TRACK_TRIGGER_MODE, TRACK_MODE_COUNT); break;
+        case 1: enterMenu(OLED_TRACK_THRESHOLD, TRACK_THRESHOLD_COUNT); break;
+        case 2: enterMenu(OLED_TRACK_MENU, TRACK_MENU_COUNT, 1); break;
+      }
+      break;
+
+    // ---- Tracking trigger mode picker ----
+    case OLED_TRACK_TRIGGER_MODE:
+      if (OledMenu::onSetTrackTrigger) OledMenu::onSetTrackTrigger(s_cursor);
+      enterMenu(OLED_TRACK_SETTINGS, TRACK_SETTINGS_COUNT, 0);
+      break;
+
+    // ---- Tracking threshold picker (seconds or metres, depending on mode) ----
+    case OLED_TRACK_THRESHOLD: {
+      int mode = OledMenu::getTrackTriggerMode ? OledMenu::getTrackTriggerMode() : 0;
+      float val = (mode == 0) ? TRACK_TIME_VALUES[s_cursor] : TRACK_DIST_VALUES[s_cursor];
+      if (OledMenu::onSetTrackThreshold) OledMenu::onSetTrackThreshold(val);
+      enterMenu(OLED_TRACK_SETTINGS, TRACK_SETTINGS_COUNT, 1);
+      break;
+    }
 
     default:
       break;
@@ -1257,6 +1334,77 @@ void draw(Adafruit_SSD1306& disp) {
         disp.print("Nessun target");
       }
       drawHint("*=menu");
+      break;
+    }
+
+    // ---- Tracking menu ----
+    case OLED_TRACK_MENU: {
+      disp.setCursor(0, TITLE_Y);
+      disp.print("* TRACKING");
+      dashedLine(SEP_Y);
+      bool rec = OledMenu::getTrackRecording && OledMenu::getTrackRecording();
+      int y0 = ITEMS_Y_START;
+      if (rec && OledMenu::getTrackStatusString) {
+        String st = OledMenu::getTrackStatusString();
+        int nl = st.indexOf('\n');
+        String line1 = nl > 0 ? st.substring(0, nl) : st;
+        disp.setCursor(0, y0);
+        disp.print(line1);
+        y0 += ROW_H;
+      }
+      for (int i = 0; i < TRACK_MENU_COUNT; i++) {
+        int y = y0 + i * ROW_H;
+        char right[6] = "";
+        if (i == 0) strncpy(right, rec ? "REC" : "OFF", sizeof(right) - 1);
+        drawItem(y, TRACK_MENU_ITEMS[i], right, i == s_cursor);
+      }
+      drawHint("^ scroll *ok <back");
+      break;
+    }
+
+    // ---- Tracking settings ----
+    case OLED_TRACK_SETTINGS: {
+      disp.setCursor(0, TITLE_Y);
+      disp.print("TRACK SETTINGS");
+      dashedLine(SEP_Y);
+      for (int i = 0; i < TRACK_SETTINGS_COUNT; i++) {
+        int y = ITEMS_Y_START + i * ROW_H;
+        char right[10] = "";
+        if (i == 0) {
+          int mode = OledMenu::getTrackTriggerMode ? OledMenu::getTrackTriggerMode() : 0;
+          strncpy(right, TRACK_MODE_LABELS[mode], sizeof(right) - 1);
+        }
+        drawItem(y, TRACK_SETTINGS_ITEMS[i], right, i == s_cursor);
+      }
+      drawHint("^ scroll *ok <back");
+      break;
+    }
+
+    // ---- Tracking trigger mode picker ----
+    case OLED_TRACK_TRIGGER_MODE: {
+      disp.setCursor(0, TITLE_Y);
+      disp.print("TRIGGER MODE");
+      dashedLine(SEP_Y);
+      for (int i = 0; i < TRACK_MODE_COUNT; i++) {
+        int y = ITEMS_Y_START + i * ROW_H;
+        drawItem(y, TRACK_MODE_LABELS[i], nullptr, i == s_cursor);
+      }
+      drawHint("^ scroll *set <back");
+      break;
+    }
+
+    // ---- Tracking threshold picker (seconds or metres, depending on mode) ----
+    case OLED_TRACK_THRESHOLD: {
+      disp.setCursor(0, TITLE_Y);
+      int mode = OledMenu::getTrackTriggerMode ? OledMenu::getTrackTriggerMode() : 0;
+      disp.print(mode == 0 ? "INTERVAL" : "DISTANCE");
+      dashedLine(SEP_Y);
+      const char** labels = (mode == 0) ? TRACK_TIME_LABELS : TRACK_DIST_LABELS;
+      for (int i = s_scrollTop; i < TRACK_THRESHOLD_COUNT && (i - s_scrollTop) < MAX_VISIBLE; i++) {
+        int y = ITEMS_Y_START + (i - s_scrollTop) * ROW_H;
+        drawItem(y, labels[i], nullptr, i == s_cursor);
+      }
+      drawHint("^ scroll *set <back");
       break;
     }
 

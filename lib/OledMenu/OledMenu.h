@@ -45,7 +45,12 @@ enum OledMenuState {
   OLED_STAKEOUT_MENU,
   OLED_STAKEOUT_FILE_LIST,
   OLED_STAKEOUT_POINT_LIST,
-  OLED_STAKEOUT_NAV
+  OLED_STAKEOUT_NAV,
+  // ---- Tracking states ----
+  OLED_TRACK_MENU,          // root: Start/Stop, Settings, Back
+  OLED_TRACK_SETTINGS,      // Trigger Mode, Threshold, Back
+  OLED_TRACK_TRIGGER_MODE,  // Time / Distance picker
+  OLED_TRACK_THRESHOLD      // context-sensitive preset picker (seconds or metres)
 };
 
 namespace OledMenu {
@@ -121,6 +126,14 @@ namespace OledMenu {
   extern int    (*getStakeoutPointCount)();
   extern String (*getStakeoutPointLabel)(int idx);
   extern String (*getStakeoutNavString) ();
+
+  // ---- Tracking callbacks --------------------------------------------------
+  extern void   (*onTrackStartStop)    ();
+  extern void   (*onSetTrackTrigger)   (int mode);
+  extern void   (*onSetTrackThreshold) (float value);
+  extern bool   (*getTrackRecording)   ();
+  extern int    (*getTrackTriggerMode) ();
+  extern String (*getTrackStatusString)();
 
   // Selected code getters (readable from main.cpp)
   const String& getSelectedCod();

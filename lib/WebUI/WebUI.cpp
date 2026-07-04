@@ -70,6 +70,7 @@ extern volatile bool g_extintMarkerEnabled;
 
 // Stakeout (navigate to design points)
 #include "Stakeout.h"
+#include "TrackRecorder.h"
 
 // ZED-F9P TMODE State (defined in main.cpp, struct in UbxValset.h)
 #include "UbxValset.h"  // Assicurati che sia incluso in alto
@@ -207,13 +208,20 @@ static WebServer* _server;
 static const char CSS_CONTENT[] PROGMEM = R"CSS(
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f5f5; }
-.header { background: #2c3e50; color: white; padding: 12px 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-.header h1 { font-size: 22px; font-weight: 600; }
-.nav { background: #34495e; display: flex; justify-content: space-around; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-.nav a { flex: 1; color: white; padding: 14px 10px; text-decoration: none; text-align: center; transition: background 0.3s; display: flex; align-items: center; justify-content: center; gap: 5px; }
-.nav a:hover, .nav a.active { background: #2c3e50; }
-.nav-icon { font-size: 20px; line-height: 1; }
-.nav-text { font-size: 14px; }
+.header { background: #2c3e50; color: white; padding: 12px 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); display: flex; align-items: center; gap: 14px; }
+.header h1 { font-size: 22px; font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hamburger-btn { background: transparent; border: none; color: white; font-size: 26px; line-height: 1; padding: 0 4px; margin: 0; width: auto; min-height: 0; flex: none; cursor: pointer; }
+.hamburger-btn:hover { background: transparent; opacity: 0.8; }
+.nav-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; }
+.nav-overlay.open { display: block; }
+.nav-drawer { position: fixed; top: 0; left: 0; bottom: 0; width: 260px; max-width: 80vw; background: #34495e; box-shadow: 2px 0 8px rgba(0,0,0,0.3); z-index: 1001; transform: translateX(-100%); transition: transform 0.25s ease; overflow-y: auto; }
+.nav-drawer.open { transform: translateX(0); }
+.nav-drawer-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; color: white; font-weight: 600; font-size: 16px; border-bottom: 1px solid rgba(255,255,255,0.15); }
+.nav-close-btn { background: transparent; border: none; color: white; font-size: 22px; line-height: 1; padding: 0 4px; margin: 0; width: auto; min-height: 0; cursor: pointer; }
+.nav-close-btn:hover { background: transparent; opacity: 0.8; }
+.nav-drawer a { display: flex; align-items: center; gap: 10px; color: white; padding: 14px 16px; text-decoration: none; transition: background 0.2s; font-size: 15px; }
+.nav-drawer a:hover, .nav-drawer a.active { background: #2c3e50; }
+.nav-drawer .nav-icon { font-size: 18px; line-height: 1; width: 20px; text-align: center; }
 .container { max-width: 1200px; margin: 20px auto; padding: 0 20px; }
 .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
 .card h2 { color: #2c3e50; margin-bottom: 16px; font-size: 20px; border-bottom: 2px solid #3498db; padding-bottom: 8px; }
@@ -314,39 +322,6 @@ form.inline { display: inline; }
   .status-row {
     padding: 8px 0;
     border-bottom: 1px solid #eee;
-  }
-  
-  /* Navigation - ALWAYS on one row */
-  .nav {
-    display: flex;
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-  }
-  
-  .nav a {
-    flex: 1;
-    min-width: 60px;
-    padding: 14px 8px;
-    font-size: 13px;
-  }
-  
-  /* Hide text for Home and Settings on mobile - ICONS ONLY */
-  .nav a[href="/"] .nav-text,
-  .nav a[href="/settings"] .nav-text {
-    display: none;
-  }
-  
-  /* Bigger icons (only visible for Home/Settings) */
-  .nav a .nav-icon {
-    font-size: 26px;
-  }
-  
-  /* Rover and Base keep text */
-  .nav a[href="/rover"] .nav-text,
-  .nav a[href="/base-cfg"] .nav-text {
-    display: inline;
-    font-size: 13px;
   }
   
   /* Quick actions grid */
@@ -622,51 +597,65 @@ static void sendHeader(const char* title, const char* activePage = "") {
   sendChunk("<title>");
   sendChunk(title);
   sendChunk(" - RTKino</title>");
-  sendChunk("<link rel='stylesheet' href='/css?v=3'>");
+  sendChunk("<link rel='stylesheet' href='/css?v=4'>");
   sendChunk("</head><body>");
   
   // Header
-  sendChunk("<div class='header'><h1>");
+  sendChunk("<div class='header'>");
+  sendChunk("<button class='hamburger-btn' onclick='toggleNav()' aria-label='Menu'>&#9776;</button>");
+  sendChunk("<h1>");
   sendChunk(g_deviceName[0] ? g_deviceName : "RTKino");
   sendChunk(" &ndash; ");
   sendChunk(title);
   sendChunk("</h1></div>");
-  
-  // Navigation
-  sendChunk("<div class='nav'>");
+
+  // Navigation drawer (hamburger-triggered, replaces the old top tab bar on all screen sizes)
+  sendChunk("<div id='navOverlay' class='nav-overlay' onclick='closeNav()'></div>");
+  sendChunk("<div id='navDrawer' class='nav-drawer'>");
+  sendChunk("<div class='nav-drawer-header'><span>Menu</span><button class='nav-close-btn' onclick='closeNav()' aria-label='Close'>&times;</button></div>");
+
   String active = String(activePage);
-  
+
   String nav = "<a href='/'";
   if (active == "home") nav += " class='active'";
-  nav += " title='Home'><span class='nav-icon'>⌂</span><span class='nav-text'>Home</span></a>";
+  nav += "><span class='nav-icon'>⌂</span><span class='nav-text'>Home</span></a>";
   sendChunk(nav);
-  
+
   nav = "<a href='/survey'";
   if (active == "survey") nav += " class='active'";
-  nav += " title='Survey'><span class='nav-text'>Survey</span></a>";
+  nav += "><span class='nav-icon'>&#128205;</span><span class='nav-text'>Survey</span></a>";
   sendChunk(nav);
 
   nav = "<a href='/stakeout'";
   if (active == "stakeout") nav += " class='active'";
-  nav += " title='Stakeout'><span class='nav-text'>Stakeout</span></a>";
+  nav += "><span class='nav-icon'>&#127919;</span><span class='nav-text'>Stakeout</span></a>";
   sendChunk(nav);
-  
+
+  nav = "<a href='/tracking'";
+  if (active == "tracking") nav += " class='active'";
+  nav += "><span class='nav-icon'>&#128663;</span><span class='nav-text'>Tracking</span></a>";
+  sendChunk(nav);
+
   nav = "<a href='/rover'";
   if (active == "rover") nav += " class='active'";
-  nav += " title='RTCM IN'><span class='nav-text'>RTCM IN</span></a>";
+  nav += "><span class='nav-icon'>&#128225;</span><span class='nav-text'>RTCM IN</span></a>";
   sendChunk(nav);
-  
+
   nav = "<a href='/base-cfg'";
   if (active == "base") nav += " class='active'";
-  nav += " title='Base'><span class='nav-text'>Base</span></a>";
+  nav += "><span class='nav-icon'>&#128225;</span><span class='nav-text'>Base</span></a>";
   sendChunk(nav);
-  
+
   nav = "<a href='/settings'";
   if (active == "settings") nav += " class='active'";
-  nav += " title='Settings'><span class='nav-icon'>⚙</span><span class='nav-text'>Settings</span></a>";
+  nav += "><span class='nav-icon'>⚙</span><span class='nav-text'>Settings</span></a>";
   sendChunk(nav);
-  
+
   sendChunk("</div>");
+  sendChunk("<script>");
+  sendChunk("function toggleNav(){document.getElementById('navDrawer').classList.toggle('open');document.getElementById('navOverlay').classList.toggle('open');}");
+  sendChunk("function closeNav(){document.getElementById('navDrawer').classList.remove('open');document.getElementById('navOverlay').classList.remove('open');}");
+  sendChunk("</script>");
   sendChunk("<div class='container'>");
 }
 
@@ -6627,6 +6616,230 @@ static void handleStakeoutStatus() {
 }
 
 // ========================================================================
+// TRACKING PAGE AND API HANDLERS
+// ========================================================================
+
+static void handleTrackingPage() {
+  sendHeader("Tracking", "tracking");
+
+  sendChunk("<style>");
+  sendChunk(".tk-status{background:#2c3e50;color:#ecf0f1;padding:12px 16px;border-radius:6px;font-family:monospace;margin-bottom:16px;}");
+  sendChunk(".tk-status p{margin:4px 0;font-size:15px;}");
+  sendChunk(".tk-rec-badge{padding:2px 8px;border-radius:10px;font-size:11px;margin-left:6px;}");
+  sendChunk(".tk-rec-on{background:#e74c3c;color:#fff;}.tk-rec-off{background:#7f8c8d;color:#fff;}");
+  sendChunk(".tk-dl-row{display:flex;gap:10px;margin-top:6px;}");
+  sendChunk(".tk-dl-row a{flex:1;text-align:center;padding:8px 0;border-radius:5px;font-size:0.9em;font-weight:bold;text-decoration:none;background:#2980b9;color:#fff;}");
+  sendChunk(".tk-dl-row a:last-child{background:#16a085;}");
+  sendChunk("</style>");
+
+  // ---- Status card ----
+  sendChunk("<div class='card'><h2>&#128663; Tracking</h2>");
+  sendChunk("<div id='tk-status' class='tk-status'><p>Loading...</p></div>");
+  sendChunk("<input id='tk-name' type='text' placeholder='Track name (optional)' style='width:100%;margin-bottom:8px'>");
+  sendChunk("<button id='tk-btn' class='btn-success' style='width:100%;padding:12px' data-rec='0' onclick='tkToggle()'>Start</button>");
+  sendChunk("</div>");
+
+  // ---- Settings card ----
+  sendChunk("<div class='card'><h2>&#9881; Settings</h2>");
+  sendChunk("<div style='display:flex;gap:16px;margin-bottom:10px'>");
+  sendChunk("<label><input type='radio' name='tkMode' value='0' onchange='tkModeChanged()'> Time</label>");
+  sendChunk("<label><input type='radio' name='tkMode' value='1' onchange='tkModeChanged()'> Distance</label>");
+  sendChunk("</div>");
+  sendChunk("<label id='tk-thlabel'>Interval (s)</label>");
+  sendChunk("<input id='tk-threshold' type='number' step='0.5' min='0.5' style='width:100%;margin-bottom:8px'>");
+  sendChunk("<button class='btn' onclick='tkSaveConfig()'>Save settings</button>");
+  sendChunk("</div>");
+
+  // ---- Track list ----
+  sendChunk("<div class='card'><h2>&#128193; Recorded tracks</h2>");
+  sendChunk("<div id='tk-list'>Loading...</div>");
+  sendChunk("</div>");
+
+  sendChunk("<script>");
+  sendChunk("function escHtml(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML;}");
+  sendChunk("function tkModeChanged(){");
+  sendChunk("  var mode=document.querySelector('input[name=tkMode]:checked').value;");
+  sendChunk("  document.getElementById('tk-thlabel').textContent=(mode=='0')?'Interval (s)':'Distance (m)';");
+  sendChunk("}");
+  sendChunk("function tkToggle(){");
+  sendChunk("  var recording=document.getElementById('tk-btn').getAttribute('data-rec')==='1';");
+  sendChunk("  if(recording){");
+  sendChunk("    fetch('/api/track/stop',{method:'POST'}).then(function(r){return r.json();}).then(function(d){");
+  sendChunk("      if(!d.ok)alert('Error: '+(d.error||'unknown'));");
+  sendChunk("      tkPoll();tkRefreshList();");
+  sendChunk("    }).catch(function(e){alert('Network error: '+e);});");
+  sendChunk("  } else {");
+  sendChunk("    var name=encodeURIComponent(document.getElementById('tk-name').value);");
+  sendChunk("    fetch('/api/track/start?name='+name,{method:'POST'}).then(function(r){return r.json();}).then(function(d){");
+  sendChunk("      if(!d.ok)alert('Error: '+(d.error||'unknown'));");
+  sendChunk("      tkPoll();tkRefreshList();");
+  sendChunk("    }).catch(function(e){alert('Network error: '+e);});");
+  sendChunk("  }");
+  sendChunk("}");
+  sendChunk("function tkSaveConfig(){");
+  sendChunk("  var mode=document.querySelector('input[name=tkMode]:checked').value;");
+  sendChunk("  var val=document.getElementById('tk-threshold').value;");
+  sendChunk("  fetch('/api/track/config?mode='+mode+'&value='+val,{method:'POST'})");
+  sendChunk("    .then(function(r){return r.json();}).then(function(d){");
+  sendChunk("      if(!d.ok)alert('Error: '+(d.error||'unknown'));");
+  sendChunk("    }).catch(function(e){alert('Network error: '+e);});");
+  sendChunk("}");
+  sendChunk("function tkPoll(){");
+  sendChunk("  fetch('/api/track/status').then(function(r){return r.json();}).then(function(d){");
+  sendChunk("    var el=document.getElementById('tk-status');");
+  sendChunk("    var badge=d.recording?'<span class=\"tk-rec-badge tk-rec-on\">REC</span>':'<span class=\"tk-rec-badge tk-rec-off\">OFF</span>';");
+  sendChunk("    var html='<p>Status: '+badge+'</p>';");
+  sendChunk("    if(d.recording){");
+  sendChunk("      html+='<p>Points: '+d.pointCount+' | Distance: '+d.distanceM.toFixed(1)+'m | Duration: '+d.durationSec+'s</p>';");
+  sendChunk("      if(d.pointsDropped>0)html+='<p style=color:#e67e22>Dropped: '+d.pointsDropped+'</p>';");
+  sendChunk("    }");
+  sendChunk("    if(d.lastError)html+='<p style=color:#e74c3c>'+escHtml(d.lastError)+'</p>';");
+  sendChunk("    el.innerHTML=html;");
+  sendChunk("    var btn=document.getElementById('tk-btn');");
+  sendChunk("    btn.textContent=d.recording?'Stop':'Start';");
+  sendChunk("    btn.className=d.recording?'btn-danger':'btn-success';");
+  sendChunk("    btn.setAttribute('data-rec',d.recording?'1':'0');");
+  sendChunk("    if(!d.recording){");
+  sendChunk("      var r=document.querySelector('input[name=tkMode][value=\"'+d.triggerMode+'\"]');");
+  sendChunk("      if(r)r.checked=true;");
+  sendChunk("      document.getElementById('tk-threshold').value=(d.triggerMode==0)?d.intervalSec:d.distanceThresholdM;");
+  sendChunk("      tkModeChanged();");
+  sendChunk("    }");
+  sendChunk("  }).catch(function(){});");
+  sendChunk("}");
+  sendChunk("function tkDelete(id){");
+  sendChunk("  if(!confirm('Delete track '+id+'?'))return;");
+  sendChunk("  fetch('/api/track/delete?id='+id,{method:'POST'}).then(function(r){return r.json();})");
+  sendChunk("    .then(function(d){if(d.ok)tkRefreshList();else alert('Error: '+(d.error||'unknown'));})");
+  sendChunk("    .catch(function(e){alert('Network error: '+e);});");
+  sendChunk("}");
+  sendChunk("function tkRefreshList(){");
+  sendChunk("  fetch('/api/track/list').then(function(r){return r.json();}).then(function(d){");
+  sendChunk("    var list=document.getElementById('tk-list');");
+  sendChunk("    var tracks=d.tracks||[];");
+  sendChunk("    if(tracks.length===0){list.innerHTML='<p style=color:#888>No tracks recorded yet.</p>';return;}");
+  sendChunk("    var html='';");
+  sendChunk("    tracks.forEach(function(t){");
+  sendChunk("      var nm=escHtml(t.name);");
+  sendChunk("      html+='<div style=\"border:1px solid #ddd;border-radius:4px;padding:10px;margin:6px 0\">';");
+  sendChunk("      html+='<b>'+nm+'</b> <span style=\"color:#7f8c8d;font-size:0.85em\">'+t.pointCount+' pts | '+t.distanceM.toFixed(0)+'m'+(t.endEpoch===0?' | recording':'')+'</span><br>';");
+  sendChunk("      html+='<div class=\"tk-dl-row\">';");
+  sendChunk("      html+='<a href=\"/api/track/download/gpx?id='+t.trackId+'\" download=\"'+t.trackId+'.gpx\">GPX</a>';");
+  sendChunk("      html+='<a href=\"/api/track/download/kml?id='+t.trackId+'\" download=\"'+t.trackId+'.kml\">KML</a>';");
+  sendChunk("      html+='</div>';");
+  sendChunk("      html+='<button class=\"btn btn-small btn-danger\" style=\"margin-top:6px\" onclick=\"tkDelete(\\''+t.trackId+'\\')\">Delete</button>';");
+  sendChunk("      html+='</div>';");
+  sendChunk("    });");
+  sendChunk("    list.innerHTML=html;");
+  sendChunk("  }).catch(function(){});");
+  sendChunk("}");
+  sendChunk("tkPoll();tkRefreshList();");
+  sendChunk("setInterval(tkPoll,3000);");
+  sendChunk("</script>");
+
+  sendFooter();
+}
+
+// ---- Tracking API: status ----
+static void handleTrackStatusApi() {
+  TrackStatus st = TrackRecorder::getStatus();
+  String json = "{";
+  json += "\"recording\":"          + String(st.recording ? "true" : "false") + ",";
+  json += "\"trackId\":\""          + st.trackId + "\",";
+  json += "\"pointCount\":"         + String(st.pointCount) + ",";
+  json += "\"pointsDropped\":"      + String(st.pointsDropped) + ",";
+  json += "\"distanceM\":"          + String(st.distanceM, 2) + ",";
+  json += "\"durationSec\":"        + String(st.durationSec) + ",";
+  json += "\"triggerMode\":"        + String((int)st.cfg.triggerMode) + ",";
+  json += "\"intervalSec\":"        + String(st.cfg.intervalSec, 2) + ",";
+  json += "\"distanceThresholdM\":" + String(st.cfg.distanceM, 2) + ",";
+  json += "\"lastError\":\""        + st.lastError + "\"";
+  json += "}";
+  _server->send(200, "application/json", json);
+}
+
+// ---- Tracking API: start ----
+static void handleTrackStart() {
+  String name = _server->hasArg("name") ? _server->arg("name") : "";
+  bool ok = TrackRecorder::start(name);
+  if (ok) { _server->send(200, "application/json", "{\"ok\":true}"); return; }
+  TrackStatus st = TrackRecorder::getStatus();
+  _server->send(200, "application/json", "{\"error\":\"" + st.lastError + "\"}");
+}
+
+// ---- Tracking API: stop ----
+static void handleTrackStop() {
+  bool ok = TrackRecorder::stop();
+  _server->send(200, "application/json", ok ? "{\"ok\":true}" : "{\"error\":\"Not recording\"}");
+}
+
+// ---- Tracking API: save config (trigger mode + threshold) ----
+static void handleTrackConfigSave() {
+  int   mode  = _server->hasArg("mode")  ? _server->arg("mode").toInt()   : 0;
+  float value = _server->hasArg("value") ? _server->arg("value").toFloat() : 0;
+  if (value <= 0) { _server->send(200, "application/json", "{\"error\":\"Invalid value\"}"); return; }
+  TrackRecorder::setTriggerMode((TrackTriggerMode)mode);
+  if (mode == TRACK_TRIGGER_TIME) TrackRecorder::setIntervalSec(value);
+  else                            TrackRecorder::setDistanceM(value);
+  _server->send(200, "application/json", "{\"ok\":true}");
+}
+
+// ---- Tracking API: list tracks ----
+static void handleTrackList() {
+  std::vector<TrackInfo> tracks;
+  TrackRecorder::listTracks(tracks);
+  String json = "{\"tracks\":[";
+  for (size_t i = 0; i < tracks.size(); i++) {
+    if (i > 0) json += ",";
+    json += "{\"trackId\":\"" + tracks[i].trackId + "\",";
+    json += "\"name\":\""     + tracks[i].name + "\",";
+    json += "\"startEpoch\":" + String(tracks[i].startEpoch) + ",";
+    json += "\"endEpoch\":"   + String(tracks[i].endEpoch) + ",";
+    json += "\"pointCount\":" + String(tracks[i].pointCount) + ",";
+    json += "\"distanceM\":"  + String(tracks[i].distanceM, 2);
+    json += "}";
+  }
+  json += "]}";
+  _server->send(200, "application/json", json);
+}
+
+// ---- Tracking API: delete track ----
+static void handleTrackDelete() {
+  String id = _server->hasArg("id") ? _server->arg("id") : "";
+  if (id.isEmpty()) { _server->send(400, "application/json", "{\"error\":\"Missing id\"}"); return; }
+  bool ok = TrackRecorder::deleteTrack(id);
+  _server->send(200, "application/json", ok ? "{\"ok\":true}" : "{\"error\":\"Not found or still recording\"}");
+}
+
+// ---- Tracking API: streamed export (never materializes the whole track in RAM) ----
+static void trackEmitToClient(const String& chunk, void* ctx) {
+  (void)ctx;
+  _server->sendContent(chunk);
+}
+
+static void handleTrackDownloadGPX() {
+  String id = _server->hasArg("id") ? _server->arg("id") : "";
+  if (id.isEmpty()) { _server->send(404, "text/plain", "No track"); return; }
+  _server->sendHeader("Content-Disposition", "attachment; filename=\"" + id + ".gpx\"");
+  _server->setContentLength(CONTENT_LENGTH_UNKNOWN);
+  _server->send(200, "application/gpx+xml", "");
+  if (!TrackRecorder::exportGPX(id, trackEmitToClient, nullptr)) {
+    _server->sendContent("");
+  }
+}
+
+static void handleTrackDownloadKML() {
+  String id = _server->hasArg("id") ? _server->arg("id") : "";
+  if (id.isEmpty()) { _server->send(404, "text/plain", "No track"); return; }
+  _server->sendHeader("Content-Disposition", "attachment; filename=\"" + id + ".kml\"");
+  _server->setContentLength(CONTENT_LENGTH_UNKNOWN);
+  _server->send(200, "application/vnd.google-earth.kml+xml", "");
+  if (!TrackRecorder::exportKML(id, trackEmitToClient, nullptr)) {
+    _server->sendContent("");
+  }
+}
+
+// ========================================================================
 // PointCodes API handlers
 // ========================================================================
 
@@ -6882,7 +7095,16 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
   _server->on("/logs/deleteall", HTTP_GET, handleDeleteAllLogs);
   _server->on("/survey", HTTP_GET, handleSurveyPage);
   _server->on("/stakeout", HTTP_GET, handleStakeoutPage);
-  
+  _server->on("/tracking", HTTP_GET, handleTrackingPage);
+  _server->on("/api/track/status",        HTTP_GET,  handleTrackStatusApi);
+  _server->on("/api/track/start",         HTTP_POST, handleTrackStart);
+  _server->on("/api/track/stop",          HTTP_POST, handleTrackStop);
+  _server->on("/api/track/config",        HTTP_POST, handleTrackConfigSave);
+  _server->on("/api/track/list",          HTTP_GET,  handleTrackList);
+  _server->on("/api/track/delete",        HTTP_POST, handleTrackDelete);
+  _server->on("/api/track/download/gpx",  HTTP_GET,  handleTrackDownloadGPX);
+  _server->on("/api/track/download/kml",  HTTP_GET,  handleTrackDownloadKML);
+
   // CSS and API
   _server->on("/css", HTTP_GET, handleCSS);
   _server->on("/api/status", HTTP_GET, handleApiStatus);

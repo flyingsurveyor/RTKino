@@ -22,8 +22,8 @@
   
   // UART Pins (ZED-F9P connections)
   #define RAW_UART_RX 42        // UART2: ZED UART1 TX (RAW only)
-  #define UBX_UART_RX 40        // UART1: ZED UART2 TX (NMEA/UBX/RTCM base)
-  #define RTCM_UART_TX 39       // UART2: ZED UART2 RX (RTCM input per rover)
+  #define UBX_UART_RX 39        // UART1: ZED UART2 TX (NMEA/UBX/RTCM base)
+  #define RTCM_UART_TX 40       // UART2: ZED UART2 RX (RTCM input per rover)
   
   // I2C Pins (OLED + ZED-F9P on same bus)
   #define ZED_I2C_SDA 9         // I2C SDA (native connector)
