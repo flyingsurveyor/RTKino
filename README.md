@@ -80,13 +80,22 @@ Navigate to design points with real-time guidance on the OLED display or web int
 - **Live navigation** showing 2D distance, height difference, and azimuth
 - **Point list management** with file-based organization
 
+### Tracking
+
+Continuous path logging for non-topographic use cases — trails on foot, roads or pipelines from a vehicle roof or wheel mount.
+
+- **Time or distance trigger**, selectable per session
+- Points buffered in RAM/PSRAM, flushed to internal flash in batches (SD card is used only as a periodic backup copy, never as primary storage)
+- **GPX and KML export**, streamed on download so large tracks never need to fit in RAM
+- Start/stop and settings available from both the **WebUI** and the **OLED menu**
+
 ### Data Logging
 
 Log raw GNSS observations for post-processing kinematic (PPK) workflows.
 
 - **Raw UBX logging** to SD card at configurable rates (1–15 Hz)
 - **NTP or GNSS-synced timestamps** for automatic file naming
-- **Hardware switch** (GPIO) for hands-free logging control
+- **Start/stop from WebUI or OLED menu** for hands-free field control
 - **Periodic flush** to prevent data loss on power failure
 
 ### Connectivity
@@ -123,7 +132,7 @@ Log raw GNSS observations for post-processing kinematic (PPK) workflows.
 | Component | Purpose |
 |-----------|---------|
 | **Display** | SSD1306 128×64 OLED (I2C) |
-| **Buzzer** | Passive buzzer on GPIO 5 for RTK state alerts |
+| **Buzzer** | Passive buzzer on GPIO 4 for RTK state alerts |
 | **Rotary Encoder** | CLK/DT/SW for OLED menu navigation |
 
 ### Tested Boards
@@ -146,12 +155,20 @@ GPIO 40 (RX)  ◄─────  UART2 TX   (NMEA/UBX/RTCM output)
 GPIO 39 (TX)  ─────►  UART2 RX   (RTCM input for rover)
 GPIO 42 (RX)  ◄─────  UART1 TX   (RAW data for logging)
 
-GPIO 9  (SDA) ◄────►  I2C SDA    (configuration via VALSET/VALGET)
+GPIO 9  (SDA) ◄────►  I2C SDA    (configuration via VALSET/VALGET, shared with OLED)
 GPIO 10 (SCL) ◄────►  I2C SCL
 
-GPIO 17       ◄─────  Log Switch  (active LOW, internal pullup)
-GPIO 5        ─────►  Buzzer      (PWM output)
+GPIO 5        ◄─────  EXTINT     (PPK event marker, TIM-TM2)
+GPIO 4        ─────►  Buzzer     (PWM output)
+
+ESP32-S3 GPIO          Rotary Encoder
+─────────────          ──────────────
+GPIO 16       ◄─────  CLK
+GPIO 17       ◄─────  DT
+GPIO 18       ◄─────  SW (push button)
 ```
+
+Raw GNSS logging (for PPK) is started and stopped from the WebUI or OLED menu — there is no dedicated hardware switch.
 
 Pin assignments are defined in `include/config.h` and can be adapted to other ESP32-S3 boards by adding a new board definition.
 
@@ -249,29 +266,44 @@ To apply it:
 | Base Config | `/base-cfg` | Base station setup, saved bases, antenna models, NTRIP/TCP output |
 | Survey | `/survey` | Point measurement, survey management, quality gate, export |
 | Stakeout | `/stakeout` | Target point navigation with live guidance |
+| Tracking | `/tracking` | Continuous path logging (trails, roads, pipelines), GPX/KML export |
 | Logs | `/logs` | UBX log file management and download |
+| Firmware | `/firmware` | OTA firmware update via browser upload |
 | Settings | `/settings` | WiFi, NTP, BLE, buzzer, measurement rate, point codes, backup/restore |
 
 ---
 
-## SD Card Structure
+## Storage Layout
+
+Configuration and field data live primarily on the ESP32-S3's internal flash (LittleFS); the SD card is only ever a periodic, best-effort backup copy — never the primary write target. Raw GNSS logs and system logs are the exception: those go straight to SD, since they're bulk/append-only data the internal flash isn't sized (or rated) for.
 
 ```
-/gnss/
+LittleFS (internal flash, primary — /config/, /surveys/, /stakeout/, /tracks/)
+/config/
 ├── wifi.txt                    # WiFi profiles (priority;ssid;password)
 ├── ntrip_in_list.txt           # NTRIP rover profiles
 ├── ntrip_out_list.txt          # NTRIP pusher profiles
-├── tcp_in_list.txt             # TCP input profiles
+├── tcp_in_lista.txt            # TCP input profiles
 ├── tcp_out_client_list.txt     # TCP output client profiles
 ├── bases.txt                   # Saved base stations
 ├── antennas.txt                # Antenna models with ARP offsets
 ├── ntp.txt                     # NTP server hostname
-├── ble_name.txt                # BLE device name
+├── tz.txt                      # NTP timezone
+├── device_name.txt             # Unified device name (BLE + mDNS + WebUI header)
 ├── ble_pin.txt                 # BLE pairing PIN
-├── mdns.txt                    # mDNS hostname
-├── buzzer_melody.json          # Custom buzzer sounds (optional)
-├── system_log_01..03.txt       # Rotating system event logs
-└── log_YYYYMMDD_HHMMSS.ubx    # Raw GNSS observation logs
+├── ap_ssid.txt / ap_pass.txt   # Access Point credentials
+└── codici_punto.json           # Point codes (categories, editable via WebUI)
+
+/surveys/<id>.json               # Survey point datasets (GeoJSON)
+/stakeout/<id>.json              # Stakeout point datasets
+/tracks/<id>.trk + <id>.json     # Track Recorder points (CSV) + metadata sidecar
+
+SD card (backup mirror + bulk logs)
+/gnss/                           # Periodic mirror of everything under /config/ above
+/surveys/, /stakeout/, /tracks/  # Periodic backup copies of the LittleFS datasets
+/gnss/buzzer_melody.json         # Custom buzzer sounds (optional)
+/gnss/system_log_01..03.txt      # Rotating system event logs
+/gnss/log_YYYYMMDD_HHMMSS.ubx    # Raw GNSS observation logs (PPK)
 ```
 
 See [docs/examples/](docs/examples/) for sample configuration files.
@@ -338,10 +370,14 @@ Key log messages:
 
 ### Factory Reset
 
-1. Remove the SD card
-2. Delete the `/gnss/` folder
-3. Reinsert the card and reboot
-4. Reconfigure via AP mode
+Configuration now lives primarily on internal flash (LittleFS), so deleting `/gnss/` on the SD card alone no longer resets the device — it would just get re-synced back from flash on the next boot.
+
+Use the built-in reset instead, from **Settings → System → Factory Reset**:
+
+1. **Reset Flash Only** — erases all configuration, surveys, stakeout and track data from internal flash; SD card data is left untouched
+2. **Reset Flash + SD** — erases everything from both internal flash and the SD card
+
+RTKino restarts automatically and comes up as if brand new; reconfigure via AP mode.
 
 ---
 
@@ -349,7 +385,7 @@ Key log messages:
 
 RTKino is actively developed and field-tested in real surveying work including topographic mapping, drone ground control, agricultural monitoring, and construction stakeout. And more.
 
-Current version: **v1.0.0** (March 2026)
+Latest tagged release: **v1.2.0** (June 2026) — `main` has moved on since, with additional features (Tracking, Survey point editing, WebUI navigation redesign) not yet cut into a tagged release.
 
 ---
 

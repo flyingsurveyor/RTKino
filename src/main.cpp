@@ -114,8 +114,8 @@ uint16_t g_espNowRelayNodeId    = 0;      // best relay node_id (0 = none select
 static uint32_t g_espNowRelayLastReq   = 0;      // millis() of last CMD_RELAY_START sent
 static uint32_t g_espNowRelayLeaseMs   = 10000;  // send CMD_RELAY_START every 10s to renew lease
 
-// AP-mode boot time (for offline TIMEUTC sync gating)
-volatile uint32_t g_apStartMillis = 0;
+// Device boot time (grace period gate for GNSS TIMEUTC time-sync fallback)
+static uint32_t g_bootMillis = 0;
 volatile bool g_apMode = false;
 
 // Forward declarations (necessarie:  le definizioni sono più sotto nel file)
@@ -263,6 +263,7 @@ int ntrip_port = 0;
 NtripClient* ntripClient = nullptr;   // NTRIP IN (rover)
 
 FsFile rawFile;
+static String g_currentRawLogFile;
 
 uint16_t logFileIndex = 0;
 
@@ -319,6 +320,15 @@ extern "C" {
 RTCMInput* g_tcpIn = nullptr;      // client TCP for RTCM IN
 bool tcpInEnabled  = false;
 String tcpin_host; int tcpin_port = 0;
+
+// ---- SystemLog: "was connected" edge-detection state for loop()-polled links ----
+// (LAN-IN/CASTER-OUT/TCP-CLIENT auto-retry silently; TCP-OUT server accepts/drops
+//  clients. These flags let loop() log a single event on the connected->lost edge
+//  instead of spamming on every retry tick.)
+static bool g_lanInWasConnected     = false;
+static bool g_casterOutWasConnected = false;
+static bool g_tcpClientWasConnected = false;
+static bool g_tcpOutHadClient       = false;
 
 // ===== NEW: Buzzer and SystemLog =====
 Buzzer* g_buzzer = nullptr;
@@ -418,7 +428,11 @@ void startLogging() {
   if (rawFile && rawFile.isOpen()) {
     oledSetLogging(true);
     loggingActive = true;
+    g_currentRawLogFile = String(filename);
     oledPrintln(String("[LOG] ") + filename);
+    if (g_systemLog) {
+      g_systemLog->logEvent("RAWLOG", String("Started -> ") + filename);
+    }
   } else {
     oledPrintln("RAW log error");
     if (! hasTs) logFileIndex--;
@@ -432,7 +446,9 @@ void stopLogging() {
   if (! sdMutex) { oledSetLogging(false); return; }
   bool locked = (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(5000)) == pdTRUE);
   if (!locked) { oledPrintln("SD busy"); return; }
+  uint64_t sizeBytes = 0;
   if (rawFile && rawFile.isOpen()) {
+    sizeBytes = rawFile.fileSize();
     // Close more safely: explicit sync before close
     rawFile.sync();
     rawFile.close();
@@ -440,6 +456,9 @@ void stopLogging() {
   xSemaphoreGive(sdMutex);
   oledSetLogging(false);
   oledPrintln("[LOG] Stopped");
+  if (g_systemLog) {
+    g_systemLog->logEvent("RAWLOG", String("Stopped -> ") + g_currentRawLogFile + ", " + String((uint32_t)sizeBytes) + " bytes");
+  }
   // Force config sync to SD after logging stops
   if (FlashConfig::isDirty()) {
     FlashConfig::syncToSD(sd, sdMutex, true);
@@ -723,12 +742,12 @@ void nmeaReaderTask(void* pvParameters) {
                 uint8_t  sec   = ubxPayload[18];
                 uint8_t  valid = ubxPayload[19];
 
-                // Offline strategy: only in AP, after ~60s, and only if we haven't already synced
-                if (g_apMode) {
-                  uint32_t sinceAp = (uint32_t)(millis() - g_apStartMillis);
-                  if (sinceAp > 60000 && g_timeSource == TIME_SRC_NONE) {
-                    syncTimeFromUbxTimeUtc(year, month, day, hour, min, sec, valid);
-                  }
+                // GNSS time fallback: used whenever no other source has synced yet
+                // (NTP failed, no WiFi, or WiFi connected without real internet access),
+                // gated by a grace period from boot to let the receiver decode UTC first.
+                uint32_t sinceBoot = (uint32_t)(millis() - g_bootMillis);
+                if (sinceBoot > 60000 && g_timeSource == TIME_SRC_NONE) {
+                  syncTimeFromUbxTimeUtc(year, month, day, hour, min, sec, valid);
                 }
               }
 
@@ -1056,7 +1075,7 @@ void toggleNtrip(bool enable) {
             resetRtcmStats();
             // Log NTRIP arm/activation
             if (g_systemLog) {
-                g_systemLog->logEvent("NTRIP", String("Enabled profile ") + mountpoint + " @ " + ntrip_host + ":" + ntrip_port);
+                g_systemLog->logEvent("NTRIP-IN", String("Enabled profile ") + mountpoint + " @ " + ntrip_host + ":" + ntrip_port);
             }
         } else {
             oledPrintln("[NTRIP] Client not configured");
@@ -1072,7 +1091,7 @@ void toggleNtrip(bool enable) {
         oledPrintln("[NTRIP] Disabled");
         // Log NTRIP disconnection
         if (g_systemLog) {
-            g_systemLog->logEvent("NTRIP", "Disconnected");
+            g_systemLog->logEvent("NTRIP-IN", "Disconnected");
         }
     }
     ntripUnlock();
@@ -1098,6 +1117,10 @@ bool startTcpIn(const String& host, int port) {
   tcpInEnabled = true;
   tcpInUnlock();
   oledPrintln(String("[LAN IN] TCP -> ") + host + ":" + String(port));
+  if (g_systemLog) {
+    g_systemLog->logEvent("LAN-IN", String("Connected -> ") + host + ":" + String(port));
+  }
+  g_lanInWasConnected = true;
   return true;
 }
 
@@ -1108,7 +1131,7 @@ void stopTcpIn() {
   }
 
   tcpInEnabled = false;
-  
+
   if (g_tcpIn) {
     g_tcpIn->stop();
     delete g_tcpIn;
@@ -1116,6 +1139,10 @@ void stopTcpIn() {
   }
   tcpInUnlock();
   oledPrintln("[LAN IN] stopped");
+  if (g_systemLog) {
+    g_systemLog->logEvent("LAN-IN", "Stopped");
+  }
+  g_lanInWasConnected = false;
 }
 
 void toggleTcpIn(bool enable) {
@@ -1137,6 +1164,76 @@ void toggleTcpIn(bool enable) {
 }
 
 // ---- ESP-NOW RTCM mesh ----
+
+// ---- ESP-NOW peer join/lost tracking (SystemLog) ----
+// EspNowRtcm::peers[] already tracks last_seen_ms for RSSI/telemetry purposes,
+// but it doesn't log transitions. This mirrors it at the app level purely to
+// emit a "joined"/"lost" event once per edge, without touching the library.
+struct EspNowSeenPeer {
+  uint16_t node_id;
+  uint8_t  role;
+  uint32_t lastSeenMs;
+  bool     lostLogged;
+};
+static EspNowSeenPeer g_espNowSeen[EspNowRtcm::MAX_PEERS];
+static int            g_espNowSeenCount = 0;
+static const uint32_t ESPNOW_PEER_LOST_MS = 20000; // no telemetry for 20s -> considered lost
+
+static const char* espNowRoleName(uint8_t role) {
+  switch (role) {
+    case 0:  return "rover";
+    case 1:  return "base";
+    case 2:  return "relay";
+    default: return "unknown";
+  }
+}
+
+static String espNowNodeIdHex(uint16_t node_id) {
+  char buf[8];
+  snprintf(buf, sizeof(buf), "0x%04X", node_id);
+  return String(buf);
+}
+
+static void espNowResetPeerTracking() {
+  g_espNowSeenCount = 0;
+}
+
+static void espNowTrackPeerSeen(uint16_t node_id, uint8_t role) {
+  for (int i = 0; i < g_espNowSeenCount; i++) {
+    if (g_espNowSeen[i].node_id == node_id) {
+      g_espNowSeen[i].lastSeenMs = millis();
+      if (g_espNowSeen[i].lostLogged) {
+        g_espNowSeen[i].lostLogged = false;
+        if (g_systemLog) {
+          g_systemLog->logEvent("ESPNOW", "Node " + espNowNodeIdHex(node_id) + " (" + espNowRoleName(role) + ") reconnected");
+        }
+      }
+      return;
+    }
+  }
+  if (g_espNowSeenCount < EspNowRtcm::MAX_PEERS) {
+    EspNowSeenPeer& p = g_espNowSeen[g_espNowSeenCount++];
+    p.node_id    = node_id;
+    p.role       = role;
+    p.lastSeenMs = millis();
+    p.lostLogged = false;
+    if (g_systemLog) {
+      g_systemLog->logEvent("ESPNOW", "Node " + espNowNodeIdHex(node_id) + " (" + espNowRoleName(role) + ") joined");
+    }
+  }
+}
+
+static void espNowCheckPeerTimeouts() {
+  uint32_t now = millis();
+  for (int i = 0; i < g_espNowSeenCount; i++) {
+    if (!g_espNowSeen[i].lostLogged && (now - g_espNowSeen[i].lastSeenMs) > ESPNOW_PEER_LOST_MS) {
+      g_espNowSeen[i].lostLogged = true;
+      if (g_systemLog) {
+        g_systemLog->logEvent("ESPNOW", "Node " + espNowNodeIdHex(g_espNowSeen[i].node_id) + " (" + espNowRoleName(g_espNowSeen[i].role) + ") lost");
+      }
+    }
+  }
+}
 
 // Apply runtime network_id + PSK configuration from flash to the ESP-NOW instance
 void applyEspNowConfigFromFlash() {
@@ -1180,6 +1277,8 @@ bool startEspNowRx() {
   };
 
   g_espNow.onTelemReceived = [](const EspNowTelemPacket& pkt) {
+    espNowTrackPeerSeen(pkt.node_id, pkt.node_role);
+
     // Discover available relays: track the relay with best RSSI.
     // node_role == 2 means relay.
     // We prefer idle relays (relay_for_node_id == 0) or relays already serving us.
@@ -1204,6 +1303,7 @@ bool startEspNowRx() {
 
   if (!g_espNow.begin(ch)) {
     oledPrintln("[ESPNOW] Init failed");
+    if (g_systemLog) g_systemLog->logEvent("ESPNOW", "RX (rover) init failed");
     return false;
   }
   g_espNowEnabled   = true;
@@ -1212,6 +1312,8 @@ bool startEspNowRx() {
   FlashConfig::writeFile("/config/espnow_enabled.txt", "1");
   FlashConfig::writeFile("/config/espnow_role.txt", "rx");
   oledPrintln("[ESPNOW] RX rover attivo");
+  espNowResetPeerTracking();
+  if (g_systemLog) g_systemLog->logEvent("ESPNOW", String("RX (rover) started on channel ") + ch);
   return true;
 }
 
@@ -1224,6 +1326,8 @@ void stopEspNowRx() {
   g_espNowRelayNodeId  = 0;
   g_espNowRelayLastReq = 0;
   oledPrintln("[ESPNOW] RX stop");
+  espNowResetPeerTracking();
+  if (g_systemLog) g_systemLog->logEvent("ESPNOW", "RX (rover) stopped");
 }
 
 bool startEspNowTx() {
@@ -1243,6 +1347,10 @@ bool startEspNowTx() {
 
   // Apply runtime network_id + PSK from flash
   applyEspNowConfigFromFlash();
+
+  g_espNow.onTelemReceived = [](const EspNowTelemPacket& pkt) {
+    espNowTrackPeerSeen(pkt.node_id, pkt.node_role);
+  };
 
   g_espNow.onCommandReceived = [](uint8_t cmd, uint8_t param, uint16_t src) {
     Serial.printf("[ESPNOW] CMD 0x%02X param=%u src=0x%04X\n", cmd, param, src);
@@ -1283,6 +1391,7 @@ bool startEspNowTx() {
 
   if (!g_espNow.begin(ch)) {
     oledPrintln("[ESPNOW] TX init failed");
+    if (g_systemLog) g_systemLog->logEvent("ESPNOW", "TX (base) init failed");
     return false;
   }
   g_espNowEnabled   = true;
@@ -1291,6 +1400,8 @@ bool startEspNowTx() {
   FlashConfig::writeFile("/config/espnow_enabled.txt", "1");
   FlashConfig::writeFile("/config/espnow_role.txt", "tx");
   oledPrintln("[ESPNOW] TX base attivo");
+  espNowResetPeerTracking();
+  if (g_systemLog) g_systemLog->logEvent("ESPNOW", String("TX (base) started on channel ") + ch);
   return true;
 }
 
@@ -1301,6 +1412,8 @@ void stopEspNowTx() {
   g_espNow.stop();
   FlashConfig::writeFile("/config/espnow_enabled.txt", "0");
   oledPrintln("[ESPNOW] TX stop");
+  espNowResetPeerTracking();
+  if (g_systemLog) g_systemLog->logEvent("ESPNOW", "TX (base) stopped");
 }
 
 static bool connectAnyWifi(const std::vector<WifiCred>& list, uint32_t perNetTimeoutMs = 8000) {
@@ -1405,7 +1518,6 @@ static void startApMode() {
   bool ok = WiFi.softAP(g_apSsid, g_apPass[0] ? g_apPass : nullptr, ESPNOW_WIFI_CHANNEL);
   IPAddress ip = WiFi.softAPIP();
   g_apMode = true;
-  g_apStartMillis = millis();
   oledPrintln(ok ? "[WiFi] AP started" : "[WiFi] AP failed");
   oledPrintln(String("SSID: ") + g_apSsid);
   oledPrintln(String("IP: ") + ip.toString());
@@ -1442,8 +1554,7 @@ void switchToApModeNow() {
   bool ok = WiFi.softAP(g_apSsid, g_apPass[0] ? g_apPass : nullptr, ESPNOW_WIFI_CHANNEL);
   IPAddress ip = WiFi.softAPIP();
 
-  g_apMode        = true;
-  g_apStartMillis = millis();
+  g_apMode = true;
 
   oledSetWifi(true);
   oledSetApMode(true);
@@ -1732,6 +1843,11 @@ void applyBaseFixedLLH(double lat_deg, double lon_deg, double h_m, uint16_t stid
   // Read back TMODE state to confirm
   delay(100);  // Give ZED time to apply settings
   getZedTmode(g_zedTmode);
+  if (g_systemLog) {
+    g_systemLog->logEvent("BASE", String("Started - StationID=") + stid +
+                           " lat=" + String(lat_deg, 8) + " lon=" + String(lon_deg, 8) +
+                           " h=" + String(h_m, 3) + " RTCM=" + msgType);
+  }
 }
 
 // Stop base mode and return to rover
@@ -1741,6 +1857,9 @@ void stopBaseMode() {
   delay(100);
   getZedTmode(g_zedTmode);  // Refresh state
   oledPrintln("[BASE] TMODE disabled - Rover mode");
+  if (g_systemLog) {
+    g_systemLog->logEvent("BASE", "Stopped - Rover mode");
+  }
 }
 
 // Read TMODE state from ZED-F9P
@@ -1785,9 +1904,16 @@ bool startCasterOut(const String& host, uint16_t port, const String& mount, cons
   pusherUnlock();
   if (g_baseCasterOn) {
     oledPrintln("[CASTER OUT] Connected");
+    if (g_systemLog) {
+      g_systemLog->logEvent("CASTER-OUT", String("Connected -> ") + host + ":" + String(port) + "/" + mount);
+    }
   } else {
     oledPrintln("[CASTER OUT] Connection failed");
+    if (g_systemLog) {
+      g_systemLog->logEvent("CASTER-OUT", String("Connection failed -> ") + host + ":" + String(port) + "/" + mount);
+    }
   }
+  g_casterOutWasConnected = g_baseCasterOn;
   return g_baseCasterOn;
 }
 
@@ -1804,6 +1930,10 @@ void stopCasterOut() {
   }
   pusherUnlock();
   oledPrintln("[CASTER OUT] Stopped");
+  if (g_systemLog) {
+    g_systemLog->logEvent("CASTER-OUT", "Stopped");
+  }
+  g_casterOutWasConnected = false;
 }
 
 bool startTcpOut(uint16_t port){
@@ -1811,6 +1941,10 @@ bool startTcpOut(uint16_t port){
   RtcmStreamer::begin(port);
   RtcmStreamer::setActive(true);
   g_baseTcpOn = true;
+  if (g_systemLog) {
+    g_systemLog->logEvent("TCP-OUT", String("Server started on port ") + port);
+  }
+  g_tcpOutHadClient = false;
   return true;
 }
 
@@ -1818,6 +1952,10 @@ void stopTcpOut(){
   RtcmStreamer::stop();
   RtcmStreamer::setActive(false);
   g_baseTcpOn = false;
+  if (g_systemLog) {
+    g_systemLog->logEvent("TCP-OUT", "Server stopped");
+  }
+  g_tcpOutHadClient = false;
 }
 
 bool startTcpOutClient(const String& host, uint16_t port){
@@ -1829,10 +1967,17 @@ bool startTcpOutClient(const String& host, uint16_t port){
     TcpClientStreamer::enable(true);
     g_tcpClientOn = true;
     oledPrintln("[TCP-CLIENT] Connected to " + host);
+    if (g_systemLog) {
+      g_systemLog->logEvent("TCP-CLIENT", String("Connected -> ") + host + ":" + String(port));
+    }
   } else {
     g_tcpClientOn = false;
     oledPrintln("[TCP-CLIENT] Connection failed");
+    if (g_systemLog) {
+      g_systemLog->logEvent("TCP-CLIENT", String("Connection failed -> ") + host + ":" + String(port));
+    }
   }
+  g_tcpClientWasConnected = ok;
   return ok;
 }
 
@@ -1841,6 +1986,10 @@ void stopTcpOutClient(){
   TcpClientStreamer::enable(false);
   g_tcpClientOn = false;
   oledPrintln("[TCP-CLIENT] Stopped");
+  if (g_systemLog) {
+    g_systemLog->logEvent("TCP-CLIENT", "Stopped");
+  }
+  g_tcpClientWasConnected = false;
 }
 // Switch from Base mode back to Rover mode
 // Called from WebUI /api/switchToRover endpoint
@@ -2398,6 +2547,7 @@ static void loadStakeoutFilePoints(int fileIdx) {
 #endif // ENC_CLK_GPIO > 0 && ...
 
 void setup() {
+  g_bootMillis = millis();
   neopixelWrite(RGB_BUILTIN, 0, 0, 0);  // spegni LED RGB Lolin S3 Pro (arduino-esp32 3.x lo accende al boot)
   Serial.begin(115200);
   delay(300);
@@ -2998,6 +3148,20 @@ void loop() {
   if (wifiAvailable) {
     server.handleClient();
     taskYIELD();  // yield to other FreeRTOS tasks after potentially blocking handleClient
+
+    // NTP retry: the boot-time attempt can fail (slow DNS / first UDP round-trip
+    // right after associating). Retry periodically until it succeeds; stops on
+    // its own once g_timeSource is set (by NTP here or by the GNSS TIMEUTC fallback).
+    if (WiFi.status() == WL_CONNECTED && g_timeSource == TIME_SRC_NONE) {
+      static uint32_t lastNtpRetry = 0;
+      uint32_t nowMs = millis();
+      if (nowMs - lastNtpRetry > 30000) {
+        lastNtpRetry = nowMs;
+        Serial.println("[NTP] Retry time sync...");
+        syncTimeFromNtp(g_ntpServer);
+      }
+    }
+
     // NTRIP client (rover IN) - protected with mutex
     if (ntripEnabled) {
       if (ntripLock(5)) {
@@ -3007,7 +3171,7 @@ void loop() {
             ntripEnabled = false;
             oledSetNtrip(false);
             if (g_systemLog) {
-              g_systemLog->logEvent("NTRIP", "Stopped after connection failures");
+              g_systemLog->logEvent("NTRIP-IN", "Stopped after connection failures");
             }
           }
         }
@@ -3020,6 +3184,11 @@ void loop() {
       if (tcpInLock(5)) {
         if (g_tcpIn) {
           g_tcpIn->loop();
+          bool nowConnected = g_tcpIn->isConnected();
+          if (g_lanInWasConnected && !nowConnected && g_systemLog) {
+            g_systemLog->logEvent("LAN-IN", "Connection lost, retrying");
+          }
+          g_lanInWasConnected = nowConnected;
         }
         tcpInUnlock();
       }
@@ -3030,6 +3199,11 @@ void loop() {
       if (pusherLock(5)) {
         if (g_pusher) {
           g_pusher->loop();
+          bool nowConnected = g_pusher->isConnected();
+          if (g_casterOutWasConnected && !nowConnected && g_systemLog) {
+            g_systemLog->logEvent("CASTER-OUT", "Connection lost, retrying");
+          }
+          g_casterOutWasConnected = nowConnected;
         }
         pusherUnlock();
       }
@@ -3038,12 +3212,22 @@ void loop() {
     // TCP OUT (does not require mutex, uses thread-safe static methods)
     if (g_baseTcpOn) {
       RtcmStreamer::handle();
+      bool hasClient = RtcmStreamer::hasClient();
+      if (hasClient != g_tcpOutHadClient && g_systemLog) {
+        g_systemLog->logEvent("TCP-OUT", hasClient ? "Client connected" : "Client disconnected");
+      }
+      g_tcpOutHadClient = hasClient;
     }
 
     // Viewer TCP
     TcpStreamer::handle();
     if (g_tcpClientOn) {
       TcpClientStreamer::handle();
+      bool nowConnected = TcpClientStreamer::isConnected();
+      if (g_tcpClientWasConnected && !nowConnected && g_systemLog) {
+        g_systemLog->logEvent("TCP-CLIENT", "Connection lost, retrying");
+      }
+      g_tcpClientWasConnected = nowConnected;
     }
 
     // ESP-NOW periodic telemetry (both base and rover)
@@ -3051,6 +3235,7 @@ void loop() {
       uint32_t nowMs = millis();
       if (nowMs - g_espNowLastTelem >= ESPNOW_TELEM_INTERVAL_MS) {
         g_espNowLastTelem = nowMs;
+        espNowCheckPeerTimeouts();
         GNSSPosition pos;
         getPosition(pos);
         uint8_t  role      = g_espNowTxEnabled ? 1 : 0;
@@ -3230,15 +3415,13 @@ void loop() {
     uint32_t minFreeHeap = ESP.getMinFreeHeap();
     
     Serial.printf("[MEM] Heap: %u free, %u min ever\n", freeHeap, minFreeHeap);
-    
-    // Log heap status to SystemLog periodically
-    if (g_systemLog) {
-      g_systemLog->logEvent("HEAP", String(freeHeap) + " free, " + String(minFreeHeap) + " min");
-      
-      // Warning if low
-      if (freeHeap < HEAP_WARNING_THRESHOLD) {
-        Serial.println("[MEM] WARNING: Low heap!");
-        g_systemLog->logEvent("HEAP", "WARNING: Low memory!");
+
+    // Warning if low (periodic heap log removed from SystemLog - noise once stable;
+    // still visible on Serial monitor above. Only the anomaly warning is kept.)
+    if (freeHeap < HEAP_WARNING_THRESHOLD) {
+      Serial.println("[MEM] WARNING: Low heap!");
+      if (g_systemLog) {
+        g_systemLog->logEvent("HEAP", String("WARNING: Low memory! ") + freeHeap + " bytes free");
       }
     }
     

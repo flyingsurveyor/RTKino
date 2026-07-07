@@ -2,9 +2,12 @@
 // Copyright (C) 2025-2026 FlyingSurveyor
 #include "TrackRecorder.h"
 #include "FlashConfig.h"
+#include "SystemLog.h"
 #include <LittleFS.h>
 #include <math.h>
 #include <time.h>
+
+extern SystemLog* g_systemLog;
 
 // ---------------------------------------------------------------------------
 // Storage layout
@@ -226,6 +229,9 @@ bool start(const String& name) {
 
     writeMetadata(id, false);
     Serial.printf("[TrackRecorder] Started track %s\n", id.c_str());
+    if (g_systemLog) {
+        g_systemLog->logEvent("TRACK", "Started " + id + (name.isEmpty() ? "" : (" '" + name + "'")));
+    }
     return true;
 }
 
@@ -235,6 +241,9 @@ bool stop() {
     if (g_fileOpen) { g_flashFile.close(); g_fileOpen = false; }
 
     String id = g_status.trackId;
+    uint32_t pointCount  = g_status.pointCount;
+    double   distanceM   = g_status.distanceM;
+    uint32_t durationSec = g_status.durationSec;
     if (xSemaphoreTake(g_trackMutex, portMAX_DELAY) == pdTRUE) {
         g_status.recording = false;
         xSemaphoreGive(g_trackMutex);
@@ -242,6 +251,10 @@ bool stop() {
     writeMetadata(id, true);
     periodicSync(true);   // final SD backup, best-effort
     Serial.printf("[TrackRecorder] Stopped track %s\n", id.c_str());
+    if (g_systemLog) {
+        g_systemLog->logEvent("TRACK", "Stopped " + id + " - " + String(pointCount) + " points, " +
+                               String(distanceM, 1) + " m, " + String(durationSec) + " s");
+    }
     return true;
 }
 

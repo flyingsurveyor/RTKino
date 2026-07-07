@@ -216,9 +216,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 .nav-overlay.open { display: block; }
 .nav-drawer { position: fixed; top: 0; left: 0; bottom: 0; width: 260px; max-width: 80vw; background: #34495e; box-shadow: 2px 0 8px rgba(0,0,0,0.3); z-index: 1001; transform: translateX(-100%); transition: transform 0.25s ease; overflow-y: auto; }
 .nav-drawer.open { transform: translateX(0); }
-.nav-drawer-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; color: white; font-weight: 600; font-size: 16px; border-bottom: 1px solid rgba(255,255,255,0.15); }
-.nav-close-btn { background: transparent; border: none; color: white; font-size: 22px; line-height: 1; padding: 0 4px; margin: 0; width: auto; min-height: 0; cursor: pointer; }
-.nav-close-btn:hover { background: transparent; opacity: 0.8; }
+.nav-drawer-header { padding: 14px 16px; color: white; font-weight: 600; font-size: 17px; border-bottom: 1px solid rgba(255,255,255,0.15); }
 .nav-drawer a { display: flex; align-items: center; gap: 10px; color: white; padding: 14px 16px; text-decoration: none; transition: background 0.2s; font-size: 15px; }
 .nav-drawer a:hover, .nav-drawer a.active { background: #2c3e50; }
 .nav-drawer .nav-icon { font-size: 18px; line-height: 1; width: 20px; text-align: center; }
@@ -597,7 +595,7 @@ static void sendHeader(const char* title, const char* activePage = "") {
   sendChunk("<title>");
   sendChunk(title);
   sendChunk(" - RTKino</title>");
-  sendChunk("<link rel='stylesheet' href='/css?v=4'>");
+  sendChunk("<link rel='stylesheet' href='/css?v=5'>");
   sendChunk("</head><body>");
   
   // Header
@@ -612,7 +610,7 @@ static void sendHeader(const char* title, const char* activePage = "") {
   // Navigation drawer (hamburger-triggered, replaces the old top tab bar on all screen sizes)
   sendChunk("<div id='navOverlay' class='nav-overlay' onclick='closeNav()'></div>");
   sendChunk("<div id='navDrawer' class='nav-drawer'>");
-  sendChunk("<div class='nav-drawer-header'><span>Menu</span><button class='nav-close-btn' onclick='closeNav()' aria-label='Close'>&times;</button></div>");
+  sendChunk("<div class='nav-drawer-header'>RTKino</div>");
 
   String active = String(activePage);
 
@@ -1858,8 +1856,6 @@ static void handleBasePage() {
   sendHeader("Base", "base");
 
   sendChunk("<script>");
-  sendChunk("function stopOut(){fetch('/baseout/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
-  sendChunk("function stopTcpClient(){fetch('/tcpclient/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
   sendChunk("function switchToRover(){if(confirm('Switch to Rover mode? This will stop RTCM OUT and restart the ZED.')){fetch('/api/switchToRover').then(r=>r.text()).then(t=>{alert(t);setTimeout(()=>location.reload(),3000);}).catch(e=>{alert('Error: '+(e.message||e));})}}");
   sendChunk("function avviaBase(){");
   sendChunk("  var btn=document.getElementById('btn-avvia-base');");
@@ -1955,26 +1951,6 @@ static void handleBaseStationsPage() {
 
   sendChunk("<p style='margin-bottom:14px;'><a class='btn' href='/base-cfg'>&larr; Back to Base</a></p>");
 
-  // --- TMODE Manual Entry ---
-  sendChunk("<div class='card'><h2>&#x1F4CD; Start Base from Coordinates</h2>");
-  sendChunk("<p>Apply fixed LLH coordinates directly to ZED-F9P (stored in RAM):</p>");
-  sendChunk("<ul>");
-  sendChunk("<li>TMODE: <strong>FIXED LLH (HP)</strong></li>");
-  sendChunk("<li>UART2 TX: <strong>RTCM3 only</strong></li>");
-  sendChunk("<li>MSGOUT: 1005/1230 @10s; MSM7 @1s or MSM4 @1s</li>");
-  sendChunk("</ul>");
-  sendChunk("<form method='POST' action='/base/llh'>");
-  sendChunk("<label>Latitude [deg]:</label><input name='lat' required><br>");
-  sendChunk("<label>Longitude [deg]:</label><input name='lon' required><br>");
-  sendChunk("<label>Altitude ellips. [m]:</label><input name='alt' required><br>");
-  sendChunk("<label>Station ID [1..4095]:</label><input name='stid' type='number' value='1' style='width:150px'><br>");
-  sendChunk("<label>RTCM Messages:</label><select name='rtcm_type' style='width:350px'>");
-  sendChunk("<option value='0'>MSM7 - 4 constellations (GPS, GLO, GAL, BDS) @1Hz</option>");
-  sendChunk("<option value='1'>MSM4 - 3 constellations (GPS, GLO, GAL) @1Hz</option>");
-  sendChunk("</select><br>");
-  sendChunk("<button type='submit' class='btn-success' style='min-height:44px;padding:10px 18px;font-size:1em;'>&#x25BA; Start Base</button>");
-  sendChunk("</form></div>");
-  
   // Saved Bases
   int baseLast=-1;
   std::vector<BaseRec> bases;
@@ -2212,86 +2188,6 @@ static void handleBaseStationsPage() {
   sendChunk("  })");
   sendChunk("  .catch(e => alert('Error saving: ' + e));");
   sendChunk("}");
-
-  // Base Start Confirmation Modal
-  sendChunk("function confirmStartBase(idx) {");
-  sendChunk("  Promise.all([");
-  sendChunk("    fetch('/api/bases?idx=' + idx).then(r => r.json()),");
-  sendChunk("    fetch('/api/antennas').then(r => r.json())");
-  sendChunk("  ]).then(([base, antData]) => {");
-  sendChunk("    showStartBaseModal(base, antData.antennas, idx);");
-  sendChunk("  }).catch(e => alert('Error loading base data: ' + e));");
-  sendChunk("}");
-  sendChunk("function showStartBaseModal(base, antennas, idx) {");
-  sendChunk("  let modal = document.createElement('div');");
-  sendChunk("  modal.id = 'startBaseModal';");
-  sendChunk("  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1000;';");
-  sendChunk("  let content = `");
-  sendChunk("  <div style='background:white;padding:24px;border-radius:8px;max-width:500px;width:90%;max-height:90vh;overflow:auto;'>");
-  sendChunk("    <h2 style='margin-bottom:16px;'>&#x26A0; Confirm Base Station Start</h2>");
-  sendChunk("    <p><strong>Base:</strong> ${base.name}</p>");
-  sendChunk("    <h4>Ground coordinates:</h4>");
-  sendChunk("    <p>Lat: ${base.lat.toFixed(8)}&deg;<br>");
-  sendChunk("       Lon: ${base.lon.toFixed(8)}&deg;<br>");
-  sendChunk("       H ground: ${base.altGround.toFixed(3)} m</p>");
-  sendChunk("    <hr style='margin:16px 0;'>");
-  sendChunk("    <label>Antenna:</label>");
-  sendChunk("    <select id='modalAntenna' style='width:100%;padding:8px;margin:4px 0 12px;'>");
-  sendChunk("      ${antennas.map((a,i) => `<option value='${i}' ${i==base.antennaIdx?'selected':''}>${a.name} (${a.offset.toFixed(3)}m)</option>`).join('')}");
-  sendChunk("      <option value='-1' ${base.antennaIdx==-1?'selected':''}>None (0.000m)</option>");
-  sendChunk("    </select>");
-  sendChunk("    <label>H antenna ARP (m):</label>");
-  sendChunk("    <input type='number' id='modalHarp' value='${base.hARP.toFixed(3)}' step='0.001' style='width:100%;padding:8px;margin:4px 0 12px;'>");
-  sendChunk("    <hr style='margin:16px 0;'>");
-  sendChunk("    <div id='calcDisplay' style='background:#f5f5f5;padding:12px;border-radius:4px;'>");
-  sendChunk("      <strong>&#x1F4D0; H to send to ZED-F9P:</strong><br>");
-  sendChunk("      <span id='calcFormula'></span>");
-  sendChunk("    </div>");
-  sendChunk("    <div style='margin-top:20px;display:flex;gap:12px;justify-content:flex-end;'>");
-  sendChunk("      <button onclick='closeModal()' style='padding:10px 20px;background:#e74c3c;color:white;border:none;border-radius:4px;cursor:pointer;'>&#x274C; Cancel</button>");
-  sendChunk("      <button onclick='doStartBase(${idx})' style='padding:10px 20px;background:#2ecc71;color:white;border:none;border-radius:4px;cursor:pointer;'>&#x2705; Start Base</button>");
-  sendChunk("    </div>");
-  sendChunk("  </div>`;");
-  sendChunk("  modal.innerHTML = content;");
-  sendChunk("  document.body.appendChild(modal);");
-  sendChunk("  window.modalBase = base;");
-  sendChunk("  window.modalAntennas = antennas;");
-  sendChunk("  document.getElementById('modalAntenna').onchange = updateCalc;");
-  sendChunk("  document.getElementById('modalHarp').oninput = updateCalc;");
-  sendChunk("  updateCalc();");
-  sendChunk("}");
-  sendChunk("function updateCalc() {");
-  sendChunk("  let hGround = window.modalBase.altGround;");
-  sendChunk("  let hArp = parseFloat(document.getElementById('modalHarp').value) || 0;");
-  sendChunk("  let antIdx = parseInt(document.getElementById('modalAntenna').value);");
-  sendChunk("  let offset = (antIdx >= 0 && window.modalAntennas[antIdx]) ? window.modalAntennas[antIdx].offset : 0;");
-  sendChunk("  let hTotal = hGround + hArp + offset;");
-  sendChunk("  document.getElementById('calcFormula').innerHTML = ");
-  sendChunk("    `${hGround.toFixed(3)} + ${hArp.toFixed(3)} + ${offset.toFixed(3)} = <strong>${hTotal.toFixed(3)} m</strong>`;");
-  sendChunk("}");
-  sendChunk("function closeModal() {");
-  sendChunk("  let modal = document.getElementById('startBaseModal');");
-  sendChunk("  if (modal) modal.remove();");
-  sendChunk("}");
-  sendChunk("function doStartBase(idx) {");
-  sendChunk("  let hArp = parseFloat(document.getElementById('modalHarp').value) || 0;");
-  sendChunk("  let antIdx = parseInt(document.getElementById('modalAntenna').value);");
-  sendChunk("  fetch('/bases/start-confirm', {");
-  sendChunk("    method: 'POST',");
-  sendChunk("    headers: {'Content-Type': 'application/x-www-form-urlencoded'},");
-  sendChunk("    body: `idx=${encodeURIComponent(idx)}&harp=${encodeURIComponent(hArp)}&antenna=${encodeURIComponent(antIdx)}`");
-  sendChunk("  })");
-  sendChunk("  .then(r => r.text())");
-  sendChunk("  .then(msg => {");
-  sendChunk("    closeModal();");
-  sendChunk("    alert(msg);");
-  sendChunk("    location.reload();");
-  sendChunk("  })");
-  sendChunk("  .catch(e => {");
-  sendChunk("    closeModal();");
-  sendChunk("    alert('Error: ' + e);");
-  sendChunk("  });");
-  sendChunk("}");
   sendChunk("</script>");
   sendChunk("</div>"); // end Survey card
 
@@ -2306,14 +2202,6 @@ static void handleBaseOutputsPage() {
   sendHeader("Base – RTCM Outputs", "base");
 
   sendChunk("<p style='margin-bottom:14px;'><a class='btn' href='/base-cfg'>&larr; Back to Base</a></p>");
-
-  // JavaScript for controls
-  sendChunk("<script>");
-  sendChunk("function startOut(){fetch('/baseout/start').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
-  sendChunk("function stopOut(){fetch('/baseout/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
-  sendChunk("function startTcpClient(){fetch('/tcpclient/start').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
-  sendChunk("function stopTcpClient(){fetch('/tcpclient/stop').then(r=>r.text()).then(t=>{alert(t);location.reload();}).catch(err=>{alert('Error: '+(err.message||err));})}");
-  sendChunk("</script>");
 
   // --- Auto-start con Modalità Base ---
   {
@@ -2358,8 +2246,6 @@ static void handleBaseOutputsPage() {
     sendChunk("<em>None</em>");
   }
   sendChunk("</p>");
-  sendChunk("<button onclick='startOut()' class='btn-success' aria-label='Start NTRIP OUT'>&#x25BA; Start NTRIP OUT</button> ");
-  sendChunk("<button onclick='stopOut()' class='btn-danger' aria-label='Stop NTRIP OUT'>&#x25A0; Stop NTRIP OUT</button>");
 
   if (!outList.empty()) {
     sendChunk("<div class='responsive-table'>");
@@ -2412,8 +2298,6 @@ static void handleBaseOutputsPage() {
     sendChunk("<em>None</em>");
   }
   sendChunk("</p>");
-  sendChunk("<button onclick='startTcpClient()' class='btn-success'>&#x25BA; Start TCP Client OUT</button> ");
-  sendChunk("<button onclick='stopTcpClient()' class='btn-danger'>&#x25A0; Stop TCP Client OUT</button>");
 
   if (!tcpClientList.empty()) {
     sendChunk("<div class='responsive-table'>");
@@ -4260,26 +4144,6 @@ static void handleBaseStop() {
   _server->send(200, "text/plain", "Base stopped");
 }
 
-static void handleBaseLLH() {
-  if (!_server->hasArg("lat") || !_server->hasArg("lon") || !_server->hasArg("alt")) {
-    _server->send(400,"text/plain","lat/lon/alt missing"); return;
-  }
-  double lat = _server->arg("lat").toDouble();
-  double lon = _server->arg("lon").toDouble();
-  double alt = _server->arg("alt").toDouble();
-  uint16_t stid = 1;
-  if (_server->hasArg("stid") && _server->arg("stid").length()>0) {
-    int v=_server->arg("stid").toInt(); if (v>0 && v<4096) stid=(uint16_t)v;
-  }
-  uint8_t rtcmType = 0; // Default MSM7
-  if (_server->hasArg("rtcm_type") && _server->arg("rtcm_type").length()>0) {
-    int v=_server->arg("rtcm_type").toInt(); 
-    if (v>=0 && v<=1) rtcmType=(uint8_t)v;
-  }
-  applyBaseFixedLLH(lat, lon, alt, stid, rtcmType);
-  _server->sendHeader("Location","/base-cfg"); _server->send(303);
-}
-
 // ========================================================================
 // BASES CRUD HANDLERS
 // ========================================================================
@@ -4372,66 +4236,6 @@ static void handleBasesUpdate() {
   if (selStid>0) { baseLast=-1; for(int i=0;i<(int)v.size();i++) if(v[i].stid==selStid){baseLast=i;break;} }
   if(!saveBases(v, baseLast)){ _server->send(500,"text/plain","Save failed"); return; }
   _server->sendHeader("Location","/base/stations"); _server->send(303);
-}
-
-static void handleBasesStart() {
-  if(!_server->hasArg("idx")){ _server->send(400,"text/plain","idx missing"); return; }
-  int idx=_server->arg("idx").toInt(); 
-  std::vector<BaseRec> v; loadBases(v);
-  std::vector<AntennaRec> antennas; loadAntennas(antennas);
-  if(idx<0||idx>=(int)v.size()){ _server->send(400,"text/plain","Index out of range"); return; }
-  const auto& b=v[idx]; 
-  
-  // Calculate H_to_send = H_ground + H_ARP + Antenna_offset
-  float antennaOffset = 0.0f;
-  if (b.antennaIdx >= 0 && b.antennaIdx < (int)antennas.size()) {
-    antennaOffset = antennas[b.antennaIdx].offset;
-  }
-  double h_to_send = b.altGround + b.hARP + antennaOffset;
-  
-  applyBaseFixedLLH(b.lat, b.lon, h_to_send, b.stid, b.rtcmType);
-  _server->sendHeader("Location","/base-cfg"); _server->send(303);
-}
-
-static void handleBasesStartConfirm() {
-  if(!_server->hasArg("idx") || !_server->hasArg("harp") || !_server->hasArg("antenna")) {
-    _server->send(400, "text/plain", "Missing parameters");
-    return;
-  }
-  
-  int idx = _server->arg("idx").toInt();
-  float harp = _server->arg("harp").toFloat();
-  int antennaIdx = _server->arg("antenna").toInt();
-  
-  std::vector<BaseRec> v;
-  loadBases(v);
-  std::vector<AntennaRec> antennas;
-  loadAntennas(antennas);
-  
-  if (idx < 0 || idx >= (int)v.size()) {
-    _server->send(400, "text/plain", "Index out of range");
-    return;
-  }
-  
-  const auto& b = v[idx];
-  
-  // Calculate H_to_send = H_ground + H_ARP + Antenna_offset
-  float antennaOffset = 0.0f;
-  if (antennaIdx >= 0 && antennaIdx < (int)antennas.size()) {
-    antennaOffset = antennas[antennaIdx].offset;
-  }
-  double h_to_send = b.altGround + harp + antennaOffset;
-  
-  applyBaseFixedLLH(b.lat, b.lon, h_to_send, b.stid, b.rtcmType);
-  
-  String msg = "Base '" + b.name + "' started successfully!\n";
-  msg += "Position sent to ZED-F9P:\n";
-  msg += "Lat: " + String(b.lat, 8) + "°\n";
-  msg += "Lon: " + String(b.lon, 8) + "°\n";
-  msg += "Height: " + String(h_to_send, 3) + " m\n";
-  msg += "RTCM Type: " + String(b.rtcmType == 0 ? "MSM7 (4 const)" : "MSM4 (3 const)");
-  
-  _server->send(200, "text/plain", msg);
 }
 
 static void handleBasesSelect() {
@@ -4566,22 +4370,6 @@ static void handleBaseOutSelect() {
   _server->sendHeader("Location","/base/outputs"); _server->send(303);
 }
 
-static void handleBaseOutStart() {
-  std::vector<NtripOut> v; int last=-1; loadNtripOutList(v,last);
-  int id = _server->hasArg("id") ? _server->arg("id").toInt() : last;
-  if(id<0 || id>=(int)v.size()){ _server->send(400,"text/plain","No valid profile selected"); return; }
-  const auto& n=v[id];
-  bool okCaster = startCasterOut(n.host, (uint16_t)n.port, n.mount, n.pass);
-  bool okTcp    = startTcpOut((uint16_t)n.tcpPort);
-  // No need to save - LAST was already saved by handleBaseOutSelect, and profile data hasn't changed
-  _server->send(200, "text/plain", String("Caster: ")+(okCaster?"OK":"FAIL")+" | TCP: "+(okTcp?"OK":"FAIL"));
-}
-
-static void handleBaseOutStop() {
-  stopCasterOut(); stopTcpOut();
-  _server->send(200, "text/plain", "OUT stopped");
-}
-
 // ========================================================================
 // TCP OUT CLIENT HANDLERS
 // ========================================================================
@@ -4679,31 +4467,6 @@ static void handleTcpClientSelect() {
   _server->sendHeader("Location","/base/outputs"); 
   _server->send(303);
 }
-
-static void handleTcpClientStart() {
-  int id = _server->arg("id").toInt();
-  std::vector<TcpOutClient> v; int last=-1; 
-  loadTcpOutClientList(v,last);
-  
-  if(id<0 || id>=(int)v.size()){ 
-    _server->send(404,"text/plain","Profile not found"); 
-    return; 
-  }
-  
-  const auto& t = v[id];
-  bool ok = startTcpOutClient(t.host, (uint16_t)t.port);
-  
-  // No need to save - LAST was already saved by handleTcpClientSelect, and profile data hasn't changed
-  
-  if(ok) _server->send(200,"text/plain","TCP Client started");
-  else _server->send(500,"text/plain","Failed to start TCP Client");
-}
-
-static void handleTcpClientStop() {
-  stopTcpOutClient();
-  _server->send(200,"text/plain","TCP Client stopped");
-}
-
 
 // ========================================================================
 // RATE, STREAM, DOWNLOAD, DELETE HANDLERS
@@ -7175,8 +6938,6 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
   _server->on("/tcpclient/edit", HTTP_POST, handleTcpClientEditSave);
   _server->on("/tcpclient/del", HTTP_GET, handleTcpClientDel);
   _server->on("/tcpclient/select", HTTP_GET, handleTcpClientSelect);
-  _server->on("/tcpclient/start", HTTP_GET, handleTcpClientStart);
-  _server->on("/tcpclient/stop", HTTP_GET, handleTcpClientStop);
 
   _server->on("/lanin", HTTP_GET, [](){ _server->sendHeader("Location", "/rover"); _server->send(303); });
   _server->on("/rate", HTTP_GET, [](){ _server->sendHeader("Location", "/settings/gnss"); _server->send(303); });
@@ -7247,7 +7008,6 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
   });
 
   // BASE (VALSET)
-  _server->on("/base/llh", HTTP_POST, handleBaseLLH);
   _server->on("/base/stop", HTTP_GET, handleBaseStop);
 
   // BASES CRUD
@@ -7256,8 +7016,6 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
   _server->on("/bases/edit", HTTP_GET, handleBasesEdit);
   _server->on("/bases/update", HTTP_POST, handleBasesUpdate);
   _server->on("/bases/select", HTTP_GET, handleBasesSelect);
-  _server->on("/bases/start", HTTP_GET, handleBasesStart);
-  _server->on("/bases/start-confirm", HTTP_POST, handleBasesStartConfirm);
   _server->on("/api/startBaseMode", HTTP_GET, handleApiStartBaseMode);
   _server->on("/api/startAllOutputs", HTTP_GET, handleApiStartAllOutputs);
   _server->on("/api/base-autostart", HTTP_POST, handleApiSaveAutoStart);
@@ -7268,8 +7026,6 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
   _server->on("/baseout/edit", HTTP_GET, handleBaseOutEdit);
   _server->on("/baseout/update", HTTP_POST, handleBaseOutUpdate);
   _server->on("/baseout/select", HTTP_GET, handleBaseOutSelect);
-  _server->on("/baseout/start", HTTP_GET, handleBaseOutStart);
-  _server->on("/baseout/stop",  HTTP_GET, handleBaseOutStop);
 
   // LAN IN (TCP) CRUD
   _server->on("/lanin/add",    HTTP_POST, handleLanInAdd);

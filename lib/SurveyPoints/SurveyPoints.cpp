@@ -3,10 +3,13 @@
 #include "SurveyPoints.h"
 #include "FlashConfig.h"
 #include "config.h"
+#include "SystemLog.h"
 #include <LittleFS.h>
 #include <math.h>
 #include <time.h>
 #include <algorithm>
+
+extern SystemLog* g_systemLog;
 
 #define SURVEYS_DIR        "/surveys"
 #define ACTIVE_SURVEY_FILE "/surveys/_active"
@@ -1010,6 +1013,13 @@ static bool buildAndSavePoint(const MeasureParams& params,
         }
         Serial.printf("[SurveyPts] Saved point %s to survey %s (%d samples)\n",
                       pid.c_str(), sid.c_str(), n);
+        if (g_systemLog) {
+            const char* quality = (carrSoln == 2) ? "Fixed" : (carrSoln == 1) ? "Float" : "Single";
+            String name = params.name.isEmpty() ? pid : params.name;
+            g_systemLog->logEvent("POINT", pid + " '" + name + "'" +
+                                   (params.codice.isEmpty() ? "" : (" codice=" + params.codice)) +
+                                   " (" + quality + ", " + String(n) + " samples)");
+        }
     }
     return ok;
 }

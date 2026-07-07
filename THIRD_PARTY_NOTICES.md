@@ -2,11 +2,6 @@
 
 RTKino includes or depends on the following third-party software:
 
-## Leaflet 1.9.4
-- **License:** BSD-2-Clause
-- **Copyright:** (c) 2010-2023 Vladimir Agafonkin, (c) 2010-2011 CloudMade
-- **URL:** https://leafletjs.com
-- **Usage:** Embedded as PROGMEM in `lib/WebUI/LeafletAssets.h` for offline map rendering
 
 ## NimBLE-Arduino 1.4.1
 - **License:** Apache-2.0

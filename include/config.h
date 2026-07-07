@@ -17,7 +17,7 @@
   // Features:
   // - Integrated microSD slot (native SPI)
   // - 16MB Flash, 8MB PSRAM
-  // - Native I2C connector (Qwiic/STEMMA QT)
+  // - Native I2C connector
   // -------------------------------------------------------------------------
   
   // UART Pins (ZED-F9P connections)
