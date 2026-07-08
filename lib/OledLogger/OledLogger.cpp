@@ -63,6 +63,7 @@ void oledInit() {
     Serial.println("OLED not found");
     return;
   }
+  display.setRotation(2);  // physical display mounted upside down on the PCB
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
