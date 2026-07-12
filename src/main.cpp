@@ -18,6 +18,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "esp_heap_caps.h"
 #include <vector>
 #include "WifiProfiles.h"
 #include <math.h>
@@ -62,11 +63,10 @@ void stopEspNowRx();
 bool startEspNowTx();
 void stopEspNowTx();
 void stopBaseMode();
-
-struct GNSSPacket { uint8_t data[PACKET_SIZE]; size_t len; };
+void readZedTmode();
 
 HardwareSerial GNSSSerial(1);   // UART1 - RX from ZED TX2 (NMEA/UBX o RTCM)
-HardwareSerial RTCMSerial(2);   // UART2 - TX to ZED RX2 (RTCM input dal caster rover)
+HardwareSerial RTCMSerial(2);   // UART2 - TX to ZED RX2 (RTCM input from caster rover)
 
 WebServer server(80);
 
@@ -206,6 +206,27 @@ bool getZedTmode(ZedTmodeState& out) {
     return true;
 }
 
+// Stamp the TMODE cache directly with a known-good state instead of reading
+// it back over I2C. UbxVal::getTmodeState() issues up to 8 sequential
+// VALGET round-trips (each with a blind 50ms delay, no retry) and aborts the
+// whole read on the FIRST one that comes back short — which the ZED-F9P does
+// often enough right after a VALSET burst that the cache (and therefore the
+// OLED, which only ever reads this cache) could silently stay stuck on the
+// previous mode. We already know exactly what we just told the receiver to
+// become, so there is nothing to "read back" here.
+static void setZedTmodeCache(uint8_t mode, uint8_t posType, double lat, double lon, double height) {
+  if (zedTmodeLock(100)) {
+    g_zedTmode.mode      = mode;
+    g_zedTmode.posType   = posType;
+    g_zedTmode.lat       = lat;
+    g_zedTmode.lon       = lon;
+    g_zedTmode.height    = height;
+    g_zedTmode.valid     = true;
+    g_zedTmode.lastCheck = millis();
+    zedTmodeUnlock();
+  }
+}
+
 // ===== GLOBAL MUTEX=====
 // Global Mutex for all SD/SPI accesses (logger + WebUI + profiles)
 SemaphoreHandle_t sdMutex = nullptr;
@@ -249,12 +270,17 @@ void pusherUnlock() {
     if (pusherMutex) xSemaphoreGive(pusherMutex);
 }
 
-// Controlled flush of RAW log (prevents empty file after reset)
-static const uint32_t RAW_LOG_SYNC_MS = 2000;        // 0 = disable
-static const size_t   RAW_LOG_SYNC_BYTES = 256 * 1024; // 0 = disable
+// RAW log PSRAM ring buffer: decouples GNSS UART ingestion from SD write timing.
+// The UART reader only ever copies into this buffer (fast, no SD access); a
+// background task drains it to SD in large sequential writes on a dual
+// trigger (time OR fill level), so sdMutex is taken rarely and briefly
+// instead of once per UART chunk.
+static const size_t   RAWLOG_PSRAM_BUFFER_SIZE   = 3 * 1024 * 1024; // 3 MB
+static const uint32_t RAWLOG_FLUSH_INTERVAL_MS   = 10000;           // time-based trigger
+static const size_t   RAWLOG_FLUSH_FILL_THRESHOLD = RAWLOG_PSRAM_BUFFER_SIZE / 4; // fill-based trigger (25%)
 
-// Queue warning threshold (percentage of queue size)
-static const uint8_t QUEUE_WARNING_THRESHOLD_PERCENT = 75;
+// Buffer usage warning threshold (percentage of buffer size)
+static const uint8_t RAWLOG_WARNING_THRESHOLD_PERCENT = 75;
 
 String ntrip_host, mountpoint, ntrip_user, ntrip_pass;
 
@@ -280,7 +306,15 @@ unsigned long lastOledUpdate = 0;
 String lastRateSet = "---";
 int    g_zedRateHz  = 1;    // current ZED output rate in Hz (drives OLED refresh period)
 
-QueueHandle_t sdQueue;
+// RAW log PSRAM ring buffer state (guarded by rawBufMutex, NOT sdMutex —
+// producer/consumer bookkeeping must never depend on SD availability)
+SemaphoreHandle_t rawBufMutex = nullptr;
+uint8_t* rawLogBuf = nullptr;
+size_t   rawLogBufSize = 0;
+volatile size_t rawLogHead = 0;   // next write position
+volatile size_t rawLogTail = 0;   // next read (flush) position
+volatile size_t rawLogCount = 0;  // bytes currently buffered
+volatile uint32_t g_rawLogDroppedBytes = 0; // cumulative bytes lost (overflow or lock timeout)
 
 TaskHandle_t uartTaskHandle = NULL;
 
@@ -405,15 +439,45 @@ void sendCfgRateToZED(uint16_t measRateMs) {
 }
 
 // ---------------- RAW logging ----------------
+
+// Drains whatever is currently sitting in the PSRAM ring buffer into rawFile.
+// Caller MUST already hold sdMutex and have verified rawFile is open. The
+// read pointer (tail) only advances by the number of bytes actually written,
+// so a partial/failed SD write never silently drops data — it is retried on
+// the next call.
+static void flushRawBufferToFile() {
+  size_t count = 0, tail = 0;
+  if (xSemaphoreTake(rawBufMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    count = rawLogCount;
+    tail  = rawLogTail;
+    xSemaphoreGive(rawBufMutex);
+  }
+  if (count == 0) return;
+
+  size_t firstLen = (count < (rawLogBufSize - tail)) ? count : (rawLogBufSize - tail);
+  size_t written = rawFile.write(rawLogBuf + tail, firstLen);
+  if (written == firstLen && firstLen < count) {
+    size_t secondLen = count - firstLen;
+    written += rawFile.write(rawLogBuf, secondLen);
+  }
+
+  if (written > 0 && xSemaphoreTake(rawBufMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    rawLogTail = (tail + written) % rawLogBufSize;
+    rawLogCount -= written;
+    xSemaphoreGive(rawBufMutex);
+  }
+}
+
 void startLogging() {
   if (!sdMutex) { oledPrintln("SD mutex err"); return; }
+  if (!rawLogBuf) { oledPrintln("RAW buf err"); return; }
   bool locked = (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(5000)) == pdTRUE);
   if (! locked) { oledPrintln("SD busy"); return; }
   char filename[40];
-  // Prefer timestamped filename when system time is synced; otherwise fallback to numeric sequence. 
+  // Prefer timestamped filename when system time is synced; otherwise fallback to numeric sequence.
   bool hasTs = makeTimestampedLogFilename(filename, sizeof(filename));
   if (hasTs) {
-    // If a file with same timestamp exists (rare), append a suffix. 
+    // If a file with same timestamp exists (rare), append a suffix.
     if (sd.exists(filename)) {
       for (int k = 1; k < 1000; k++) {
         snprintf(filename, sizeof(filename), "/gnss/log_%ld_%03d.ubx", (long)time(nullptr), k);
@@ -426,6 +490,16 @@ void startLogging() {
   }
   rawFile = sd.open(filename, FILE_WRITE);
   if (rawFile && rawFile.isOpen()) {
+    // Reset ring buffer for the new session BEFORE enabling logging, so the
+    // UART reader (gated on loggingActive) cannot race this reset.
+    if (xSemaphoreTake(rawBufMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+      if (rawLogCount > 0) {
+        Serial.printf("[RAWLOG] Discarding %u stale buffered bytes from previous session\n", (unsigned)rawLogCount);
+      }
+      rawLogHead = rawLogTail = rawLogCount = 0;
+      xSemaphoreGive(rawBufMutex);
+    }
+    g_rawLogDroppedBytes = 0;
     oledSetLogging(true);
     loggingActive = true;
     g_currentRawLogFile = String(filename);
@@ -448,6 +522,17 @@ void stopLogging() {
   if (!locked) { oledPrintln("SD busy"); return; }
   uint64_t sizeBytes = 0;
   if (rawFile && rawFile.isOpen()) {
+    // Drain whatever is left in the PSRAM buffer before closing — nobody
+    // writes to it anymore since loggingActive is already false.
+    flushRawBufferToFile();
+    size_t leftover = 0;
+    if (xSemaphoreTake(rawBufMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+      leftover = rawLogCount;
+      xSemaphoreGive(rawBufMutex);
+    }
+    if (leftover > 0) {
+      Serial.printf("[RAWLOG] WARNING: %u bytes could not be flushed to SD\n", (unsigned)leftover);
+    }
     sizeBytes = rawFile.fileSize();
     // Close more safely: explicit sync before close
     rawFile.sync();
@@ -457,7 +542,11 @@ void stopLogging() {
   oledSetLogging(false);
   oledPrintln("[LOG] Stopped");
   if (g_systemLog) {
-    g_systemLog->logEvent("RAWLOG", String("Stopped -> ") + g_currentRawLogFile + ", " + String((uint32_t)sizeBytes) + " bytes");
+    String msg = String("Stopped -> ") + g_currentRawLogFile + ", " + String((uint32_t)sizeBytes) + " bytes";
+    if (g_rawLogDroppedBytes > 0) {
+      msg += ", " + String(g_rawLogDroppedBytes) + " bytes dropped";
+    }
+    g_systemLog->logEvent("RAWLOG", msg);
   }
   // Force config sync to SD after logging stops
   if (FlashConfig::isDirty()) {
@@ -978,45 +1067,40 @@ if (ubxClass == 0x02 && ubxId == 0x32 && ubxLen >= 8) {
   }
 }
 
+// Periodically drains the RAW log PSRAM ring buffer to SD. Unlike the old
+// per-UART-chunk writer, sdMutex is only taken when a flush is actually due
+// (time OR fill trigger, whichever comes first), so other SD consumers get
+// long, predictable windows of uncontended access instead of constant
+// contention every couple of KB.
 void sdWriterTask(void* pvParameters) {
-  GNSSPacket packet;
-  uint32_t lastSyncMs = 0;
-  size_t bytesSinceSync = 0;
+  uint32_t lastFlushMs = 0;
   while (true) {
-    if (xQueueReceive(sdQueue, &packet, pdMS_TO_TICKS(100))) {
-      // Quick preliminary check (without lock)
-      if (!loggingActive || !sdMutex) {
-        continue;
-      }
-      // Protect the entire SD/SPI bus from concurrent access (WebUI/config)
-      if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
-        // SD busy for too long: do not crash
-        continue;
-      }
-      // Re-check state INSIDE the lock (it might have changed)
-      if (!loggingActive || !rawFile || !rawFile.isOpen()) {
-        xSemaphoreGive(sdMutex);
-        continue;
-      }
-      size_t written = rawFile.write(packet. data, packet.len);
-      if (written > 0) {
-        bytesSinceSync += written;
-      }
-      // Controlled flush: drastically reduces the risk of 0-byte files after reboot
-      if (RAW_LOG_SYNC_MS || RAW_LOG_SYNC_BYTES) {
-        const uint32_t now = millis();
-        const UBaseType_t waiting = uxQueueMessagesWaiting(sdQueue);
-        const bool queueOk = (waiting < (QUEUE_SIZE / 4));
-        const bool timeDue = (RAW_LOG_SYNC_MS && (now - lastSyncMs >= RAW_LOG_SYNC_MS));
-        const bool bytesDue = (RAW_LOG_SYNC_BYTES && (bytesSinceSync >= RAW_LOG_SYNC_BYTES));
-        if (queueOk && (timeDue || bytesDue)) {
-          rawFile.sync();
-          lastSyncMs = now;
-          bytesSinceSync = 0;
-        }
-      }
-      xSemaphoreGive(sdMutex);
+    vTaskDelay(pdMS_TO_TICKS(200));
+    if (!loggingActive || !sdMutex || !rawLogBuf) continue;
+
+    size_t count = 0;
+    if (xSemaphoreTake(rawBufMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+      count = rawLogCount;
+      xSemaphoreGive(rawBufMutex);
     }
+    if (count == 0) continue;
+
+    const uint32_t now = millis();
+    const bool timeDue = (now - lastFlushMs >= RAWLOG_FLUSH_INTERVAL_MS);
+    const bool fillDue = (count >= RAWLOG_FLUSH_FILL_THRESHOLD);
+    if (!timeDue && !fillDue) continue;
+
+    // Protect the entire SD/SPI bus from concurrent access (WebUI/config)
+    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+      // SD busy for too long: retry on the next tick, data is safe in PSRAM
+      continue;
+    }
+    if (loggingActive && rawFile && rawFile.isOpen()) {
+      flushRawBufferToFile();
+      rawFile.sync();
+      lastFlushMs = now;
+    }
+    xSemaphoreGive(sdMutex);
   }
 }
 
@@ -1027,15 +1111,35 @@ void uartReaderTask(void* pvParameters) {
   while (true) {
     int len = uart_read_bytes(UART_NUM_2, buffer, PACKET_SIZE, pdMS_TO_TICKS(10));
     if (len > 0) {
-      if (loggingActive) {
-        GNSSPacket packet;
-        memcpy(packet.data, buffer, len); 
-        packet.len = len;
-        BaseType_t result = xQueueSend(sdQueue, &packet, pdMS_TO_TICKS(50));
-        if (result != pdTRUE) {
+      if (loggingActive && rawLogBuf) {
+        // rawBufMutex critical sections are always short pointer arithmetic
+        // (never SD I/O), so a generous bounded wait here should never be hit
+        // in practice — but we still bound it and count/log failures instead
+        // of silently dropping data, so a real problem stays visible.
+        if (xSemaphoreTake(rawBufMutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+          size_t freeSpace = rawLogBufSize - rawLogCount;
+          if ((size_t)len <= freeSpace) {
+            size_t firstLen = ((size_t)len < (rawLogBufSize - rawLogHead)) ? (size_t)len : (rawLogBufSize - rawLogHead);
+            memcpy(rawLogBuf + rawLogHead, buffer, firstLen);
+            if (firstLen < (size_t)len) {
+              memcpy(rawLogBuf, buffer + firstLen, len - firstLen);
+            }
+            rawLogHead = (rawLogHead + len) % rawLogBufSize;
+            rawLogCount += len;
+          } else {
+            g_rawLogDroppedBytes += len;
+            static uint32_t lastWarn = 0;
+            if (millis() - lastWarn > 5000) {
+              Serial.printf("[UART] WARNING: RAW PSRAM buffer full! (total dropped: %u bytes)\n", (unsigned)g_rawLogDroppedBytes);
+              lastWarn = millis();
+            }
+          }
+          xSemaphoreGive(rawBufMutex);
+        } else {
+          g_rawLogDroppedBytes += len;
           static uint32_t lastWarn = 0;
           if (millis() - lastWarn > 5000) {
-            Serial.println("[UART] WARNING: SD Queue full!");
+            Serial.printf("[UART] WARNING: rawBufMutex timeout, dropped %d bytes (total dropped: %u bytes)\n", len, (unsigned)g_rawLogDroppedBytes);
             lastWarn = millis();
           }
         }
@@ -1416,6 +1520,21 @@ void stopEspNowTx() {
   if (g_systemLog) g_systemLog->logEvent("ESPNOW", "TX (base) stopped");
 }
 
+// Blocks until WiFi connects or timeoutMs elapses, without starving the rotary
+// encoder: this runs inside setup(), before loop() (and RotaryInput::update())
+// has ever started, so a plain delay(200) loop here would silently drop/collapse
+// any encoder rotation performed while the device is still trying to connect
+// (worst case ~20s when no known network is found, right before falling back
+// to AP mode).
+static void wifiWaitConnect(uint32_t t0, uint32_t timeoutMs) {
+  while (WiFi.status() != WL_CONNECTED && (millis() - t0) < timeoutMs) {
+#if ENC_CLK_GPIO > 0 && ENC_DT_GPIO > 0 && ENC_SW_GPIO > 0
+    RotaryInput::update();
+#endif
+    delay(20);
+  }
+}
+
 static bool connectAnyWifi(const std::vector<WifiCred>& list, uint32_t perNetTimeoutMs = 8000) {
   if (list.empty()) return false;
   WiFi.mode(WIFI_STA);
@@ -1454,7 +1573,7 @@ static bool connectAnyWifi(const std::vector<WifiCred>& list, uint32_t perNetTim
       WiFi.begin(best->ssid.c_str(), best->password.c_str());
       WiFi.setAutoReconnect(true);
       uint32_t t0 = millis();
-      while (WiFi.status() != WL_CONNECTED && (millis() - t0) < perNetTimeoutMs) delay(200);
+      wifiWaitConnect(t0, perNetTimeoutMs);
       if (WiFi.status() == WL_CONNECTED) {
         Serial.printf("[WiFi] Connected to %s in %lums\n", best->ssid.c_str(), millis() - t0);
         return true;
@@ -1480,7 +1599,7 @@ static bool connectAnyWifi(const std::vector<WifiCred>& list, uint32_t perNetTim
     WiFi.begin(w.ssid.c_str(), w.password.c_str());
     WiFi.setAutoReconnect(true);
     uint32_t t0 = millis();
-    while (WiFi.status() != WL_CONNECTED && (millis() - t0) < perNetTimeoutMs) delay(200);
+    wifiWaitConnect(t0, perNetTimeoutMs);
     if (WiFi.status() == WL_CONNECTED) return true;
     WiFi.disconnect(true, true); delay(200);
   }
@@ -1814,7 +1933,7 @@ void applyBaseValset(uint16_t stid /*=1*/, uint8_t rtcmType /*=0*/) {
 
   // Read back TMODE state to confirm (matches applyBaseFixedLLH pattern)
   delay(100);  // Give ZED time to apply settings
-  getZedTmode(g_zedTmode);
+  readZedTmode();
 }
 
 void applyBaseFixedLLH(double lat_deg, double lon_deg, double h_m, uint16_t stid /*=1*/, uint8_t rtcmType /*=0*/) {
@@ -1839,10 +1958,10 @@ void applyBaseFixedLLH(double lat_deg, double lon_deg, double h_m, uint16_t stid
   UbxVal::setBaseMsgout(rtcmType);
   String msgType = (rtcmType == 0) ? "MSM7" : "MSM4";
   oledPrintln(String("[BASE] DF003=") + stid + " " + msgType + " ready");
-  
-  // Read back TMODE state to confirm
-  delay(100);  // Give ZED time to apply settings
-  getZedTmode(g_zedTmode);
+
+  // We just told the receiver to become FIXED at this exact position — stamp
+  // the cache directly (see setZedTmodeCache) instead of a fragile read-back.
+  setZedTmodeCache(2, 1, lat_deg, lon_deg, h_m);
   if (g_systemLog) {
     g_systemLog->logEvent("BASE", String("Started - StationID=") + stid +
                            " lat=" + String(lat_deg, 8) + " lon=" + String(lon_deg, 8) +
@@ -1854,8 +1973,7 @@ void applyBaseFixedLLH(double lat_deg, double lon_deg, double h_m, uint16_t stid
 void stopBaseMode() {
   // Disable TMODE → return to rover mode
   UbxVal::setU1(0x20030001, 0);  // CFG_TMODE_MODE = 0 (Disabled)
-  delay(100);
-  getZedTmode(g_zedTmode);  // Refresh state
+  setZedTmodeCache(0, 0, 0.0, 0.0, 0.0);
   oledPrintln("[BASE] TMODE disabled - Rover mode");
   if (g_systemLog) {
     g_systemLog->logEvent("BASE", "Stopped - Rover mode");
@@ -2572,9 +2690,20 @@ void setup() {
   surveyMutex = xSemaphoreCreateMutex();
    // Mutex per ZED TMODE state
   zedTmodeMutex = xSemaphoreCreateMutex();
-  if (!sdMutex || !ntripMutex || !tcpInMutex || !pusherMutex || !positionMutex || !rtcmStatsMutex || !surveyMutex || !zedTmodeMutex) {
+   // Mutex per RAW log PSRAM ring buffer bookkeeping (lightweight, never blocks on SD)
+  rawBufMutex = xSemaphoreCreateMutex();
+  if (!sdMutex || !ntripMutex || !tcpInMutex || !pusherMutex || !positionMutex || !rtcmStatsMutex || !surveyMutex || !zedTmodeMutex || !rawBufMutex) {
     Serial.println("FATAL: Failed to create mutexes!");
     while(1) delay(1000);
+  }
+
+  // RAW log PSRAM ring buffer allocation
+  rawLogBuf = (uint8_t*)heap_caps_malloc(RAWLOG_PSRAM_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
+  if (rawLogBuf) {
+    rawLogBufSize = RAWLOG_PSRAM_BUFFER_SIZE;
+    Serial.printf("[RAWLOG] PSRAM ring buffer allocated: %u KB\n", (unsigned)(rawLogBufSize / 1024));
+  } else {
+    Serial.println("[RAWLOG] WARNING: PSRAM ring buffer allocation failed, RAW logging disabled");
   }
 
 
@@ -2626,6 +2755,17 @@ void setup() {
   OledMenu::getRateString     = []() -> const char* { return lastRateSet.c_str(); };
   OledMenu::getInfoString     = []() -> String      { return menuGetInfoString(); };
   OledMenu::getRawLogState    = []() -> bool        { return loggingActive; };
+
+  // OledLogger status-row / Page2 base-out readers (were never wired up —
+  // Page2's BASE OUT view always read as OFF for all three channels).
+  oledGetCasterState     = []() -> bool { return g_baseCasterOn; };
+  oledGetCasterConnected = []() -> bool { return g_casterOutWasConnected; };
+  oledGetTcpSrvState     = []() -> bool { return g_baseTcpOn; };
+  oledGetTcpSrvClient    = []() -> bool { return g_tcpOutHadClient; };
+  oledGetTcpCliState     = []() -> bool { return g_tcpClientOn; };
+  oledGetTcpCliConnected = []() -> bool { return g_tcpClientWasConnected; };
+  oledGetTcpInState      = []() -> bool { return tcpInEnabled; };
+  oledGetTrackingActive  = []() -> bool { return TrackRecorder::isRecording(); };
 
   // Survey action callbacks
   OledMenu::onMeasurePoint = []() {
@@ -2869,8 +3009,7 @@ void setup() {
     UbxVal::setU4(0x40030011, (uint32_t)(svInAcc * 10000)); // CFG_TMODE_SVIN_ACC_LIMIT (0.1mm)
     UbxVal::setU1(0x20030001, 1);  // CFG_TMODE_MODE = 1 (Survey-in)
     delay(100);
-    applyBaseValset(1, 0);  // configure RTCM output
-    getZedTmode(g_zedTmode);
+    applyBaseValset(1, 0);  // configure RTCM output (refreshes g_zedTmode internally)
   };
 
   OledMenu::onStopBase = []() {
@@ -3031,10 +3170,9 @@ void setup() {
   uart_config_t raw_uart_config = { UART_BAUD, UART_DATA_8_BITS, UART_PARITY_DISABLE, UART_STOP_BITS_1, UART_HW_FLOWCTRL_DISABLE };
   uart_param_config(UART_NUM_2, &raw_uart_config);
   uart_set_pin(UART_NUM_2, UART_PIN_NO_CHANGE, RAW_UART_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-  uart_driver_install(UART_NUM_2, 16384, 0, 0, NULL, 0);
+  uart_driver_install(UART_NUM_2, 32768, 0, 0, NULL, 0); // extra headroom against transient core-0 scheduling delays
 
   // Tasks
-  sdQueue = xQueueCreate(QUEUE_SIZE, sizeof(GNSSPacket));
   xTaskCreatePinnedToCore(uartReaderTask, "UARTReader", 12288, NULL, 2, &uartTaskHandle, 0);
   xTaskCreatePinnedToCore(sdWriterTask,   "SDWriter",   4096,  NULL, 1, &sdTaskHandle, 1);
   xTaskCreatePinnedToCore(nmeaReaderTask, "NMEAReader", 6144,  NULL, 1, &nmeaTaskHandle, 1);
@@ -3270,14 +3408,28 @@ void loop() {
     }
   }
 
-  // Queue monitoring for SD logging
-  if (loggingActive && sdQueue) {
-    UBaseType_t queueUsage = uxQueueMessagesWaiting(sdQueue);
-    if (queueUsage > (QUEUE_SIZE * QUEUE_WARNING_THRESHOLD_PERCENT / 100)) {
-      static uint32_t lastQueueWarn = 0;
-      if (millis() - lastQueueWarn > 10000) {
-        Serial.printf("[WARN] SD Queue usage: %d/%d\n", queueUsage, QUEUE_SIZE);
-        lastQueueWarn = millis();
+  // RAW log PSRAM ring buffer fill monitoring (throttled: loop() can spin far
+  // faster than this needs to be checked, no point hammering rawBufMutex)
+  static uint32_t lastRawBufCheck = 0;
+  if (loggingActive && rawLogBuf && millis() - lastRawBufCheck >= 500) {
+    lastRawBufCheck = millis();
+    size_t count = 0;
+    if (xSemaphoreTake(rawBufMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+      count = rawLogCount;
+      xSemaphoreGive(rawBufMutex);
+    }
+    if (count > (rawLogBufSize * RAWLOG_WARNING_THRESHOLD_PERCENT / 100)) {
+      static uint32_t lastBufWarn = 0;
+      if (millis() - lastBufWarn > 10000) {
+        Serial.printf("[WARN] RAW PSRAM buffer usage: %u/%u KB\n", (unsigned)(count / 1024), (unsigned)(rawLogBufSize / 1024));
+        lastBufWarn = millis();
+      }
+    }
+    if (g_rawLogDroppedBytes > 0) {
+      static uint32_t lastDropReport = 0;
+      if (millis() - lastDropReport > 10000) {
+        Serial.printf("[WARN] RAW log: %u bytes dropped since logging started\n", (unsigned)g_rawLogDroppedBytes);
+        lastDropReport = millis();
       }
     }
   }

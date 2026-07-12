@@ -57,6 +57,8 @@ bool (*oledGetTcpSrvState)()     = nullptr;
 bool (*oledGetTcpSrvClient)()    = nullptr;
 bool (*oledGetTcpCliState)()     = nullptr;
 bool (*oledGetTcpCliConnected)() = nullptr;
+bool (*oledGetTcpInState)()      = nullptr;
+bool (*oledGetTrackingActive)()  = nullptr;
 
 void oledInit() {
   if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS)) {
@@ -130,34 +132,37 @@ static void drawDashedLine(int y) {
   }
 }
 
-// Draw a letter badge (13×10 px):
-// ON  → filled white rectangle with black letter
-// OFF → white border rectangle with white letter
-static void drawLetterBadge(int x, int y, char letter, bool on) {
-  if (on) {
-    display.fillRect(x, y, 13, 10, SSD1306_WHITE);
-    display.setTextColor(SSD1306_BLACK);
-  } else {
-    display.drawRect(x, y, 13, 10, SSD1306_WHITE);
-    display.setTextColor(SSD1306_WHITE);
-  }
-  display.setCursor(x + 4, y + 1);  // center 6×8 letter in 13×10 badge: (13-6)/2≈4, (10-8)/2=1
-  display.print(letter);
+// Draw a bare status glyph (no box) — only ever called for an ACTIVE status,
+// so an inactive slot simply draws nothing rather than an empty outline.
+static void drawBadgeGlyph(int x, int y, const char* label) {
   display.setTextColor(SSD1306_WHITE);
+  display.setCursor(x, y);
+  display.print(label);
 }
 
-// Draw status letter badges at y=54 (badges × 14px spacing)
-// Badges: W=WiFi/AP (x=0), N=NTRIP (x=14), B=BLE (x=28), L=Log (x=42), E=ESP-NOW (x=56)
+// Draw status badges at y=55, one fixed 14px-wide column per status so the
+// eye always knows where to look regardless of which ones are lit:
+//   A=AP mode (x=0), N=NTRIP IN (x=14), T=TCP IN (x=28), L=RAW log (x=42),
+//   B=GNSS base mode (x=56), ESP-NOW role B/R (x=70), RT=track recording (x=84)
+// WiFi-STA-connected has no badge (IP lives on Page 3); BLE has no badge here
+// (still visible in Impostazioni > Rete).
 static void drawStatusBadges() {
-  const int badgeY = 54;
-  drawLetterBadge(0,  badgeY, 'W', apMode ? true : wifiConnected);
-  drawLetterBadge(14, badgeY, 'N', ntripConnected);
-  drawLetterBadge(28, badgeY, 'B', mon_bleEnabled && mon_bleConnected);
-  drawLetterBadge(42, badgeY, 'L', logging);
-  if (mon_espNowEnabled) {
-    // 'B' = base TX, 'R' = rover RX
-    drawLetterBadge(56, badgeY, mon_espNowIsTx ? 'B' : 'R', true);
-  }
+  const int badgeY = 55;
+  const int pitch = 14;
+  int x = 0;
+  if (apMode) drawBadgeGlyph(x, badgeY, "A");
+  x += pitch;
+  if (ntripConnected) drawBadgeGlyph(x, badgeY, "N");
+  x += pitch;
+  if (oledGetTcpInState && oledGetTcpInState()) drawBadgeGlyph(x, badgeY, "T");
+  x += pitch;
+  if (logging) drawBadgeGlyph(x, badgeY, "L");
+  x += pitch;
+  if (mon_baseActive) drawBadgeGlyph(x, badgeY, "B");
+  x += pitch;
+  if (mon_espNowEnabled) drawBadgeGlyph(x, badgeY, mon_espNowIsTx ? "B" : "R");
+  x += pitch;
+  if (oledGetTrackingActive && oledGetTrackingActive()) drawBadgeGlyph(x, badgeY, "RT");
 }
 
 // Get fix type string from carrSoln (NAV-PVT) with GGA fallback
@@ -184,6 +189,14 @@ void oledUpdate() {
       // ---- Page 2 in BASE mode: output status layout ----
       display.setCursor(0, 0);
       display.print("BASE OUT");
+      // STID right-aligned — moved here from Page 1 (fixed mode) to make room
+      // for the live output profile there.
+      char stidBuf[16];
+      snprintf(stidBuf, sizeof(stidBuf), "STID:%u", (unsigned)mon_baseStid);
+      int16_t sx1, sy1; uint16_t sw, sh;
+      display.getTextBounds(stidBuf, 0, 0, &sx1, &sy1, &sw, &sh);
+      display.setCursor(SCREEN_WIDTH - sw - 2, 0);
+      display.print(stidBuf);
       drawDashedLine(9);
 
       // Helper lambda: draw one output row
@@ -326,15 +339,39 @@ void oledUpdate() {
 
   // ---- Row 1 (y=9) ----
   if (baseLayout) {
-    char stidBuf[16];
-    snprintf(stidBuf, sizeof(stidBuf), "STID:%u", (unsigned)mon_baseStid);
-    display.setCursor(0, 9);
-    display.print(stidBuf);
-    // "RTCM" right-aligned
-    int16_t x1, y1; uint16_t w, h;
-    display.getTextBounds("RTCM", 0, 0, &x1, &y1, &w, &h);
-    display.setCursor(SCREEN_WIDTH - w - 2, 9);
-    display.print("RTCM");
+    if (mon_tmodeMode == 2) {
+      // TMODE3 fixed: the ZED only outputs RTCM+raw here, so replace the old
+      // static "STID:xxxx / RTCM" placeholder with the live RTCM output
+      // profile (STID moves to Page 2, which already owns base-out status).
+      bool ntripOn   = oledGetCasterState && oledGetCasterState();
+      bool ntripConn = ntripOn && oledGetCasterConnected && oledGetCasterConnected();
+      char leftBuf[16];
+      snprintf(leftBuf, sizeof(leftBuf), "NTRIP:%s", !ntripOn ? "OFF" : (ntripConn ? "OK" : "--"));
+      display.setCursor(0, 9);
+      display.print(leftBuf);
+
+      bool tcpSrvOn = oledGetTcpSrvState && oledGetTcpSrvState();
+      bool tcpCliOn = oledGetTcpCliState && oledGetTcpCliState();
+      bool tcpOn    = tcpSrvOn || tcpCliOn;
+      bool tcpConn  = (tcpSrvOn && oledGetTcpSrvClient && oledGetTcpSrvClient()) ||
+                      (tcpCliOn && oledGetTcpCliConnected && oledGetTcpCliConnected());
+      char rightBuf[16];
+      snprintf(rightBuf, sizeof(rightBuf), "TCP:%s", !tcpOn ? "OFF" : (tcpConn ? "OK" : "--"));
+      int16_t x1, y1; uint16_t w, h;
+      display.getTextBounds(rightBuf, 0, 0, &x1, &y1, &w, &h);
+      display.setCursor(SCREEN_WIDTH - w - 2, 9);
+      display.print(rightBuf);
+    } else {
+      // Survey-in still converging: unchanged for now.
+      char stidBuf[16];
+      snprintf(stidBuf, sizeof(stidBuf), "STID:%u", (unsigned)mon_baseStid);
+      display.setCursor(0, 9);
+      display.print(stidBuf);
+      int16_t x1, y1; uint16_t w, h;
+      display.getTextBounds("RTCM", 0, 0, &x1, &y1, &w, &h);
+      display.setCursor(SCREEN_WIDTH - w - 2, 9);
+      display.print("RTCM");
+    }
   } else {
     // PDOP left
     char pdopBuf[16];

@@ -69,7 +69,6 @@
 #define HEAP_WARNING_THRESHOLD 50000  // Low heap warning threshold (bytes)
 
 // Queue and buffer sizes
-#define QUEUE_SIZE 32
 #define PACKET_SIZE 2048
 
 // WiFi fallback credentials

@@ -42,6 +42,10 @@ extern bool (*oledGetTcpSrvClient)();     // RtcmStreamer::hasClient()
 extern bool (*oledGetTcpCliState)();      // g_tcpClientOn
 extern bool (*oledGetTcpCliConnected)();  // TcpClientStreamer::isConnected()
 
+// Status row badges pulled fresh every frame (set from main.cpp)
+extern bool (*oledGetTcpInState)();       // tcpInEnabled (rover: RTCM in via TCP)
+extern bool (*oledGetTrackingActive)();   // TrackRecorder::isRecording()
+
 // Returns a reference to the underlying SSD1306 display object.
 // Used by OledMenu to render the menu on the same display instance.
 Adafruit_SSD1306& oledGetDisplay();
