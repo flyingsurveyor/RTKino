@@ -64,6 +64,34 @@ bool startEspNowTx();
 void stopEspNowTx();
 void stopBaseMode();
 void readZedTmode();
+void switchToRover();
+
+// ---- Shared base-profile helpers (defined in WebUI.cpp) ----
+// Single source of truth for bases.txt parsing + antenna-offset resolution,
+// used by both the WebUI HTTP handlers and the OLED base menu below.
+int    baseListCount();
+String baseListLabel(int idx);
+int    baseListSelectedIndex();
+bool   baseListSelect(int idx);
+bool   baseListGetFixedPosition(double& lat, double& lon, double& h,
+                                 uint16_t& stid, uint8_t& rtcmType, String& name);
+String startAllBaseOutputs();
+
+// ---- Shared RTCM-out profile helpers (defined in WebUI.cpp) ----
+// Same select-only model as the base list, for the OLED "Seleziona uscite"
+// submenu — used by both the WebUI RTCM Outputs page and the OLED here.
+int    ntripOutCount();
+String ntripOutLabel(int idx);
+int    ntripOutSelectedIndex();
+bool   ntripOutSelect(int idx);
+int    tcpOutCliCount();
+String tcpOutCliLabel(int idx);
+int    tcpOutCliSelectedIndex();
+bool   tcpOutCliSelect(int idx);
+bool   getBaseAutoStartNtrip();
+bool   getBaseAutoStartTcp();
+bool   setBaseAutoStartNtrip(bool on);
+bool   setBaseAutoStartTcp(bool on);
 
 HardwareSerial GNSSSerial(1);   // UART1 - RX from ZED TX2 (NMEA/UBX o RTCM)
 HardwareSerial RTCMSerial(2);   // UART2 - TX to ZED RX2 (RTCM input from caster rover)
@@ -182,9 +210,17 @@ SemaphoreHandle_t rtcmStatsMutex = nullptr;
 // ===== ZED-F9P TMODE State =====
 ZedTmodeState g_zedTmode = {0, 0, 0.0, 0.0, 0.0, false, 0};
 
-// ===== OLED base-from-measurement pending flag =====
-// Set by onStartBaseFromPoint; cleared in loop() when measurement completes.
-static bool g_pendingBaseActivation = false;
+// ===== OLED base start/stop async pipeline =====
+// The OLED "Start Base Mode" / "Stop base->rover" actions mirror the WebUI's
+// two-step flow (apply TMODE3 fixed -> wait -> start RTCM outputs) and its
+// full switch-to-rover reset. Both take seconds (a deliberate settle delay
+// for start, ~2s of resets for stop), so they run via a polled flag instead
+// of blocking the OLED menu's input handling.
+enum class BasePendingAction { NONE, START_OUTPUTS, SWITCH_TO_ROVER };
+static BasePendingAction g_basePendingAction = BasePendingAction::NONE;
+static uint32_t          g_basePendingAtMs   = 0;
+static bool              g_baseActionDone    = true;   // true = no result pending / result ready
+static String            g_baseActionResult  = "";
 
 // ===== Quick-measure duration (seconds) — configurable from OLED Settings =====
 static int g_quickMeasureDuration = 30;
@@ -2407,106 +2443,6 @@ static void menuToggleBLE(bool enable) {
 }
 
 // ---------------------------------------------------------------------------
-// Encoder/menu shared helper: read the N-th profile line from a flash config
-// file that uses the LAST= header convention, parsing semicolon-separated
-// fields. Returns false if the file is empty or no LAST= line is found.
-//
-// File format (ntrip_out_list.txt): name;host;port;mount;pass;tcpPort
-// File format (tcp_out_client_list.txt): name;host;port
-//
-// Populates the provided String vector (fields) with all ';'-separated tokens
-// of the active (LAST=N) line.
-// ---------------------------------------------------------------------------
-static bool menuLoadActiveProfile(const char* flashPath, std::vector<String>& fields) {
-  fields.clear();
-  String content = FlashConfig::readFile(flashPath);
-  if (content.length() == 0) return false;
-
-  int lastIdx = -1;
-  int lineNum  = 0;
-  int start    = 0;
-  while (start < (int)content.length()) {
-    int end = content.indexOf('\n', start);
-    if (end < 0) end = content.length();
-    String line = content.substring(start, end);
-    line.trim();
-    start = end + 1;
-    if (!line.length()) continue;
-    if (line.startsWith("#")) {
-      int p = line.indexOf("LAST=");
-      if (p >= 0) lastIdx = line.substring(p + 5).toInt();
-      continue;
-    }
-    if (lastIdx >= 0 && lineNum == lastIdx) {
-      // Split on ';' and collect all fields
-      int pos = 0;
-      while (pos <= (int)line.length()) {
-        int sep = line.indexOf(';', pos);
-        if (sep < 0) sep = line.length();
-        fields.push_back(line.substring(pos, sep));
-        pos = sep + 1;
-      }
-      return !fields.empty();
-    }
-    lineNum++;
-  }
-  return false;
-}
-
-// ---------------------------------------------------------------------------
-// Encoder/menu helper: start NTRIP OUT from active profile
-// Profile format: name;host;port;mount;pass;tcpPort
-// ---------------------------------------------------------------------------
-static void menuToggleNtripOut(bool enable) {
-  if (!enable) {
-    stopCasterOut();
-    stopTcpOut();
-    return;
-  }
-  std::vector<String> f;
-  if (!menuLoadActiveProfile("/config/ntrip_out_list.txt", f) || f.size() < 6) {
-    oledPrintln("[NTRIP OUT] No profile selected");
-    return;
-  }
-  // fields: [0]=name [1]=host [2]=port [3]=mount [4]=pass [5]=tcpPort
-  startCasterOut(f[1], (uint16_t)f[2].toInt(), f[3], f[4]);
-  uint16_t tcpPort = (uint16_t)f[5].toInt();
-  if (tcpPort > 0) startTcpOut(tcpPort);
-}
-
-// ---------------------------------------------------------------------------
-// Encoder/menu helper: start TCP OUT Srv from active NTRIP OUT profile (TCP port)
-// Profile format: name;host;port;mount;pass;tcpPort
-// ---------------------------------------------------------------------------
-static void menuToggleTcpOutSrv(bool enable) {
-  if (!enable) { stopTcpOut(); return; }
-  std::vector<String> f;
-  if (!menuLoadActiveProfile("/config/ntrip_out_list.txt", f) || f.size() < 6) {
-    oledPrintln("[TCP OUT] No profile selected");
-    return;
-  }
-  // fields: [0]=name [1]=host [2]=port [3]=mount [4]=pass [5]=tcpPort
-  uint16_t tcpPort = (uint16_t)f[5].toInt();
-  if (tcpPort > 0) startTcpOut(tcpPort);
-  else oledPrintln("[TCP OUT] No port in profile");
-}
-
-// ---------------------------------------------------------------------------
-// Encoder/menu helper: start TCP OUT Client from active profile
-// Profile format: name;host;port
-// ---------------------------------------------------------------------------
-static void menuToggleTcpOutCli(bool enable) {
-  if (!enable) { stopTcpOutClient(); return; }
-  std::vector<String> f;
-  if (!menuLoadActiveProfile("/config/tcp_out_client_list.txt", f) || f.size() < 3) {
-    oledPrintln("[TCP CLI] No profile selected");
-    return;
-  }
-  // fields: [0]=name [1]=host [2]=port
-  startTcpOutClient(f[1], (uint16_t)f[2].toInt());
-}
-
-// ---------------------------------------------------------------------------
 // Encoder/menu helper: build info string for info screen
 // ---------------------------------------------------------------------------
 static String menuGetInfoString() {
@@ -2725,9 +2661,6 @@ void setup() {
   OledMenu::onToggleBLE       = menuToggleBLE;
   OledMenu::onToggleNtripIn   = [](bool en) { toggleNtrip(en); };
   OledMenu::onToggleTcpIn     = [](bool en) { toggleTcpIn(en); };
-  OledMenu::onToggleNtripOut  = menuToggleNtripOut;
-  OledMenu::onToggleTcpOutSrv = menuToggleTcpOutSrv;
-  OledMenu::onToggleTcpOutCli = menuToggleTcpOutCli;
   OledMenu::onToggleBuzzer    = [](bool en) { if (g_buzzer) g_buzzer->setEnabled(en); };
   OledMenu::onSetRate         = [](uint16_t ms) { sendCfgRateToZED(ms); };
   OledMenu::onReboot          = []() { ESP.restart(); };
@@ -2748,9 +2681,6 @@ void setup() {
   OledMenu::getBleState       = []() -> bool        { return g_bleEnabled; };
   OledMenu::getNtripInState   = []() -> bool        { return ntripEnabled; };
   OledMenu::getTcpInState     = []() -> bool        { return tcpInEnabled; };
-  OledMenu::getNtripOutState  = []() -> bool        { return (bool)g_baseCasterOn; };
-  OledMenu::getTcpOutSrvState = []() -> bool        { return (bool)g_baseTcpOn; };
-  OledMenu::getTcpOutCliState = []() -> bool        { return g_tcpClientOn; };
   OledMenu::getBuzzerState    = []() -> bool        { return g_buzzer ? g_buzzer->isEnabled() : false; };
   OledMenu::getRateString     = []() -> const char* { return lastRateSet.c_str(); };
   OledMenu::getInfoString     = []() -> String      { return menuGetInfoString(); };
@@ -2902,6 +2832,13 @@ void setup() {
     }
     return String(buf);
   };
+  OledMenu::getStakeoutNavData = [](OledMenu::OledStakeoutNavData& out) {
+    StakeoutStatus st = Stakeout::getStatus();
+    out.valid         = st.valid;
+    out.distance      = st.d2d;
+    out.azimuth       = st.az;
+    out.roverCarrSoln = st.roverCarrSoln;
+  };
 
   // Tracking action callbacks
   OledMenu::onTrackStartStop = []() {
@@ -2951,50 +2888,30 @@ void setup() {
     return getZedTmode(t) && t.valid && t.mode > 0;
   };
 
-  OledMenu::onStartBaseFromPoint = [](int durationSec) {
-    // Start a timed survey measurement; after completion loop() will activate the base
-    MeasureParams mp;
-    mp.name         = "BASE";
-    mp.codice       = "";
-    mp.desc         = "Base da OLED";
-    mp.durationSec  = (float)durationSec;
-    mp.intervalSec  = 1.0f;
-    mp.forceQuality = false;
-    SurveyPoints::startMeasure(mp);
-    g_pendingBaseActivation = true;
-    Serial.printf("[Base] Starting base measurement: %ds\n", durationSec);
+  // "Seleziona base": marks a saved profile as selected WITHOUT activating it
+  // — mirrors the WebUI's /bases/select, decoupled from Start Base Mode.
+  OledMenu::onSelectBaseFromList = [](int idx) {
+    baseListSelect(idx);
   };
 
-  OledMenu::onStartBaseFromList = [](int idx) {
-    // Load base record from bases.txt by index and activate as fixed base
-    String content = FlashConfig::readFile("/config/bases.txt");
-    int lineIdx = 0, start = 0;
-    while (start < (int)content.length()) {
-      int endPos = content.indexOf('\n', start);
-      if (endPos < 0) endPos = content.length();
-      String line = content.substring(start, endPos);
-      line.trim();
-      start = endPos + 1;
-      if (line.isEmpty() || line[0] == '#' || line.indexOf(';') < 0) continue;
-      if (lineIdx == idx) {
-        // Format: name;lat;lon;altGround;stid;hARP;antennaIdx;rtcmType
-        int p1 = line.indexOf(';');         if (p1 < 0) break;
-        int p2 = line.indexOf(';', p1+1);   if (p2 < 0) break;
-        int p3 = line.indexOf(';', p2+1);   if (p3 < 0) break;
-        int p4 = line.indexOf(';', p3+1);   if (p4 < 0) break;
-        int p5 = line.indexOf(';', p4+1);   if (p5 < 0) break;
-        double   lat  = line.substring(p1+1, p2).toDouble();
-        double   lon  = line.substring(p2+1, p3).toDouble();
-        double   alt  = line.substring(p3+1, p4).toDouble();
-        uint16_t stid = (uint16_t)line.substring(p4+1, p5).toInt();
-        float    hARP = line.substring(p5+1).toFloat();
-        Serial.printf("[Base] Activating from list: %s lat=%.8f lon=%.8f alt=%.3f stid=%u\n",
-                      line.substring(0, p1).c_str(), lat, lon, alt + hARP, stid);
-        applyBaseFixedLLH(lat, lon, alt + hARP, stid, 0);
-        break;
-      }
-      lineIdx++;
+  // "Start Base Mode": exact same two-step sequence as the WebUI's
+  // "Start Base Mode" button — apply the SELECTED profile as TMODE3 fixed
+  // (with its real STID/rtcmType/antenna offset, via the shared WebUI.cpp
+  // helper — no more re-parsing bases.txt here), then after the ZED has
+  // settled, start whichever RTCM outputs are flagged for auto-start.
+  // Both steps run async (polled from loop()) so the OLED menu never blocks.
+  OledMenu::onStartBaseMode = []() {
+    double lat, lon, h; uint16_t stid; uint8_t rtcmType; String name;
+    if (!baseListGetFixedPosition(lat, lon, h, stid, rtcmType, name)) {
+      g_baseActionResult = "ERRORE:\nNessuna base\nselezionata";
+      g_baseActionDone   = true;
+      return;
     }
+    applyBaseFixedLLH(lat, lon, h, stid, rtcmType);
+    g_baseActionDone    = false;
+    g_basePendingAction = BasePendingAction::START_OUTPUTS;
+    g_basePendingAtMs   = millis() + 4000;  // let the ZED settle, same as WebUI
+    Serial.printf("[Base] Starting base '%s' (STID=%u), outputs in 4s\n", name.c_str(), stid);
   };
 
   OledMenu::onStartSurveyIn = []() {
@@ -3012,43 +2929,41 @@ void setup() {
     applyBaseValset(1, 0);  // configure RTCM output (refreshes g_zedTmode internally)
   };
 
+  // "Stop base -> rover": exact same full reset the WebUI's "Rover" button
+  // uses (stops all RTCM outputs, hot-resets the ZED, disables TMODE) —
+  // not just the bare TMODE disable the OLED used to do, which left any
+  // active NTRIP OUT/TCP OUT/TCP Client OUT running after "returning" to
+  // rover. Runs async (polled from loop()), same pipeline as start.
   OledMenu::onStopBase = []() {
-    stopBaseMode();
-    Serial.println("[Base] Base stopped from OLED");
+    g_baseActionDone    = false;
+    g_basePendingAction = BasePendingAction::SWITCH_TO_ROVER;
+    g_basePendingAtMs   = millis();  // next loop() tick, no artificial delay
+    Serial.println("[Base] Switch to rover requested from OLED");
   };
 
-  OledMenu::getBaseListCount = []() -> int {
-    String content = FlashConfig::readFile("/config/bases.txt");
-    int count = 0, start = 0;
-    while (start < (int)content.length()) {
-      int endPos = content.indexOf('\n', start);
-      if (endPos < 0) endPos = content.length();
-      String line = content.substring(start, endPos);
-      line.trim();
-      start = endPos + 1;
-      if (!line.isEmpty() && line[0] != '#' && line.indexOf(';') > 0) count++;
-    }
-    return count;
+  OledMenu::getBaseListCount    = []() -> int    { return baseListCount(); };
+  OledMenu::getBaseListLabel    = [](int idx) -> String { return baseListLabel(idx); };
+  OledMenu::getSelectedBaseIdx  = []() -> int    { return baseListSelectedIndex(); };
+  OledMenu::getSelectedBaseLabel = []() -> String {
+    int idx = baseListSelectedIndex();
+    return idx >= 0 ? baseListLabel(idx) : String();
   };
+  OledMenu::isBaseActionPending = []() -> bool   { return !g_baseActionDone; };
+  OledMenu::getBaseActionResult = []() -> String { return g_baseActionResult; };
 
-  OledMenu::getBaseListLabel = [](int idx) -> String {
-    String content = FlashConfig::readFile("/config/bases.txt");
-    int lineIdx = 0, start = 0;
-    while (start < (int)content.length()) {
-      int endPos = content.indexOf('\n', start);
-      if (endPos < 0) endPos = content.length();
-      String line = content.substring(start, endPos);
-      line.trim();
-      start = endPos + 1;
-      if (line.isEmpty() || line[0] == '#' || line.indexOf(';') < 0) continue;
-      if (lineIdx == idx) {
-        int p1 = line.indexOf(';');
-        return p1 > 0 ? line.substring(0, p1) : line;
-      }
-      lineIdx++;
-    }
-    return "";
-  };
+  // ---- Base RTCM output profile callbacks ("Seleziona uscite") ----
+  OledMenu::onSelectNtripOutFromList = [](int idx) { ntripOutSelect(idx); };
+  OledMenu::onSelectTcpCliFromList   = [](int idx) { tcpOutCliSelect(idx); };
+  OledMenu::onToggleAutoNtrip        = [](bool en) { setBaseAutoStartNtrip(en); };
+  OledMenu::onToggleAutoTcpCli       = [](bool en) { setBaseAutoStartTcp(en); };
+  OledMenu::getNtripOutListCount     = []() -> int    { return ntripOutCount(); };
+  OledMenu::getNtripOutListLabel     = [](int idx) -> String { return ntripOutLabel(idx); };
+  OledMenu::getSelectedNtripOutIdx   = []() -> int    { return ntripOutSelectedIndex(); };
+  OledMenu::getTcpCliListCount       = []() -> int    { return tcpOutCliCount(); };
+  OledMenu::getTcpCliListLabel       = [](int idx) -> String { return tcpOutCliLabel(idx); };
+  OledMenu::getSelectedTcpCliIdx     = []() -> int    { return tcpOutCliSelectedIndex(); };
+  OledMenu::getAutoNtripState        = []() -> bool   { return getBaseAutoStartNtrip(); };
+  OledMenu::getAutoTcpCliState       = []() -> bool   { return getBaseAutoStartTcp(); };
 
   Serial.printf("[ENC] Rotary encoder on CLK=%d DT=%d SW=%d\n",
                 ENC_CLK_GPIO, ENC_DT_GPIO, ENC_SW_GPIO);
@@ -3434,26 +3349,18 @@ void loop() {
     }
   }
 
-  // ---- Pending base activation: fires when base measurement completes ----
-  if (g_pendingBaseActivation && !SurveyPoints::isMeasuring()) {
-    g_pendingBaseActivation = false;
-    MeasureProgress prog = SurveyPoints::getMeasureProgress();
-    if (prog.status == MS_DONE) {
-      // Use current GNSS position as the averaged base position.
-      // (SurveyPoints already performed robust averaging; the current position
-      //  in RTK-fixed mode is equivalent to the computed mean.)
-      GNSSPosition pos;
-      if (getPosition(pos) && pos.carrSoln >= 1) {
-        double alt = pos.hpAccValid ? pos.altHAE : pos.altMSLHP;
-        Serial.printf("[Base] Activating base from measured point: lat=%.8f lon=%.8f alt=%.3f\n",
-                      pos.lat, pos.lon, alt);
-        applyBaseFixedLLH(pos.lat, pos.lon, alt, 1, 0);
-      } else {
-        Serial.println("[Base] Base activation failed: no valid RTK position after measurement");
-      }
-    } else {
-      Serial.println("[Base] Base activation skipped: measurement did not complete successfully");
-    }
+  // ---- OLED base start/stop async pipeline (see BasePendingAction) ----
+  if (g_basePendingAction == BasePendingAction::START_OUTPUTS && (int32_t)(millis() - g_basePendingAtMs) >= 0) {
+    g_basePendingAction = BasePendingAction::NONE;
+    String outMsg = startAllBaseOutputs();
+    g_baseActionResult = "BASE ON\n" + outMsg;
+    g_baseActionDone = true;
+    Serial.printf("[Base] Outputs started: %s\n", outMsg.c_str());
+  } else if (g_basePendingAction == BasePendingAction::SWITCH_TO_ROVER && (int32_t)(millis() - g_basePendingAtMs) >= 0) {
+    g_basePendingAction = BasePendingAction::NONE;
+    switchToRover();
+    g_baseActionResult = "ROVER OK\nOutputs stopped\nZED reset";
+    g_baseActionDone = true;
   }
 
   // OLED refresh period: 500 ms at ZED ≥ 5 Hz, 1000 ms otherwise

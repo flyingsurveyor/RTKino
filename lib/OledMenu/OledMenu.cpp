@@ -10,9 +10,6 @@ namespace OledMenu {
   void (*onToggleBLE)      (bool) = nullptr;
   void (*onToggleNtripIn)  (bool) = nullptr;
   void (*onToggleTcpIn)    (bool) = nullptr;
-  void (*onToggleNtripOut) (bool) = nullptr;
-  void (*onToggleTcpOutSrv)(bool) = nullptr;
-  void (*onToggleTcpOutCli)(bool) = nullptr;
   void (*onToggleBuzzer)   (bool) = nullptr;
 
   // System actions
@@ -38,9 +35,6 @@ namespace OledMenu {
   bool        (*getBleState)          () = nullptr;
   bool        (*getNtripInState)      () = nullptr;
   bool        (*getTcpInState)        () = nullptr;
-  bool        (*getNtripOutState)     () = nullptr;
-  bool        (*getTcpOutSrvState)    () = nullptr;
-  bool        (*getTcpOutCliState)    () = nullptr;
   bool        (*getBuzzerState)       () = nullptr;
   const char* (*getRateString)        () = nullptr;
   String      (*getInfoString)        () = nullptr;
@@ -54,13 +48,31 @@ namespace OledMenu {
   int         (*getQuickMeasureDuration)() = nullptr;
 
   // Base mode
-  void   (*onStartBaseFromPoint)(int)  = nullptr;
-  void   (*onStartBaseFromList) (int)  = nullptr;
+  void   (*onSelectBaseFromList)(int)  = nullptr;
+  void   (*onStartBaseMode)     ()     = nullptr;
   void   (*onStartSurveyIn)     ()     = nullptr;
   void   (*onStopBase)          ()     = nullptr;
   bool   (*getBaseActive)       ()     = nullptr;
   int    (*getBaseListCount)    ()     = nullptr;
   String (*getBaseListLabel)    (int)  = nullptr;
+  int    (*getSelectedBaseIdx)  ()     = nullptr;
+  String (*getSelectedBaseLabel)()     = nullptr;
+  bool   (*isBaseActionPending) ()     = nullptr;
+  String (*getBaseActionResult)()      = nullptr;
+
+  // Base RTCM output profiles ("Seleziona uscite")
+  void   (*onSelectNtripOutFromList)(int)  = nullptr;
+  void   (*onSelectTcpCliFromList)  (int)  = nullptr;
+  void   (*onToggleAutoNtrip)       (bool) = nullptr;
+  void   (*onToggleAutoTcpCli)      (bool) = nullptr;
+  int    (*getNtripOutListCount)    ()     = nullptr;
+  String (*getNtripOutListLabel)    (int)  = nullptr;
+  int    (*getSelectedNtripOutIdx)  ()     = nullptr;
+  int    (*getTcpCliListCount)      ()     = nullptr;
+  String (*getTcpCliListLabel)      (int)  = nullptr;
+  int    (*getSelectedTcpCliIdx)    ()     = nullptr;
+  bool   (*getAutoNtripState)       ()     = nullptr;
+  bool   (*getAutoTcpCliState)      ()     = nullptr;
 
   // Stakeout
   void   (*onSelectStakeoutFile) (int)  = nullptr;
@@ -70,6 +82,7 @@ namespace OledMenu {
   int    (*getStakeoutPointCount)()     = nullptr;
   String (*getStakeoutPointLabel)(int)  = nullptr;
   String (*getStakeoutNavString) ()     = nullptr;
+  void   (*getStakeoutNavData)(OledStakeoutNavData&) = nullptr;
 
   // Tracking
   void   (*onTrackStartStop)    ()      = nullptr;
@@ -95,42 +108,48 @@ static const int MAX_DISP_CHARS = 21;
 // ---------------------------------------------------------------------------
 // Main menu  (6 items)
 // ---------------------------------------------------------------------------
-// Index 0 = Misura punto (direct shortcut, skips Survey sub-menu)
-// Index 1 = Surveys
-// Index 2 = Stakeout
-// Index 3 = Base
-// Index 4 = Settings
-// Index 5 = Tracking
+// "Misura punto" was removed: it's redundant with Surveys -> Misura punto
+// and with the home-screen double-click quick-measure shortcut.
+// Index 0 = Surveys
+// Index 1 = Stakeout
+// Index 2 = Tracking
+// Index 3 = RTCM IN
+// Index 4 = Base
+// Index 5 = Settings
 // Index 6 = Back
 static const char* MAIN_ITEMS[] = {
-  "Misura punto", "Surveys", "Stakeout", "Base", "Settings", "Tracking", "Back"
+  "Surveys", "Stakeout", "Tracking", "RTCM IN", "Base", "Settings", "Back"
 };
 static const int MAIN_COUNT = 7;
 
 // ---------------------------------------------------------------------------
-// Settings root (4 items)
+// Settings root (3 items) — Display removed: contrast/dim has no visible
+// effect on the actual OLED module in use, so it was dead UI.
 // ---------------------------------------------------------------------------
-static const char* SETTINGS_ROOT[] = { "Rete", "Display", "Sistema", "Back" };
-static const int   SETTINGS_ROOT_COUNT = 4;
+static const char* SETTINGS_ROOT[] = { "Network", "System", "Back" };
+static const int   SETTINGS_ROOT_COUNT = 3;
 
 // ---------------------------------------------------------------------------
-// Network sub-menu (7 items — all toggles except Back)
+// Network sub-menu (2 items — all toggles except Back)
+// NTRIP OUT / TCP OUT Srv / TCP OUT Cli moved to Base -> Seleziona uscite;
+// NTRIP IN / TCP IN moved to their own top-level "RTCM IN" menu (see below),
+// since they're primary GNSS correction inputs, not general network settings.
 // ---------------------------------------------------------------------------
 enum NetItem {
-  NI_BLE = 0, NI_NTRIP_IN, NI_TCP_IN,
-  NI_NTRIP_OUT, NI_TCP_OUT_SRV, NI_TCP_OUT_CLI, NI_BACK,
+  NI_BLE = 0, NI_BACK,
   NI_COUNT
 };
 static const char* NET_LABELS[NI_COUNT] = {
-  "BLE", "NTRIP IN", "TCP IN",
-  "NTRIP OUT", "TCP OUT Srv", "TCP OUT Cli", "Back"
+  "BLE", "Back"
 };
 
 // ---------------------------------------------------------------------------
-// Display sub-menu (2 items)
+// RTCM IN sub-menu (3 items) — top-level main menu entry, between Tracking
+// and Base. Moved out of Settings -> Network for direct access, since these
+// toggles are used far more often than the rest of Settings.
 // ---------------------------------------------------------------------------
-static const char* DISP_LABELS[] = { "Brightness", "Back" };
-static const int   DISP_COUNT    = 2;
+enum RtcmInItem { RI_NTRIP_IN = 0, RI_TCP_IN, RI_BACK, RI_COUNT };
+static const char* RTCMIN_ITEMS[RI_COUNT] = { "NTRIP IN", "TCP IN", "Back" };
 
 // ---------------------------------------------------------------------------
 // System sub-menu (6 items)
@@ -151,43 +170,54 @@ static const uint16_t RATE_MS[]     = { 1000,   500,    200,    100,     67     
 static const int      RATE_COUNT    = 5;
 
 // ---------------------------------------------------------------------------
-// Brightness sub-menu
-// ---------------------------------------------------------------------------
-static const char*   BRIGHT_LABELS[] = { "Normal", "Dim", "Off" };
-static const int     BRIGHT_COUNT    = 3;
-static const uint8_t BRIGHTNESS_NORMAL = 0xCF;
-static const uint8_t BRIGHTNESS_OFF    = 0x00;
-
-// ---------------------------------------------------------------------------
 // Survey sub-menu (4 items)
 // ---------------------------------------------------------------------------
 static const char* SURVEY_ITEMS[] = { "Misura punto", "Rilievi", "Nuovo rilievo", "Back" };
 static const int   SURVEY_COUNT   = 4;
 
 // ---------------------------------------------------------------------------
-// Base mode menu (5 items)
+// Base mode menu (6 items) — mirrors the WebUI's Base page: select a saved
+// station + output profiles first, then Start/Stop act on whatever is
+// currently selected.
 // ---------------------------------------------------------------------------
 static const char* BASE_ITEMS[] = {
-  "Da punto misurato",
-  "Da lista basi",
+  "Seleziona base",
+  "Seleziona uscite",
+  "Start Base Mode",
   "Survey-in auto",
   "Stop base->rover",
   "Back"
 };
-static const int BASE_COUNT = 5;
+static const int BASE_COUNT = 6;
 
 // ---------------------------------------------------------------------------
-// Base measurement duration options
+// Base RTCM outputs sub-menu (5 items) — select which NTRIP OUT / TCP Client
+// OUT profile is active, and whether each auto-starts with Start Base Mode.
+// TCP OUT Srv has no separate profile: it rides along with NTRIP OUT (same
+// record, same auto-start flag), matching startAllBaseOutputs()/WebUI.
 // ---------------------------------------------------------------------------
-static const char* BASE_DUR_LABELS[] = { "30 sec", "60 sec", "2 min", "5 min" };
-static const int   BASE_DUR_VALUES[] = { 30,       60,       120,     300      };
-static const int   BASE_DUR_COUNT    = 4;
+enum BaseOutItem { BOI_NTRIP = 0, BOI_TCPCLI, BOI_AUTO_NTRIP, BOI_AUTO_TCP, BOI_BACK, BOI_COUNT };
+static const char* BASE_OUT_ITEMS[BOI_COUNT] = {
+  "NTRIP OUT", "TCP Client OUT", "Auto NTRIP", "Auto TCP Cli", "Back"
+};
+static const int BASE_OUT_COUNT = BOI_COUNT;
 
 // ---------------------------------------------------------------------------
 // Stakeout sub-menu
 // ---------------------------------------------------------------------------
 static const char* STAKEOUT_ITEMS[] = { "Naviga", "File", "Back" };
 static const int   STAKEOUT_COUNT   = 3;
+
+// ---------------------------------------------------------------------------
+// Stakeout map view — discrete zoom presets (cm per pixel), cycled with the
+// rotary encoder. Fine end (1cm/px) matches stakeout centimeter precision;
+// coarse end (10m/px) covers a ~640m-wide view for a long walk to target.
+// ---------------------------------------------------------------------------
+static const float STAKEOUT_MAP_SCALE_CM[] = { 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000 };
+static const int   STAKEOUT_MAP_SCALE_COUNT = 10;
+static const int   STAKEOUT_MAP_CX = 64;
+static const int   STAKEOUT_MAP_CY = 28;   // map canvas is y=0..55; bottom line y=56..63 is the scale/distance readout
+static const int   STAKEOUT_MAP_MAX_RADIUS_PX = 26;
 
 // ---------------------------------------------------------------------------
 // Tracking sub-menu
@@ -217,9 +247,12 @@ static int    s_selCatIdx    = 0;
 static String s_selCod       = "";
 static String s_selCodLbl    = "";
 
-// Base mode flag: distinguishes base measurement from survey measurement
-static bool   s_isMeasuringBase    = false;
-static int    s_pendingBaseDurSec  = 30;   // duration chosen in OLED_BASE_MEASURE_DUR
+// Which base action is in flight, so OLED_BASE_RESULT knows which cursor
+// position to return to in OLED_MENU_BASE ("Start" vs "Stop").
+static bool   s_baseActionWasStop  = false;
+
+// Current zoom level (index into STAKEOUT_MAP_SCALE_CM) for the Stakeout map view
+static int    s_stakeoutMapZoomIdx = 4;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -250,34 +283,63 @@ static void callBool(void (*fn)(bool), bool val) { if (fn) fn(val); }
 // ---------------------------------------------------------------------------
 static bool netItemState(int idx) {
   switch (idx) {
-    case NI_BLE:         return getBool(OledMenu::getBleState);
-    case NI_NTRIP_IN:    return getBool(OledMenu::getNtripInState);
-    case NI_TCP_IN:      return getBool(OledMenu::getTcpInState);
-    case NI_NTRIP_OUT:   return getBool(OledMenu::getNtripOutState);
-    case NI_TCP_OUT_SRV: return getBool(OledMenu::getTcpOutSrvState);
-    case NI_TCP_OUT_CLI: return getBool(OledMenu::getTcpOutCliState);
-    default:             return false;
+    case NI_BLE: return getBool(OledMenu::getBleState);
+    default:     return false;
   }
 }
 
 static void toggleNetItem(int idx) {
   bool next = !netItemState(idx);
   switch (idx) {
-    case NI_BLE:         callBool(OledMenu::onToggleBLE,       next); break;
-    case NI_NTRIP_IN:    callBool(OledMenu::onToggleNtripIn,   next); break;
-    case NI_TCP_IN:      callBool(OledMenu::onToggleTcpIn,     next); break;
-    case NI_NTRIP_OUT:   callBool(OledMenu::onToggleNtripOut,  next); break;
-    case NI_TCP_OUT_SRV: callBool(OledMenu::onToggleTcpOutSrv, next); break;
-    case NI_TCP_OUT_CLI: callBool(OledMenu::onToggleTcpOutCli, next); break;
+    case NI_BLE: callBool(OledMenu::onToggleBLE, next); break;
     default: break;
   }
+}
+
+// ---------------------------------------------------------------------------
+// RTCM IN item helpers
+// ---------------------------------------------------------------------------
+static bool rtcmInItemState(int idx) {
+  switch (idx) {
+    case RI_NTRIP_IN: return getBool(OledMenu::getNtripInState);
+    case RI_TCP_IN:   return getBool(OledMenu::getTcpInState);
+    default:          return false;
+  }
+}
+
+static void toggleRtcmInItem(int idx) {
+  bool next = !rtcmInItemState(idx);
+  switch (idx) {
+    case RI_NTRIP_IN: callBool(OledMenu::onToggleNtripIn, next); break;
+    case RI_TCP_IN:   callBool(OledMenu::onToggleTcpIn,   next); break;
+    default: break;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Stakeout map: pick the tightest zoom preset that still keeps the target
+// within the visible radius, so the map is useful the moment it's opened
+// instead of showing an off-screen target at a stale zoom level.
+// ---------------------------------------------------------------------------
+static void pickInitialStakeoutMapZoom() {
+  if (!OledMenu::getStakeoutNavData) return;
+  OledMenu::OledStakeoutNavData nav;
+  OledMenu::getStakeoutNavData(nav);
+  if (!nav.valid) return;
+  double distCm = nav.distance * 100.0;
+  for (int i = 0; i < STAKEOUT_MAP_SCALE_COUNT; i++) {
+    if (distCm / STAKEOUT_MAP_SCALE_CM[i] <= STAKEOUT_MAP_MAX_RADIUS_PX) {
+      s_stakeoutMapZoomIdx = i;
+      return;
+    }
+  }
+  s_stakeoutMapZoomIdx = STAKEOUT_MAP_SCALE_COUNT - 1;  // target beyond even the widest preset
 }
 
 // ---------------------------------------------------------------------------
 // Launch a measurement for survey (normal path)
 // ---------------------------------------------------------------------------
 static void launchSurveyMeasure(bool force) {
-  s_isMeasuringBase = false;
   if (OledMenu::onMeasureWithCode) {
     OledMenu::onMeasureWithCode(s_selCod, s_selCodLbl, force);
   } else if (force) {
@@ -298,7 +360,6 @@ void init() {
   s_cursor         = 0;
   s_scrollTop      = 0;
   s_listCount      = 0;
-  s_isMeasuringBase = false;
 }
 
 bool isActive() {
@@ -317,7 +378,6 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
     if (s_state == OLED_NORMAL || s_state == OLED_PAGE2 || s_state == OLED_PAGE3) {
       s_selCod      = "";
       s_selCodLbl   = "";
-      s_isMeasuringBase = false;
       bool ok = (!OledMenu::getQualityOK || OledMenu::getQualityOK());
       if (!ok) {
         s_state = OLED_SURVEY_QUALITY_WARN;
@@ -341,20 +401,20 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
       case OLED_MENU_MAIN:
         s_state = OLED_NORMAL;
         break;
+      // RTCM IN
+      case OLED_MENU_RTCMIN:
+        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 3);
+        break;
       // Settings
       case OLED_MENU_SETTINGS:
-        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 4);
+        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 5);
         break;
       case OLED_MENU_SETTINGS_NET:
-      case OLED_MENU_SETTINGS_DISP:
       case OLED_MENU_SETTINGS_SYS:
         enterMenu(OLED_MENU_SETTINGS, SETTINGS_ROOT_COUNT);
         break;
       case OLED_SUBMENU_RATE:
         enterMenu(OLED_MENU_SETTINGS_SYS, SYI_COUNT, SYI_RATE);
-        break;
-      case OLED_SUBMENU_BRIGHT:
-        enterMenu(OLED_MENU_SETTINGS_DISP, DISP_COUNT);
         break;
       case OLED_INFO_SCREEN:
         enterMenu(OLED_MENU_SETTINGS_SYS, SYI_COUNT, SYI_INFO);
@@ -364,7 +424,7 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
         break;
       // Surveys
       case OLED_SURVEY_MENU:
-        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 1);
+        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 0);
         break;
       case OLED_SURVEY_LIST:
         enterMenu(OLED_SURVEY_MENU, SURVEY_COUNT, 1);
@@ -384,29 +444,38 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
         break;
       // Base mode
       case OLED_MENU_BASE:
-        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 3);
-        break;
-      case OLED_BASE_MEASURE_DUR:
-        enterMenu(OLED_MENU_BASE, BASE_COUNT);
-        break;
-      case OLED_BASE_MEASURING:
-        enterMenu(OLED_MENU_BASE, BASE_COUNT);
+        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 4);
         break;
       case OLED_BASE_LIST:
+        enterMenu(OLED_MENU_BASE, BASE_COUNT, 0);
+        break;
+      case OLED_BASE_OUTPUTS_MENU:
         enterMenu(OLED_MENU_BASE, BASE_COUNT, 1);
         break;
+      case OLED_BASE_NTRIPOUT_LIST:
+        enterMenu(OLED_BASE_OUTPUTS_MENU, BASE_OUT_COUNT, BOI_NTRIP);
+        break;
+      case OLED_BASE_TCPCLI_LIST:
+        enterMenu(OLED_BASE_OUTPUTS_MENU, BASE_OUT_COUNT, BOI_TCPCLI);
+        break;
+      case OLED_BASE_CONFIRM_START:
+        enterMenu(OLED_MENU_BASE, BASE_COUNT, 2);
+        break;
+      case OLED_BASE_WAIT:
+        enterMenu(OLED_MENU_BASE, BASE_COUNT, s_baseActionWasStop ? 4 : 2);
+        break;
       case OLED_BASE_RESULT:
-        enterMenu(OLED_MENU_BASE, BASE_COUNT);
+        enterMenu(OLED_MENU_BASE, BASE_COUNT, s_baseActionWasStop ? 4 : 2);
         break;
       case OLED_BASE_CONFIRM_STOP:
-        enterMenu(OLED_MENU_BASE, BASE_COUNT, 3);
+        enterMenu(OLED_MENU_BASE, BASE_COUNT, 4);
         break;
       case OLED_BASE_CONFIRM_SVIN:
-        enterMenu(OLED_MENU_BASE, BASE_COUNT, 2);
+        enterMenu(OLED_MENU_BASE, BASE_COUNT, 3);
         break;
       // Stakeout
       case OLED_STAKEOUT_MENU:
-        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 2);
+        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 1);
         break;
       case OLED_STAKEOUT_FILE_LIST:
         enterMenu(OLED_STAKEOUT_MENU, STAKEOUT_COUNT);
@@ -416,11 +485,12 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
                   OledMenu::getStakeoutFileCount ? OledMenu::getStakeoutFileCount() : 1);
         break;
       case OLED_STAKEOUT_NAV:
+      case OLED_STAKEOUT_MAP:
         enterMenu(OLED_STAKEOUT_MENU, STAKEOUT_COUNT);
         break;
       // Tracking
       case OLED_TRACK_MENU:
-        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 5);
+        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 2);
         break;
       case OLED_TRACK_SETTINGS:
         enterMenu(OLED_TRACK_MENU, TRACK_MENU_COUNT, 1);
@@ -452,21 +522,29 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
       }
       return;
     }
+    // ---- Stakeout map: rotation zooms in/out instead of scrolling a list ----
+    if (s_state == OLED_STAKEOUT_MAP) {
+      s_stakeoutMapZoomIdx += (direction > 0) ? 1 : -1;
+      if (s_stakeoutMapZoomIdx < 0) s_stakeoutMapZoomIdx = 0;
+      if (s_stakeoutMapZoomIdx >= STAKEOUT_MAP_SCALE_COUNT) s_stakeoutMapZoomIdx = STAKEOUT_MAP_SCALE_COUNT - 1;
+      return;
+    }
     switch (s_state) {
       case OLED_MENU_MAIN:
+      case OLED_MENU_RTCMIN:
       case OLED_MENU_SETTINGS:
       case OLED_MENU_SETTINGS_NET:
-      case OLED_MENU_SETTINGS_DISP:
       case OLED_MENU_SETTINGS_SYS:
       case OLED_SUBMENU_RATE:
-      case OLED_SUBMENU_BRIGHT:
       case OLED_SURVEY_MENU:
       case OLED_SURVEY_LIST:
       case OLED_SURVEY_CODE_CAT:
       case OLED_SURVEY_CODE_CODE:
       case OLED_MENU_BASE:
-      case OLED_BASE_MEASURE_DUR:
       case OLED_BASE_LIST:
+      case OLED_BASE_OUTPUTS_MENU:
+      case OLED_BASE_NTRIPOUT_LIST:
+      case OLED_BASE_TCPCLI_LIST:
       case OLED_STAKEOUT_MENU:
       case OLED_STAKEOUT_FILE_LIST:
       case OLED_STAKEOUT_POINT_LIST:
@@ -490,33 +568,24 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
     // ---- Main menu ----
     case OLED_MENU_MAIN:
       switch (s_cursor) {
-        case 0: { // Misura punto — direct shortcut: go to code category selection
-          int catCount = OledMenu::getCodeCatCount ? OledMenu::getCodeCatCount() : 0;
-          s_selCod = ""; s_selCodLbl = "";
-          s_isMeasuringBase = false;
-          if (catCount > 0) {
-            enterMenu(OLED_SURVEY_CODE_CAT, catCount, s_selCatIdx);
-          } else {
-            bool ok = (!OledMenu::getQualityOK || OledMenu::getQualityOK());
-            if (!ok) s_state = OLED_SURVEY_QUALITY_WARN;
-            else launchSurveyMeasure(false);
-          }
-          break;
-        }
-        case 1: // Surveys
+        case 0: // Surveys
           enterMenu(OLED_SURVEY_MENU, SURVEY_COUNT);
           break;
-        case 2: // Stakeout
+        case 1: // Stakeout
           enterMenu(OLED_STAKEOUT_MENU, STAKEOUT_COUNT);
           break;
-        case 3: // Base
+        case 2: // Tracking
+          enterMenu(OLED_TRACK_MENU, TRACK_MENU_COUNT);
+          break;
+        case 3: { // RTCM IN
+          enterMenu(OLED_MENU_RTCMIN, RI_COUNT);
+          break;
+        }
+        case 4: // Base
           enterMenu(OLED_MENU_BASE, BASE_COUNT);
           break;
-        case 4: // Settings
+        case 5: // Settings
           enterMenu(OLED_MENU_SETTINGS, SETTINGS_ROOT_COUNT);
-          break;
-        case 5: // Tracking
-          enterMenu(OLED_TRACK_MENU, TRACK_MENU_COUNT);
           break;
         case 6: // Back
           s_state = OLED_NORMAL;
@@ -524,13 +593,21 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
       }
       break;
 
+    // ---- RTCM IN sub-menu ----
+    case OLED_MENU_RTCMIN:
+      if (s_cursor == RI_BACK) {
+        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 3);
+      } else {
+        toggleRtcmInItem(s_cursor);
+      }
+      break;
+
     // ---- Settings root ----
     case OLED_MENU_SETTINGS:
       switch (s_cursor) {
-        case 0: enterMenu(OLED_MENU_SETTINGS_NET,  NI_COUNT);   break;
-        case 1: enterMenu(OLED_MENU_SETTINGS_DISP, DISP_COUNT); break;
-        case 2: enterMenu(OLED_MENU_SETTINGS_SYS,  SYI_COUNT);  break;
-        case 3: enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 4);       break;
+        case 0: enterMenu(OLED_MENU_SETTINGS_NET, NI_COUNT);  break;
+        case 1: enterMenu(OLED_MENU_SETTINGS_SYS, SYI_COUNT); break;
+        case 2: enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 5);     break;
       }
       break;
 
@@ -540,14 +617,6 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
         enterMenu(OLED_MENU_SETTINGS, SETTINGS_ROOT_COUNT, 0);
       } else {
         toggleNetItem(s_cursor);
-      }
-      break;
-
-    // ---- Display sub-menu ----
-    case OLED_MENU_SETTINGS_DISP:
-      switch (s_cursor) {
-        case 0: enterMenu(OLED_SUBMENU_BRIGHT, BRIGHT_COUNT); break;
-        case 1: enterMenu(OLED_MENU_SETTINGS, SETTINGS_ROOT_COUNT, 1); break;
       }
       break;
 
@@ -573,7 +642,7 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
           s_state = OLED_INFO_SCREEN;
           break;
         case SYI_BACK:
-          enterMenu(OLED_MENU_SETTINGS, SETTINGS_ROOT_COUNT, 2);
+          enterMenu(OLED_MENU_SETTINGS, SETTINGS_ROOT_COUNT, 1);
           break;
       }
       break;
@@ -582,11 +651,6 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
     case OLED_SUBMENU_RATE:
       if (OledMenu::onSetRate) OledMenu::onSetRate(RATE_MS[s_cursor]);
       enterMenu(OLED_MENU_SETTINGS_SYS, SYI_COUNT, SYI_RATE);
-      break;
-
-    // ---- Brightness sub-menu ----
-    case OLED_SUBMENU_BRIGHT:
-      enterMenu(OLED_MENU_SETTINGS_DISP, DISP_COUNT);
       break;
 
     // ---- Info screen ----
@@ -605,7 +669,6 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
         case 0: { // Misura punto
           int catCount = OledMenu::getCodeCatCount ? OledMenu::getCodeCatCount() : 0;
           s_selCod = ""; s_selCodLbl = "";
-          s_isMeasuringBase = false;
           if (catCount > 0) {
             enterMenu(OLED_SURVEY_CODE_CAT, catCount, s_selCatIdx);
           } else {
@@ -624,7 +687,7 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
           if (OledMenu::onCreateSurvey) OledMenu::onCreateSurvey();
           break;
         case 3: // Back
-          enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 1);
+          enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 0);
           break;
       }
       break;
@@ -649,7 +712,6 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
         s_selCod    = OledMenu::getCodeCod(s_selCatIdx, s_cursor);
         s_selCodLbl = OledMenu::getCodeLabel(s_selCatIdx, s_cursor);
       }
-      s_isMeasuringBase = false;
       bool ok = (!OledMenu::getQualityOK || OledMenu::getQualityOK());
       if (!ok) s_state = OLED_SURVEY_QUALITY_WARN;
       else launchSurveyMeasure(false);
@@ -670,81 +732,107 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
 
     // ---- Quality warning ----
     case OLED_SURVEY_QUALITY_WARN:
-      if (s_isMeasuringBase) {
-        // Force-start base measurement anyway
-        s_isMeasuringBase = true;
-        if (OledMenu::onStartBaseFromPoint) OledMenu::onStartBaseFromPoint(s_pendingBaseDurSec);
-        s_state = OLED_BASE_MEASURING;
-      } else {
-        launchSurveyMeasure(true);
-      }
+      launchSurveyMeasure(true);
       break;
 
     // ---- Base mode root ----
     case OLED_MENU_BASE:
       switch (s_cursor) {
-        case 0: // Da punto misurato → duration selection
-          enterMenu(OLED_BASE_MEASURE_DUR, BASE_DUR_COUNT);
-          break;
-        case 1: { // Da lista basi
+        case 0: { // Seleziona base — pick which saved profile is active (no activation yet)
           int cnt = OledMenu::getBaseListCount ? OledMenu::getBaseListCount() : 0;
           enterMenu(OLED_BASE_LIST, max(cnt, 1));
           break;
         }
-        case 2: // Survey-in auto → ask confirmation first
+        case 1: // Seleziona uscite — NTRIP OUT / TCP Client OUT profiles + auto-start
+          enterMenu(OLED_BASE_OUTPUTS_MENU, BASE_OUT_COUNT);
+          break;
+        case 2: // Start Base Mode → ask confirmation (shows selected station)
+          s_state = OLED_BASE_CONFIRM_START;
+          break;
+        case 3: // Survey-in auto → ask confirmation first
           s_state = OLED_BASE_CONFIRM_SVIN;
           break;
-        case 3: // Stop base → rover → ask confirmation first
+        case 4: // Stop base → rover → ask confirmation first
           s_state = OLED_BASE_CONFIRM_STOP;
           break;
-        case 4: // Back
-          enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 3);
+        case 5: // Back
+          enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 4);
           break;
       }
       break;
 
-    // ---- Base duration selection ----
-    case OLED_BASE_MEASURE_DUR: {
-      s_pendingBaseDurSec = BASE_DUR_VALUES[s_cursor];
-      s_isMeasuringBase   = true;
-      // Quality gate check before starting
-      bool ok = (!OledMenu::getQualityOK || OledMenu::getQualityOK());
-      if (!ok) {
-        s_state = OLED_SURVEY_QUALITY_WARN;
-      } else {
-        if (OledMenu::onStartBaseFromPoint) OledMenu::onStartBaseFromPoint(s_pendingBaseDurSec);
-        s_state = OLED_BASE_MEASURING;
+    // ---- Base outputs sub-menu (NTRIP OUT / TCP Client OUT selection) ----
+    case OLED_BASE_OUTPUTS_MENU:
+      switch (s_cursor) {
+        case BOI_NTRIP: {
+          int cnt = OledMenu::getNtripOutListCount ? OledMenu::getNtripOutListCount() : 0;
+          enterMenu(OLED_BASE_NTRIPOUT_LIST, max(cnt, 1));
+          break;
+        }
+        case BOI_TCPCLI: {
+          int cnt = OledMenu::getTcpCliListCount ? OledMenu::getTcpCliListCount() : 0;
+          enterMenu(OLED_BASE_TCPCLI_LIST, max(cnt, 1));
+          break;
+        }
+        case BOI_AUTO_NTRIP:
+          callBool(OledMenu::onToggleAutoNtrip, !getBool(OledMenu::getAutoNtripState));
+          break;
+        case BOI_AUTO_TCP:
+          callBool(OledMenu::onToggleAutoTcpCli, !getBool(OledMenu::getAutoTcpCliState));
+          break;
+        case BOI_BACK:
+          enterMenu(OLED_MENU_BASE, BASE_COUNT, 1);
+          break;
       }
       break;
-    }
 
-    // ---- Base measuring screen ----
-    case OLED_BASE_MEASURING: {
-      bool m = OledMenu::isMeasuring ? OledMenu::isMeasuring() : false;
-      if (!m) s_state = OLED_BASE_RESULT;
+    // ---- NTRIP OUT profile list (select only) ----
+    case OLED_BASE_NTRIPOUT_LIST:
+      if (OledMenu::onSelectNtripOutFromList) OledMenu::onSelectNtripOutFromList(s_cursor);
+      enterMenu(OLED_BASE_OUTPUTS_MENU, BASE_OUT_COUNT, BOI_NTRIP);
+      break;
+
+    // ---- TCP Client OUT profile list (select only) ----
+    case OLED_BASE_TCPCLI_LIST:
+      if (OledMenu::onSelectTcpCliFromList) OledMenu::onSelectTcpCliFromList(s_cursor);
+      enterMenu(OLED_BASE_OUTPUTS_MENU, BASE_OUT_COUNT, BOI_TCPCLI);
+      break;
+
+    // ---- Confirm: Start Base Mode ----
+    case OLED_BASE_CONFIRM_START:
+      s_baseActionWasStop = false;
+      if (OledMenu::onStartBaseMode) OledMenu::onStartBaseMode();
+      s_state = OLED_BASE_WAIT;
+      break;
+
+    // ---- Wait screen: polls isBaseActionPending() from draw() ----
+    case OLED_BASE_WAIT: {
+      bool pending = OledMenu::isBaseActionPending ? OledMenu::isBaseActionPending() : false;
+      if (!pending) s_state = OLED_BASE_RESULT;
       break;
     }
 
     // ---- Base result screen ----
     case OLED_BASE_RESULT:
-      enterMenu(OLED_MENU_BASE, BASE_COUNT);
+      enterMenu(OLED_MENU_BASE, BASE_COUNT, s_baseActionWasStop ? 4 : 2);
       break;
 
     // ---- Confirm: Stop base → rover ----
     case OLED_BASE_CONFIRM_STOP:
+      s_baseActionWasStop = true;
       if (OledMenu::onStopBase) OledMenu::onStopBase();
-      enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 3);
+      s_state = OLED_BASE_WAIT;
       break;
 
     // ---- Confirm: Survey-in auto ----
     case OLED_BASE_CONFIRM_SVIN:
       if (OledMenu::onStartSurveyIn) OledMenu::onStartSurveyIn();
-      enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 3);
+      enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 4);
       break;
 
-    // ---- Base list ----
+    // ---- Base list (select only) ----
     case OLED_BASE_LIST:
-      if (OledMenu::onStartBaseFromList) OledMenu::onStartBaseFromList(s_cursor);
+      if (OledMenu::onSelectBaseFromList) OledMenu::onSelectBaseFromList(s_cursor);
       enterMenu(OLED_MENU_BASE, BASE_COUNT);
       break;
 
@@ -757,7 +845,7 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
           enterMenu(OLED_STAKEOUT_FILE_LIST, max(cnt, 1));
           break;
         }
-        case 2: enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 2); break;
+        case 2: enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 1); break;
       }
       break;
 
@@ -776,9 +864,15 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
       s_state = OLED_STAKEOUT_NAV;
       break;
 
-    // ---- Stakeout nav screen ----
+    // ---- Stakeout nav screen (click toggles into the map view) ----
     case OLED_STAKEOUT_NAV:
-      enterMenu(OLED_STAKEOUT_MENU, STAKEOUT_COUNT);
+      pickInitialStakeoutMapZoom();
+      s_state = OLED_STAKEOUT_MAP;
+      break;
+
+    // ---- Stakeout map view (click toggles back to the text nav screen) ----
+    case OLED_STAKEOUT_MAP:
+      s_state = OLED_STAKEOUT_NAV;
       break;
 
     // ---- Tracking sub-menu ----
@@ -786,7 +880,7 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
       switch (s_cursor) {
         case 0: if (OledMenu::onTrackStartStop) OledMenu::onTrackStartStop(); break;
         case 1: enterMenu(OLED_TRACK_SETTINGS, TRACK_SETTINGS_COUNT); break;
-        case 2: enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 5); break;
+        case 2: enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 2); break;
       }
       break;
 
@@ -859,6 +953,29 @@ void draw(Adafruit_SSD1306& disp) {
     disp.print(hint);
   };
 
+  // Shared "pick one from a saved-profile list" screen — used for base
+  // station, NTRIP OUT and TCP Client OUT selection (all three are select-
+  // only lists: the currently selected entry is marked '*', editing the
+  // profiles themselves stays on the WebUI).
+  auto drawSelectableList = [&](const char* title, int cnt, String (*getLabel)(int), int selIdx) {
+    disp.setCursor(0, TITLE_Y);
+    disp.print(title);
+    dashedLine(SEP_Y);
+    if (cnt == 0) {
+      disp.setCursor(0, ITEMS_Y_START);
+      disp.print("Nessun profilo");
+    } else {
+      for (int i = s_scrollTop; i < cnt && (i - s_scrollTop) < MAX_VISIBLE; i++) {
+        int y = ITEMS_Y_START + (i - s_scrollTop) * ROW_H;
+        String lbl = getLabel ? getLabel(i) : String(i);
+        lbl = String((i == selIdx) ? "*" : " ") + lbl;
+        if (lbl.length() > MAX_DISP_CHARS) lbl = lbl.substring(0, MAX_DISP_CHARS);
+        drawItem(y, lbl.c_str(), nullptr, i == s_cursor);
+      }
+    }
+    drawHint("^ scroll *sel <back");
+  };
+
   // =========================================================================
   switch (s_state) {
 
@@ -891,7 +1008,7 @@ void draw(Adafruit_SSD1306& disp) {
     // ---- Network sub-menu ----
     case OLED_MENU_SETTINGS_NET: {
       disp.setCursor(0, TITLE_Y);
-      disp.print("RETE");
+      disp.print("NETWORK");
       dashedLine(SEP_Y);
       for (int i = s_scrollTop; i < NI_COUNT && (i - s_scrollTop) < MAX_VISIBLE; i++) {
         int y = ITEMS_Y_START + (i - s_scrollTop) * ROW_H;
@@ -903,16 +1020,18 @@ void draw(Adafruit_SSD1306& disp) {
       break;
     }
 
-    // ---- Display sub-menu ----
-    case OLED_MENU_SETTINGS_DISP: {
+    // ---- RTCM IN sub-menu ----
+    case OLED_MENU_RTCMIN: {
       disp.setCursor(0, TITLE_Y);
-      disp.print("DISPLAY");
+      disp.print("RTCM IN");
       dashedLine(SEP_Y);
-      for (int i = 0; i < DISP_COUNT; i++) {
-        int y = ITEMS_Y_START + i * ROW_H;
-        drawItem(y, DISP_LABELS[i], nullptr, i == s_cursor);
+      for (int i = s_scrollTop; i < RI_COUNT && (i - s_scrollTop) < MAX_VISIBLE; i++) {
+        int y = ITEMS_Y_START + (i - s_scrollTop) * ROW_H;
+        char right[8] = "";
+        if (i != RI_BACK) strncpy(right, rtcmInItemState(i) ? "ON" : "OFF", sizeof(right)-1);
+        drawItem(y, RTCMIN_ITEMS[i], right, i == s_cursor);
       }
-      drawHint("^ scroll *ok <back");
+      drawHint("^ scroll *toggle <back");
       break;
     }
 
@@ -944,31 +1063,6 @@ void draw(Adafruit_SSD1306& disp) {
         drawItem(y, RATE_LABELS[i], nullptr, i == s_cursor);
       }
       drawHint("^ scroll *set <back");
-      break;
-    }
-
-    // ---- Brightness sub-menu ----
-    case OLED_SUBMENU_BRIGHT: {
-      disp.setCursor(0, TITLE_Y);
-      disp.print("LUMINOSITA'");
-      dashedLine(SEP_Y);
-      for (int i = 0; i < BRIGHT_COUNT; i++) {
-        int y = ITEMS_Y_START + i * ROW_H;
-        drawItem(y, BRIGHT_LABELS[i], nullptr, i == s_cursor);
-      }
-      drawHint("^ scroll *set <back");
-      // Apply brightness live as user scrolls
-      if (s_cursor == 0) {
-        disp.ssd1306_command(SSD1306_SETCONTRAST);
-        disp.ssd1306_command(BRIGHTNESS_NORMAL);
-        disp.dim(false);
-      } else if (s_cursor == 1) {
-        disp.dim(true);
-      } else {
-        disp.dim(true);
-        disp.ssd1306_command(SSD1306_SETCONTRAST);
-        disp.ssd1306_command(BRIGHTNESS_OFF);
-      }
       break;
     }
 
@@ -1162,35 +1256,27 @@ void draw(Adafruit_SSD1306& disp) {
       break;
     }
 
-    // ---- Base duration selection ----
-    case OLED_BASE_MEASURE_DUR: {
-      disp.setCursor(0, TITLE_Y);
-      disp.print("DURATA MISURA");
-      dashedLine(SEP_Y);
-      for (int i = 0; i < BASE_DUR_COUNT; i++) {
-        int y = ITEMS_Y_START + i * ROW_H;
-        drawItem(y, BASE_DUR_LABELS[i], nullptr, i == s_cursor);
-      }
-      drawHint("^ scroll *ok <back");
+    // ---- Confirm: Start Base Mode ----
+    case OLED_BASE_CONFIRM_START: {
+      disp.setCursor(0, 10);
+      disp.print("Start Base Mode?");
+      disp.setCursor(0, 22);
+      String sel = OledMenu::getSelectedBaseLabel ? OledMenu::getSelectedBaseLabel() : "";
+      disp.print(sel.length() ? sel : "Nessuna base sel.!");
+      disp.setCursor(0, 38);
+      disp.print("*=Conferma  <=Annulla");
       break;
     }
 
-    // ---- Base measuring screen ----
-    case OLED_BASE_MEASURING: {
+    // ---- Wait screen: Start/Stop in progress (async, see BasePendingAction) ----
+    case OLED_BASE_WAIT: {
       disp.setCursor(0, TITLE_Y);
-      disp.print("MISURA BASE");
+      disp.print(s_baseActionWasStop ? "RITORNO ROVER" : "AVVIO BASE");
       dashedLine(SEP_Y);
-      bool m = OledMenu::isMeasuring ? OledMenu::isMeasuring() : false;
-      if (m) {
-        String prog = OledMenu::getMeasureProgressStr ? OledMenu::getMeasureProgressStr() : "...";
-        int lineIdx = 0, start = 0;
-        while (start < (int)prog.length() && lineIdx < MAX_VISIBLE) {
-          int end = prog.indexOf('\n', start);
-          if (end < 0) end = prog.length();
-          disp.setCursor(0, ITEMS_Y_START + lineIdx * ROW_H);
-          disp.print(prog.substring(start, end));
-          start = end + 1; lineIdx++;
-        }
+      bool pending = OledMenu::isBaseActionPending ? OledMenu::isBaseActionPending() : false;
+      if (pending) {
+        disp.setCursor(0, ITEMS_Y_START);
+        disp.print("Attendere...");
       } else {
         s_state = OLED_BASE_RESULT;
       }
@@ -1201,9 +1287,9 @@ void draw(Adafruit_SSD1306& disp) {
     // ---- Base result ----
     case OLED_BASE_RESULT: {
       disp.setCursor(0, TITLE_Y);
-      disp.print("BASE IMPOSTATA");
+      disp.print(s_baseActionWasStop ? "ROVER" : "BASE");
       dashedLine(SEP_Y);
-      String res = OledMenu::getMeasureResult ? OledMenu::getMeasureResult() : "---";
+      String res = OledMenu::getBaseActionResult ? OledMenu::getBaseActionResult() : "---";
       int lineIdx = 0, start = 0;
       while (start < (int)res.length() && lineIdx < MAX_VISIBLE) {
         int end = res.indexOf('\n', start);
@@ -1221,7 +1307,7 @@ void draw(Adafruit_SSD1306& disp) {
       disp.setCursor(0, 10);
       disp.print("Stop base?");
       disp.setCursor(0, 22);
-      disp.print("ZED torna in rover.");
+      disp.print("ZED reset + stop out.");
       disp.setCursor(0, 38);
       disp.print("*=Conferma  <=Annulla");
       break;
@@ -1238,26 +1324,55 @@ void draw(Adafruit_SSD1306& disp) {
       break;
     }
 
-    // ---- Base list ----
-    case OLED_BASE_LIST: {
+    // ---- Base list (select only) ----
+    case OLED_BASE_LIST:
+      drawSelectableList("SELEZIONA BASE",
+                          OledMenu::getBaseListCount ? OledMenu::getBaseListCount() : 0,
+                          OledMenu::getBaseListLabel,
+                          OledMenu::getSelectedBaseIdx ? OledMenu::getSelectedBaseIdx() : -1);
+      break;
+
+    // ---- Base outputs sub-menu ----
+    case OLED_BASE_OUTPUTS_MENU: {
       disp.setCursor(0, TITLE_Y);
-      disp.print("BASI SALVATE");
+      disp.print("USCITE RTCM");
       dashedLine(SEP_Y);
-      int cnt = OledMenu::getBaseListCount ? OledMenu::getBaseListCount() : 0;
-      if (cnt == 0) {
-        disp.setCursor(0, ITEMS_Y_START);
-        disp.print("Nessuna base");
-      } else {
-        for (int i = s_scrollTop; i < cnt && (i - s_scrollTop) < MAX_VISIBLE; i++) {
-          int y = ITEMS_Y_START + (i - s_scrollTop) * ROW_H;
-          String lbl = OledMenu::getBaseListLabel ? OledMenu::getBaseListLabel(i) : String(i);
-          if (lbl.length() > MAX_DISP_CHARS) lbl = lbl.substring(0, MAX_DISP_CHARS);
-          drawItem(y, lbl.c_str(), nullptr, i == s_cursor);
+      for (int i = 0; i < BASE_OUT_COUNT; i++) {
+        int y = ITEMS_Y_START + i * ROW_H;
+        String right = "";
+        if (i == BOI_NTRIP) {
+          int idx = OledMenu::getSelectedNtripOutIdx ? OledMenu::getSelectedNtripOutIdx() : -1;
+          right = (idx >= 0 && OledMenu::getNtripOutListLabel) ? OledMenu::getNtripOutListLabel(idx) : String("---");
+        } else if (i == BOI_TCPCLI) {
+          int idx = OledMenu::getSelectedTcpCliIdx ? OledMenu::getSelectedTcpCliIdx() : -1;
+          right = (idx >= 0 && OledMenu::getTcpCliListLabel) ? OledMenu::getTcpCliListLabel(idx) : String("---");
+        } else if (i == BOI_AUTO_NTRIP) {
+          right = getBool(OledMenu::getAutoNtripState) ? "ON" : "OFF";
+        } else if (i == BOI_AUTO_TCP) {
+          right = getBool(OledMenu::getAutoTcpCliState) ? "ON" : "OFF";
         }
+        if (right.length() > 9) right = right.substring(0, 9);
+        drawItem(y, BASE_OUT_ITEMS[i], right.length() ? right.c_str() : nullptr, i == s_cursor);
       }
-      drawHint("^ scroll *attiva <back");
+      drawHint("^ scroll *ok <back");
       break;
     }
+
+    // ---- NTRIP OUT profile list (select only) ----
+    case OLED_BASE_NTRIPOUT_LIST:
+      drawSelectableList("NTRIP OUT",
+                          OledMenu::getNtripOutListCount ? OledMenu::getNtripOutListCount() : 0,
+                          OledMenu::getNtripOutListLabel,
+                          OledMenu::getSelectedNtripOutIdx ? OledMenu::getSelectedNtripOutIdx() : -1);
+      break;
+
+    // ---- TCP Client OUT profile list (select only) ----
+    case OLED_BASE_TCPCLI_LIST:
+      drawSelectableList("TCP CLIENT OUT",
+                          OledMenu::getTcpCliListCount ? OledMenu::getTcpCliListCount() : 0,
+                          OledMenu::getTcpCliListLabel,
+                          OledMenu::getSelectedTcpCliIdx ? OledMenu::getSelectedTcpCliIdx() : -1);
+      break;
 
     // ---- Stakeout sub-menu ----
     case OLED_STAKEOUT_MENU: {
@@ -1333,7 +1448,54 @@ void draw(Adafruit_SSD1306& disp) {
         disp.setCursor(0, ITEMS_Y_START);
         disp.print("Nessun target");
       }
-      drawHint("*=menu");
+      drawHint("*=map <back");
+      break;
+    }
+
+    // ---- Stakeout MAP screen: north-up, rover always centered ----------
+    case OLED_STAKEOUT_MAP: {
+      OledMenu::OledStakeoutNavData nav;
+      if (OledMenu::getStakeoutNavData) OledMenu::getStakeoutNavData(nav);
+
+      // "You are here" marker: fixed cross at screen center
+      disp.drawFastHLine(STAKEOUT_MAP_CX - 3, STAKEOUT_MAP_CY, 7, SSD1306_WHITE);
+      disp.drawFastVLine(STAKEOUT_MAP_CX, STAKEOUT_MAP_CY - 3, 7, SSD1306_WHITE);
+
+      float scaleCm = STAKEOUT_MAP_SCALE_CM[s_stakeoutMapZoomIdx];
+
+      if (nav.valid) {
+        double distCm  = nav.distance * 100.0;
+        double pxOff   = distCm / scaleCm;
+        double azRad   = nav.azimuth * DEG_TO_RAD;
+        int tx = STAKEOUT_MAP_CX + (int)round(pxOff * sin(azRad));
+        int ty = STAKEOUT_MAP_CY - (int)round(pxOff * cos(azRad)); // North = up
+        // Clamp to the map canvas (y 0..55) so the target stays visible
+        // (with a direction cue) even if it doesn't fit at the current zoom.
+        const int margin = 3;
+        if (tx < margin) tx = margin;
+        if (tx > SCREEN_W - 1 - margin) tx = SCREEN_W - 1 - margin;
+        if (ty < margin) ty = margin;
+        if (ty > 55 - margin) ty = 55 - margin;
+        disp.drawCircle(tx, ty, 2, SSD1306_WHITE);
+      }
+
+      // Bottom info bar: current scale (left) + live distance (right)
+      char scaleBuf[12];
+      if (scaleCm < 100) snprintf(scaleBuf, sizeof(scaleBuf), "%.0fcm/px", scaleCm);
+      else               snprintf(scaleBuf, sizeof(scaleBuf), "%.0fm/px", scaleCm / 100.0f);
+      disp.setCursor(0, HINT_Y);
+      disp.print(scaleBuf);
+      if (nav.valid) {
+        char distBuf[16];
+        snprintf(distBuf, sizeof(distBuf), "%.2fm", nav.distance);
+        int16_t x1, y1; uint16_t w, h;
+        disp.getTextBounds(distBuf, 0, 0, &x1, &y1, &w, &h);
+        disp.setCursor(SCREEN_W - w, HINT_Y);
+        disp.print(distBuf);
+      } else {
+        disp.setCursor(SCREEN_W - 42, HINT_Y);
+        disp.print("no target");
+      }
       break;
     }
 

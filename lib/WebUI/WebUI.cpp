@@ -1044,11 +1044,153 @@ static String getSelectedNtripInName() {
     std::vector<NtripIn> list;
     int lastIdx = -1;
     loadNtripInList(list, lastIdx);
-    
+
     if (lastIdx >= 0 && lastIdx < (int)list.size()) {
         return list[lastIdx].name;
     }
     return "";
+}
+
+// ========================================================================
+// SHARED BASE-MODE HELPERS — used by the HTTP handlers below AND by the
+// OLED base menu in main.cpp. Keeping a single implementation means the
+// OLED's "Start Base Mode" resolves antenna offset + rtcmType exactly like
+// the WebUI does, instead of re-parsing bases.txt on its own (the old OLED
+// code did that and silently dropped the antenna offset + hardcoded
+// rtcmType=0).
+// ========================================================================
+
+int baseListCount() {
+  std::vector<BaseRec> v;
+  loadBases(v);
+  return (int)v.size();
+}
+
+String baseListLabel(int idx) {
+  std::vector<BaseRec> v;
+  loadBases(v);
+  if (idx < 0 || idx >= (int)v.size()) return "";
+  return v[idx].name;
+}
+
+// Index of the currently SELECTED base profile (bases.txt "# LAST="), or -1.
+int baseListSelectedIndex() {
+  int lastIdx = -1;
+  std::vector<BaseRec> v;
+  loadBases(v, lastIdx);
+  return (lastIdx >= 0 && lastIdx < (int)v.size()) ? lastIdx : -1;
+}
+
+// Marks idx as the selected base profile (persisted), without activating it.
+bool baseListSelect(int idx) {
+  int lastIdx = -1;
+  std::vector<BaseRec> v;
+  loadBases(v, lastIdx);
+  if (idx < 0 || idx >= (int)v.size()) return false;
+  return saveBases(v, idx);
+}
+
+// Resolved fixed position for the currently SELECTED base profile, including
+// antenna ARP offset. Returns false if no base profile is selected.
+bool baseListGetFixedPosition(double& lat, double& lon, double& h,
+                               uint16_t& stid, uint8_t& rtcmType, String& name) {
+  int lastIdx = -1;
+  std::vector<BaseRec> v;
+  loadBases(v, lastIdx);
+  if (lastIdx < 0 || lastIdx >= (int)v.size()) return false;
+  const auto& b = v[lastIdx];
+  std::vector<AntennaRec> antennas;
+  loadAntennas(antennas);
+  float antennaOffset = 0.0f;
+  if (b.antennaIdx >= 0 && b.antennaIdx < (int)antennas.size()) antennaOffset = antennas[b.antennaIdx].offset;
+  lat = b.lat; lon = b.lon; h = b.altGround + b.hARP + antennaOffset;
+  stid = b.stid; rtcmType = b.rtcmType; name = b.name;
+  return true;
+}
+
+// Starts whichever RTCM outputs are flagged for auto-start (BaseAutoStart),
+// using their currently-selected profile. Mirrors handleApiStartAllOutputs.
+String startAllBaseOutputs() {
+  BaseAutoStart as = loadBaseAutoStart();
+  String result = "";
+  if (as.ntrip) {
+    std::vector<NtripOut> outList; int outLast = -1; loadNtripOutList(outList, outLast);
+    if (outLast >= 0 && outLast < (int)outList.size()) {
+      const auto& n = outList[outLast];
+      bool okC = startCasterOut(n.host, (uint16_t)n.port, n.mount, n.pass);
+      bool okT = startTcpOut((uint16_t)n.tcpPort);
+      result += "NTRIP OUT: " + (String)(okC ? "OK" : "FAIL") + " / TCP: " + (okT ? "OK" : "FAIL") + ". ";
+    } else { result += "NTRIP OUT: no profile selected. "; }
+  }
+  if (as.tcp) {
+    std::vector<TcpOutClient> tcpList; int tcpLast = -1; loadTcpOutClientList(tcpList, tcpLast);
+    if (tcpLast >= 0 && tcpLast < (int)tcpList.size()) {
+      const auto& t = tcpList[tcpLast];
+      bool ok = startTcpOutClient(t.host, (uint16_t)t.port);
+      result += "TCP Client: " + (String)(ok ? "OK" : "FAIL") + ". ";
+    } else { result += "TCP Client: no profile selected. "; }
+  }
+  return result.length() ? result : "No outputs configured for auto-start.";
+}
+
+// ---- NTRIP OUT profile list (shared with OLED "Seleziona uscite" submenu) ----
+int ntripOutCount() {
+  std::vector<NtripOut> v; int last = -1;
+  return loadNtripOutList(v, last);
+}
+String ntripOutLabel(int idx) {
+  std::vector<NtripOut> v; int last = -1;
+  loadNtripOutList(v, last);
+  if (idx < 0 || idx >= (int)v.size()) return "";
+  return v[idx].name;
+}
+int ntripOutSelectedIndex() {
+  std::vector<NtripOut> v; int last = -1;
+  loadNtripOutList(v, last);
+  return (last >= 0 && last < (int)v.size()) ? last : -1;
+}
+bool ntripOutSelect(int idx) {
+  std::vector<NtripOut> v; int last = -1;
+  loadNtripOutList(v, last);
+  if (idx < 0 || idx >= (int)v.size()) return false;
+  return saveNtripOutList(v, idx);
+}
+
+// ---- TCP Client OUT profile list (shared with OLED "Seleziona uscite" submenu) ----
+int tcpOutCliCount() {
+  std::vector<TcpOutClient> v; int last = -1;
+  return loadTcpOutClientList(v, last);
+}
+String tcpOutCliLabel(int idx) {
+  std::vector<TcpOutClient> v; int last = -1;
+  loadTcpOutClientList(v, last);
+  if (idx < 0 || idx >= (int)v.size()) return "";
+  return v[idx].name;
+}
+int tcpOutCliSelectedIndex() {
+  std::vector<TcpOutClient> v; int last = -1;
+  loadTcpOutClientList(v, last);
+  return (last >= 0 && last < (int)v.size()) ? last : -1;
+}
+bool tcpOutCliSelect(int idx) {
+  std::vector<TcpOutClient> v; int last = -1;
+  loadTcpOutClientList(v, last);
+  if (idx < 0 || idx >= (int)v.size()) return false;
+  return saveTcpOutClientList(v, idx);
+}
+
+// ---- Base auto-start flags (which outputs Start Base Mode also starts) ----
+bool getBaseAutoStartNtrip() { return loadBaseAutoStart().ntrip; }
+bool getBaseAutoStartTcp()   { return loadBaseAutoStart().tcp; }
+bool setBaseAutoStartNtrip(bool on) {
+  BaseAutoStart s = loadBaseAutoStart();
+  s.ntrip = on;
+  return saveBaseAutoStart(s);
+}
+bool setBaseAutoStartTcp(bool on) {
+  BaseAutoStart s = loadBaseAutoStart();
+  s.tcp = on;
+  return saveBaseAutoStart(s);
 }
 
 // ========================================================================
@@ -4241,47 +4383,21 @@ static void handleBasesUpdate() {
 static void handleBasesSelect() {
   if(!_server->hasArg("idx")){ _server->send(400,"text/plain","idx missing"); return; }
   int idx=_server->arg("idx").toInt();
-  int baseLast=-1; std::vector<BaseRec> v; loadBases(v, baseLast);
-  if(idx<0||idx>=(int)v.size()){ _server->send(400,"text/plain","Index out of range"); return; }
-  if(!saveBases(v, idx)){ _server->send(500,"text/plain","Save failed"); return; }
+  if(!baseListSelect(idx)){ _server->send(400,"text/plain","Index out of range or save failed"); return; }
   _server->sendHeader("Location","/base/stations"); _server->send(303);
 }
 
 static void handleApiStartBaseMode() {
-  int baseLast=-1; std::vector<BaseRec> v; loadBases(v, baseLast);
-  if(baseLast<0||baseLast>=(int)v.size()){
+  double lat, lon, h; uint16_t stid; uint8_t rtcmType; String name;
+  if (!baseListGetFixedPosition(lat, lon, h, stid, rtcmType, name)) {
     _server->send(400,"text/plain","No base station selected. Go to Base Stations and select one."); return;
   }
-  const auto& b=v[baseLast];
-  std::vector<AntennaRec> antennas; loadAntennas(antennas);
-  float antennaOffset=0.0f;
-  if(b.antennaIdx>=0&&b.antennaIdx<(int)antennas.size()) antennaOffset=antennas[b.antennaIdx].offset;
-  double h=b.altGround+b.hARP+antennaOffset;
-  applyBaseFixedLLH(b.lat, b.lon, h, b.stid, b.rtcmType);
+  applyBaseFixedLLH(lat, lon, h, stid, rtcmType);
   _server->send(200,"text/plain","OK");
 }
 
 static void handleApiStartAllOutputs() {
-  BaseAutoStart as=loadBaseAutoStart();
-  String result="";
-  if(as.ntrip){
-    std::vector<NtripOut> outList; int outLast=-1; loadNtripOutList(outList,outLast);
-    if(outLast>=0&&outLast<(int)outList.size()){
-      const auto& n=outList[outLast];
-      bool okC=startCasterOut(n.host,(uint16_t)n.port,n.mount,n.pass);
-      bool okT=startTcpOut((uint16_t)n.tcpPort);
-      result+="NTRIP OUT: "+(String)(okC?"OK":"FAIL")+" / TCP: "+(okT?"OK":"FAIL")+". ";
-    } else { result+="NTRIP OUT: no profile selected. "; }
-  }
-  if(as.tcp){
-    std::vector<TcpOutClient> tcpList; int tcpLast=-1; loadTcpOutClientList(tcpList,tcpLast);
-    if(tcpLast>=0&&tcpLast<(int)tcpList.size()){
-      const auto& t=tcpList[tcpLast];
-      bool ok=startTcpOutClient(t.host,(uint16_t)t.port);
-      result+="TCP Client: "+(String)(ok?"OK":"FAIL")+". ";
-    } else { result+="TCP Client: no profile selected. "; }
-  }
-  _server->send(200,"text/plain",result.length()?result:"No outputs configured for auto-start.");
+  _server->send(200,"text/plain",startAllBaseOutputs());
 }
 
 static void handleApiSaveAutoStart() {
@@ -4363,10 +4479,7 @@ static void handleBaseOutUpdate() {
 
 static void handleBaseOutSelect() {
   if(!_server->hasArg("idx")){ _server->send(400,"text/plain","idx missing"); return; }
-  int idx=_server->arg("idx").toInt(); std::vector<NtripOut> v; int last=-1; loadNtripOutList(v,last);
-  if(idx<0||idx>=(int)v.size()){ _server->send(400,"text/plain","Index out of range"); return; }
-  last=idx;
-  if(!saveNtripOutList(v,last)){ _server->send(500,"text/plain","Save failed"); return; }
+  if(!ntripOutSelect(_server->arg("idx").toInt())){ _server->send(400,"text/plain","Index out of range or save failed"); return; }
   _server->sendHeader("Location","/base/outputs"); _server->send(303);
 }
 
@@ -4451,20 +4564,9 @@ static void handleTcpClientEditSave() {
 }
 
 static void handleTcpClientSelect() {
-  int idx=_server->arg("idx").toInt(); 
-  std::vector<TcpOutClient> v; int last=-1; 
-  loadTcpOutClientList(v,last);
-  if(idx<0 || idx>=(int)v.size()){ 
-    _server->send(404,"text/plain","Not found"); 
-    return; 
-  }
-  
-  last = idx;
-  if(!saveTcpOutClientList(v,last)){
-    _server->send(500,"text/plain","Save failed"); 
-    return; 
-  }
-  _server->sendHeader("Location","/base/outputs"); 
+  int idx=_server->arg("idx").toInt();
+  if(!tcpOutCliSelect(idx)){ _server->send(404,"text/plain","Not found"); return; }
+  _server->sendHeader("Location","/base/outputs");
   _server->send(303);
 }
 
