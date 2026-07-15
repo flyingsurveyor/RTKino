@@ -62,6 +62,9 @@ extern bool getSurveyResults(SurveyResults& out);
 // SurveyPoints (point survey feature — primary storage on flash)
 #include "SurveyPoints.h"
 
+// GeoMath (shared distance/bearing helpers — used by COGO)
+#include "GeoMath.h"
+
 // EXTINT marker flag (defined in main.cpp) — PPK event marking via GPIO6
 extern volatile bool g_extintMarkerEnabled;
 
@@ -250,6 +253,9 @@ form.inline { display: inline; }
 .log-list { list-style: none; }
 .log-list li { padding: 12px; border: 1px solid #ddd; border-radius: 4px; margin: 8px 0; background: #fafafa; }
 .log-list li:hover { background: #f0f0f0; }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+.form-full { grid-column: 1/-1; }
+@media screen and (max-width: 600px) { .form-grid { grid-template-columns: 1fr; } }
 /* Mobile responsive styles */
 @media screen and (max-width: 768px) {
   body {
@@ -5324,7 +5330,7 @@ static void handleSurveyPage() {
   sendChunk(".sv-card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;}");
   sendChunk(".sv-card-title{font-weight:bold;font-size:1em;}");
   sendChunk(".rtk-badge{display:inline-block;padding:2px 7px;border-radius:10px;font-size:0.78em;font-weight:bold;color:#fff;}");
-  sendChunk(".rtk-fix{background:#27ae60;}.rtk-float{background:#f39c12;}.rtk-none{background:#e74c3c;}");
+  sendChunk(".rtk-fix{background:#27ae60;}.rtk-float{background:#f39c12;}.rtk-none{background:#e74c3c;}.rtk-cogo{background:#9b59b6;}");
   sendChunk(".sv-card-meta{font-size:0.83em;color:#555;margin:2px 0;}");
   sendChunk(".sv-dl-row{display:flex;gap:10px;margin-top:6px;}");
   sendChunk(".sv-dl-row a{flex:1;text-align:center;padding:10px 0;border-radius:5px;font-size:0.95em;font-weight:bold;text-decoration:none;background:#2980b9;color:#fff;}");
@@ -5657,6 +5663,15 @@ static void handleSurveyPage() {
   sendChunk("<button class='btn-secondary' style='margin-top:6px' onclick='doSync()'>Sync &#8594; SD</button>");
   sendChunk("</div>");
 
+  // ---- COGO link card ----
+  if (!activeSid.isEmpty()) {
+    sendChunk("<a href='/cogo?sid=" + activeSid + "' class='settings-card' style='border-left-color:#9b59b6;margin-bottom:14px'>");
+    sendChunk("<div class='settings-card-body'>");
+    sendChunk("<span class='settings-card-title'>&#128205; COGO</span>");
+    sendChunk("<span class='settings-card-summary'>Distance, bearing &amp; delta N/E between two points</span>");
+    sendChunk("</div><span class='settings-card-arrow'>&#8250;</span></a>");
+  }
+
   // ---- Card-based point list for active survey ----
   if (!activeSid.isEmpty()) {
     sendChunk("<div class='card'><h2>&#128203; Recorded points</h2>");
@@ -5668,7 +5683,7 @@ static void handleSurveyPage() {
     } else {
       String json = SurveyPoints::loadSurveyJSON(activeSid);
 
-      struct PtRow { String pid, name, codice, rtk, lat, lon, alt, hacc, nsamp; };
+      struct PtRow { String pid, name, codice, rtk, lat, lon, alt, hacc, nsamp, source, cogoMethod; };
       std::vector<PtRow> rows;
 
       int pos = 0;
@@ -5686,11 +5701,11 @@ static void handleSurveyPage() {
         if (featureEnd<0) break;
 
         auto getStr=[&](const String& key, int from)->String{
-          String nd="\""+key+"\":\""; int ki=json.indexOf(nd,from); if(ki<0)return "";
+          String nd="\""+key+"\":\""; int ki=json.indexOf(nd,from); if(ki<0||ki>=featureEnd)return "";
           int vs=ki+nd.length(), ve=json.indexOf("\"",vs); return ve>vs?json.substring(vs,ve):"";
         };
         auto getNum=[&](const String& key, int from)->String{
-          String nd="\""+key+"\":"; int ki=json.indexOf(nd,from); if(ki<0)return "0";
+          String nd="\""+key+"\":"; int ki=json.indexOf(nd,from); if(ki<0||ki>=featureEnd)return "0";
           int vs=ki+nd.length(); while(vs<(int)json.length()&&json[vs]==' ')vs++;
           int ve=vs; while(ve<(int)json.length()&&(isdigit(json[ve])||json[ve]=='.'||json[ve]=='-'||json[ve]=='e'||json[ve]=='E'))ve++;
           return json.substring(vs,ve);
@@ -5716,6 +5731,8 @@ static void handleSurveyPage() {
 
         row.hacc  = getNum("hAcc", from);
         row.nsamp = getNum("n_samples", from);
+        row.source     = getStr("source", from);
+        row.cogoMethod = getStr("method", from);
 
         rows.push_back(row);
         pos = featureEnd + 1;
@@ -5736,12 +5753,18 @@ static void handleSurveyPage() {
       for (int i = startIdx; i < endIdx; i++) {
         const PtRow& r = rows[i];
 
-        // RTK badge: compute class and label in a single pass
-        String rtkLower = r.rtk; rtkLower.toLowerCase();
-        bool isFix   = rtkLower.indexOf("fix")   >= 0;
-        bool isFloat = rtkLower.indexOf("float") >= 0;
-        String badgeClass = isFix ? "rtk-fix" : isFloat ? "rtk-float" : "rtk-none";
-        String rtkLabel   = isFix ? "FIX &#10003;" : isFloat ? "FLOAT ~" : "NO RTK";
+        // Quality badge: COGO-derived points get a distinct badge instead of RTK quality
+        String badgeClass, rtkLabel;
+        if (r.source == "cogo") {
+          badgeClass = "rtk-cogo";
+          rtkLabel   = "COGO &middot; " + htmlEscape(r.cogoMethod);
+        } else {
+          String rtkLower = r.rtk; rtkLower.toLowerCase();
+          bool isFix   = rtkLower.indexOf("fix")   >= 0;
+          bool isFloat = rtkLower.indexOf("float") >= 0;
+          badgeClass = isFix ? "rtk-fix" : isFloat ? "rtk-float" : "rtk-none";
+          rtkLabel   = isFix ? "FIX &#10003;" : isFloat ? "FLOAT ~" : "NO RTK";
+        }
 
         String nameEsc   = htmlEscape(r.name);
         String codiceEsc = htmlEscape(r.codice);
@@ -5780,6 +5803,625 @@ static void handleSurveyPage() {
     sendChunk("</div>");
     sendChunk("</div>");
   }
+
+  sendFooter();
+}
+
+// ---- COGO hub: menu of COGO tools ----
+static void handleCogoHub() {
+  String sid = _server->hasArg("sid") ? _server->arg("sid") : SurveyPoints::getActiveSurveyId();
+
+  sendHeader("COGO", "survey");
+  sendChunk("<div class='settings-breadcrumb'><a href='/survey' class='btn btn-secondary btn-small'>&#8592; Survey</a></div>");
+
+  if (sid.isEmpty()) {
+    sendChunk("<div class='card'><p style='color:#888'>No active survey.</p></div>");
+    sendFooter();
+    return;
+  }
+
+  String qs = "?sid=" + sid;
+  sendChunk("<h2 class='settings-hub-title'>COGO</h2>");
+  sendChunk("<p class='settings-hub-sub'>Distance, bearing and point construction tools for the active survey.</p>");
+  sendChunk("<div class='settings-grid'>");
+
+  sendChunk("<a href='/cogo/distance" + qs + "' class='settings-card' style='border-left-color:#3498db'>");
+  sendChunk("<div class='settings-card-body'><span class='settings-card-title'>Distance &amp; Bearing</span>");
+  sendChunk("<span class='settings-card-summary'>Read-only, between two existing points</span></div>");
+  sendChunk("<span class='settings-card-arrow'>&#8250;</span></a>");
+
+  sendChunk("<a href='/cogo/chainage" + qs + "' class='settings-card' style='border-left-color:#3498db'>");
+  sendChunk("<div class='settings-card-body'><span class='settings-card-title'>Chainage &amp; Offset</span>");
+  sendChunk("<span class='settings-card-summary'>Read-only, progressive + offset from an A&#8594;B alignment</span></div>");
+  sendChunk("<span class='settings-card-arrow'>&#8250;</span></a>");
+
+  sendChunk("<a href='/cogo/polar" + qs + "' class='settings-card' style='border-left-color:#9b59b6'>");
+  sendChunk("<div class='settings-card-body'><span class='settings-card-title'>Polar (Radiation)</span>");
+  sendChunk("<span class='settings-card-summary'>New point from azimuth + distance</span></div>");
+  sendChunk("<span class='settings-card-arrow'>&#8250;</span></a>");
+
+  sendChunk("<a href='/cogo/oriented" + qs + "' class='settings-card' style='border-left-color:#9b59b6'>");
+  sendChunk("<div class='settings-card-body'><span class='settings-card-title'>Oriented Station</span>");
+  sendChunk("<span class='settings-card-summary'>New point from backsight + angle + distance</span></div>");
+  sendChunk("<span class='settings-card-arrow'>&#8250;</span></a>");
+
+  sendChunk("<a href='/cogo/intersect" + qs + "' class='settings-card' style='border-left-color:#9b59b6'>");
+  sendChunk("<div class='settings-card-body'><span class='settings-card-title'>Forward Intersection</span>");
+  sendChunk("<span class='settings-card-summary'>New point from two angles &mdash; occluded corners</span></div>");
+  sendChunk("<span class='settings-card-arrow'>&#8250;</span></a>");
+
+  sendChunk("<a href='/cogo/trilateration" + qs + "' class='settings-card' style='border-left-color:#9b59b6'>");
+  sendChunk("<div class='settings-card-body'><span class='settings-card-title'>Trilateration</span>");
+  sendChunk("<span class='settings-card-summary'>New point from two distances &mdash; disto</span></div>");
+  sendChunk("<span class='settings-card-arrow'>&#8250;</span></a>");
+
+  sendChunk("<a href='/cogo/area" + qs + "' class='settings-card' style='border-left-color:#e67e22'>");
+  sendChunk("<div class='settings-card-body'><span class='settings-card-title'>Area &amp; Perimeter</span>");
+  sendChunk("<span class='settings-card-summary'>Closed polygon from N survey points</span></div>");
+  sendChunk("<span class='settings-card-arrow'>&#8250;</span></a>");
+
+  sendChunk("</div>");
+  sendFooter();
+}
+
+// ---- COGO sub-page: distance/bearing/delta N-E between two survey points ----
+static void handleCogoDistancePage() {
+  String sid = _server->hasArg("sid") ? _server->arg("sid") : SurveyPoints::getActiveSurveyId();
+
+  sendHeader("COGO", "survey");
+  sendChunk("<div class='settings-breadcrumb'><a href='/cogo?sid=" + sid + "' class='btn btn-secondary btn-small'>&#8592; COGO</a></div>");
+
+  if (sid.isEmpty()) {
+    sendChunk("<div class='card'><p style='color:#888'>No active survey.</p></div>");
+    sendFooter();
+    return;
+  }
+
+  sendChunk("<div class='card'><h2>&#128205; Distance &amp; Bearing</h2>");
+  sendChunk("<div class='form-grid'>");
+  sendChunk("<div><label>Point A</label><select id='cogo-a'></select></div>");
+  sendChunk("<div><label>Point B</label><select id='cogo-b'></select></div>");
+  sendChunk("</div>");
+  sendChunk("<button class='btn-secondary' style='margin-top:8px' onclick='swapCogo()'>&#8646; Swap</button> ");
+  sendChunk("<button onclick='calcCogo()' style='padding:8px 16px;font-size:1em;background:#27ae60;color:white;border:none;border-radius:6px;cursor:pointer;margin-top:8px'>&#128202; Calculate</button>");
+  sendChunk("<div id='cogo-result' style='display:none;margin-top:12px;padding:10px;background:#ecf0f1;border-radius:4px;font-family:monospace;font-size:0.95em'></div>");
+  sendChunk("</div>");
+
+  sendChunk("<script>");
+  sendChunk("var COGO_SID='" + sid + "';");
+  sendChunk(
+    "function loadCogoPoints(){"
+      "fetch('/api/pts/points?sid='+COGO_SID).then(function(r){return r.json();}).then(function(d){"
+        "var feats=d.features||[];"
+        "var selA=document.getElementById('cogo-a'),selB=document.getElementById('cogo-b');"
+        "selA.innerHTML='';selB.innerHTML='';"
+        "feats.forEach(function(f){"
+          "var nm=(f.properties&&f.properties.name)?f.properties.name:f.id;"
+          "var cd=(f.properties&&f.properties.codice)?' ['+f.properties.codice+']':'';"
+          "var oa=document.createElement('option');oa.value=f.id;oa.textContent=nm+cd;selA.appendChild(oa);"
+          "var ob=document.createElement('option');ob.value=f.id;ob.textContent=nm+cd;selB.appendChild(ob);"
+        "});"
+        "if(feats.length>1)selB.selectedIndex=1;"
+      "}).catch(function(e){alert('Error loading points: '+e);});"
+    "}"
+  );
+  sendChunk(
+    "function swapCogo(){var a=document.getElementById('cogo-a'),b=document.getElementById('cogo-b');var t=a.value;a.value=b.value;b.value=t;}"
+  );
+  sendChunk(
+    "function calcCogo(){"
+      "var pa=document.getElementById('cogo-a').value,pb=document.getElementById('cogo-b').value;"
+      "if(!pa||!pb||pa===pb){alert('Select two different points');return;}"
+      "fetch('/api/cogo/compute?sid='+COGO_SID+'&pid1='+pa+'&pid2='+pb).then(function(r){return r.json();}).then(function(d){"
+        "if(d.error){alert(d.error);return;}"
+        "var res=document.getElementById('cogo-result');"
+        "res.innerHTML='<b>'+d.name1+' &#8594; '+d.name2+'</b><br>'+"
+          "'Distance 2D: '+d.dist2d.toFixed(3)+' m<br>'+"
+          "'Distance 3D: '+d.dist3d.toFixed(3)+' m<br>'+"
+          "'Bearing: '+d.bearing.toFixed(2)+'&deg;<br>'+"
+          "'&Delta;N: '+d.dN.toFixed(3)+' m &nbsp; &Delta;E: '+d.dE.toFixed(3)+' m &nbsp; &Delta;H: '+d.dAlt.toFixed(3)+' m';"
+        "res.style.display='block';"
+      "}).catch(function(e){alert('Error: '+e);});"
+    "}"
+  );
+  sendChunk("loadCogoPoints();");
+  sendChunk("</script>");
+
+  sendFooter();
+}
+
+// ---- COGO sub-page: chainage & offset of a point relative to an A-B alignment ----
+static void handleCogoChainagePage() {
+  String sid = _server->hasArg("sid") ? _server->arg("sid") : SurveyPoints::getActiveSurveyId();
+
+  sendHeader("Chainage & Offset", "survey");
+  sendChunk("<div class='settings-breadcrumb'><a href='/cogo?sid=" + sid + "' class='btn btn-secondary btn-small'>&#8592; COGO</a></div>");
+
+  if (sid.isEmpty()) {
+    sendChunk("<div class='card'><p style='color:#888'>No active survey.</p></div>");
+    sendFooter();
+    return;
+  }
+
+  sendChunk("<div class='card'><h2>&#128207; Chainage &amp; Offset</h2>");
+  sendChunk("<p style='color:#7f8c8d;font-size:0.85em;margin-top:-6px'>Progressive distance and perpendicular offset of a point relative to the A&#8594;B alignment.</p>");
+  sendChunk("<div class='form-grid'>");
+  sendChunk("<div><label>Alignment start (A)</label><select id='sel-a'></select></div>");
+  sendChunk("<div><label>Alignment end (B)</label><select id='sel-b'></select></div>");
+  sendChunk("<div class='form-full'><label>Point to check</label><select id='sel-p'></select></div>");
+  sendChunk("</div>");
+  sendChunk("<button onclick='calcResult()' style='width:100%;padding:10px;font-size:1em;background:#27ae60;color:white;border:none;border-radius:6px;cursor:pointer;margin-top:8px'>&#128202; Calculate</button>");
+  sendChunk("<div id='result' style='display:none;margin-top:12px;padding:10px;background:#ecf0f1;border-radius:4px;font-family:monospace;font-size:0.9em'></div>");
+  sendChunk("</div>");
+
+  sendChunk("<script>");
+  sendChunk("var COGO_SID='" + sid + "';");
+  sendChunk(
+    "function loadStations(){"
+      "fetch('/api/pts/points?sid='+COGO_SID).then(function(r){return r.json();}).then(function(d){"
+        "var feats=d.features||[];"
+        "['sel-a','sel-b','sel-p'].forEach(function(id){"
+          "var sel=document.getElementById(id);sel.innerHTML='';"
+          "feats.forEach(function(f){"
+            "var nm=(f.properties&&f.properties.name)?f.properties.name:f.id;"
+            "var cd=(f.properties&&f.properties.codice)?' ['+f.properties.codice+']':'';"
+            "var o=document.createElement('option');o.value=f.id;o.textContent=nm+cd;sel.appendChild(o);"
+          "});"
+        "});"
+        "if(feats.length>1)document.getElementById('sel-b').selectedIndex=1;"
+        "if(feats.length>2)document.getElementById('sel-p').selectedIndex=2;"
+      "}).catch(function(e){alert('Error loading points: '+e);});"
+    "}"
+  );
+  sendChunk(
+    "function calcResult(){"
+      "var pa=document.getElementById('sel-a').value,pb=document.getElementById('sel-b').value,pp=document.getElementById('sel-p').value;"
+      "if(!pa||!pb||pa===pb){alert('Select two different alignment points (A, B)');return;}"
+      "if(!pp){alert('Select a point to check');return;}"
+      "fetch('/api/cogo/chainage/compute?sid='+COGO_SID+'&pidA='+pa+'&pidB='+pb+'&pidP='+pp)"
+        ".then(function(r){return r.json();}).then(function(d){"
+          "if(d.error){alert(d.error);return;}"
+          "var res=document.getElementById('result');"
+          "var side=d.offset>=0?'right':'left';"
+          "res.innerHTML='Chainage: '+d.chainage.toFixed(3)+' m (from A)<br>'+"
+            "'Offset: '+Math.abs(d.offset).toFixed(3)+' m ('+side+' of A&#8594;B)<br>'+"
+            "'Baseline A&#8594;B: '+d.baseline.toFixed(3)+' m';"
+          "res.style.display='block';"
+        "}).catch(function(e){alert('Error: '+e);});"
+    "}"
+  );
+  sendChunk("loadStations();");
+  sendChunk("</script>");
+
+  sendFooter();
+}
+
+// ---- Shared JS for COGO "new point from measurement" pages (intersection/trilateration) ----
+static void sendCogoMeasureScript(const String& sid) {
+  sendChunk("<script>");
+  sendChunk("var COGO_SID='" + sid + "';var SIDE_RIGHT=true;var LAST_RESULT=null;");
+  sendChunk(
+    "function parseGon(s){"
+      "var g=parseFloat((s||'').trim().replace(',','.'));"
+      "if(isNaN(g))return NaN;"
+      "return g*0.9;" // centesimal gon -> decimal degrees (400 gon = 360 deg)
+    "}"
+  );
+  sendChunk(
+    "function loadStations(){"
+      "fetch('/api/pts/points?sid='+COGO_SID).then(function(r){return r.json();}).then(function(d){"
+        "var feats=d.features||[];"
+        "var selA=document.getElementById('sel-a'),selB=document.getElementById('sel-b');"
+        "selA.innerHTML='';selB.innerHTML='';"
+        "feats.forEach(function(f){"
+          "var nm=(f.properties&&f.properties.name)?f.properties.name:f.id;"
+          "var cd=(f.properties&&f.properties.codice)?' ['+f.properties.codice+']':'';"
+          "var oa=document.createElement('option');oa.value=f.id;oa.textContent=nm+cd;selA.appendChild(oa);"
+          "var ob=document.createElement('option');ob.value=f.id;ob.textContent=nm+cd;selB.appendChild(ob);"
+        "});"
+        "if(feats.length>1)selB.selectedIndex=1;"
+      "}).catch(function(e){alert('Error loading points: '+e);});"
+    "}"
+  );
+  sendChunk(
+    "function setSide(right){"
+      "SIDE_RIGHT=right;"
+      "document.getElementById('side-l').className=right?'btn-secondary':'btn';"
+      "document.getElementById('side-r').className=right?'btn':'btn-secondary';"
+    "}"
+  );
+  sendChunk(
+    "function doSaveCogoPoint(method){"
+      "if(!LAST_RESULT){alert('Calculate first');return;}"
+      "var name=document.getElementById('save-name').value;"
+      "var codice=document.getElementById('save-codice').value;"
+      "var pa=document.getElementById('sel-a').value,pb=document.getElementById('sel-b').value;"
+      "var body='sid='+encodeURIComponent(COGO_SID)+'&lat='+LAST_RESULT.lat+'&lon='+LAST_RESULT.lon+'&alt='+LAST_RESULT.altHAE+"
+        "'&name='+encodeURIComponent(name)+'&codice='+encodeURIComponent(codice)+"
+        "'&method='+encodeURIComponent(method)+'&srcA='+encodeURIComponent(pa)+'&srcB='+encodeURIComponent(pb);"
+      "fetch('/api/cogo/point/save',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})"
+        ".then(function(r){return r.json();}).then(function(d){"
+          "if(d.error){alert(d.error);return;}"
+          "alert('Saved as '+d.pid);"
+          "window.location.href='/survey';"
+        "}).catch(function(e){alert('Error: '+e);});"
+    "}"
+  );
+  sendChunk("loadStations();setSide(true);");
+  sendChunk("</script>");
+}
+
+// ---- COGO sub-page: forward intersection (two angles from a known baseline) ----
+static void handleCogoIntersectPage() {
+  String sid = _server->hasArg("sid") ? _server->arg("sid") : SurveyPoints::getActiveSurveyId();
+
+  sendHeader("Forward Intersection", "survey");
+  sendChunk("<div class='settings-breadcrumb'><a href='/cogo?sid=" + sid + "' class='btn btn-secondary btn-small'>&#8592; COGO</a></div>");
+
+  if (sid.isEmpty()) {
+    sendChunk("<div class='card'><p style='color:#888'>No active survey.</p></div>");
+    sendFooter();
+    return;
+  }
+
+  sendChunk("<div class='card'><h2>&#128207; Forward Intersection</h2>");
+  sendChunk("<p style='color:#7f8c8d;font-size:0.85em;margin-top:-6px'>Two known points + the horizontal angle turned clockwise at each, in gon, from the A&#8594;B baseline to the unknown point.</p>");
+  sendChunk("<div class='form-grid'>");
+  sendChunk("<div><label>Station A</label><select id='sel-a'></select></div>");
+  sendChunk("<div><label>Station B</label><select id='sel-b'></select></div>");
+  sendChunk("<div><label>Angle at A (from B), gon</label><input id='in-a1' type='number' step='0.0001' placeholder='70.1500'></div>");
+  sendChunk("<div><label>Angle at B (from A), gon</label><input id='in-a2' type='number' step='0.0001' placeholder='53.3900'></div>");
+  sendChunk("</div>");
+  sendChunk("<div style='margin-top:8px'><label>Side (relative to A&#8594;B)</label>");
+  sendChunk("<div style='display:flex;gap:8px'>");
+  sendChunk("<button type='button' id='side-l' class='btn-secondary' style='flex:1' onclick='setSide(false)'>&#8630; Left</button>");
+  sendChunk("<button type='button' id='side-r' class='btn' style='flex:1' onclick='setSide(true)'>Right &#8631;</button>");
+  sendChunk("</div></div>");
+  sendChunk("<button onclick='calcResult()' style='width:100%;padding:10px;font-size:1em;background:#27ae60;color:white;border:none;border-radius:6px;cursor:pointer;margin-top:10px'>&#128202; Calculate</button>");
+  sendChunk("<div id='result' style='display:none;margin-top:12px;padding:10px;background:#ecf0f1;border-radius:4px;font-family:monospace;font-size:0.9em'></div>");
+
+  sendChunk("<div id='save-block' style='display:none;margin-top:12px'>");
+  sendChunk("<div class='form-grid'>");
+  sendChunk("<div><label>Name</label><input id='save-name' type='text' placeholder='P0xx'></div>");
+  sendChunk("<div><label>Code</label><input id='save-codice' type='text' placeholder='optional'></div>");
+  sendChunk("</div>");
+  sendChunk("<button onclick=\"doSaveCogoPoint('intersect')\" class='btn-success' style='width:100%;padding:10px;font-size:1em;border:none;border-radius:6px;cursor:pointer;margin-top:6px'>&#128190; Save point to survey</button>");
+  sendChunk("</div>");
+  sendChunk("</div>");
+
+  sendCogoMeasureScript(sid);
+  sendChunk(
+    "<script>"
+    "function calcResult(){"
+      "var pa=document.getElementById('sel-a').value,pb=document.getElementById('sel-b').value;"
+      "if(!pa||!pb||pa===pb){alert('Select two different points');return;}"
+      "var a1=parseGon(document.getElementById('in-a1').value);"
+      "var a2=parseGon(document.getElementById('in-a2').value);"
+      "if(isNaN(a1)||isNaN(a2)){alert('Invalid angle');return;}"
+      "var side=SIDE_RIGHT?'R':'L';"
+      "fetch('/api/cogo/intersect/compute?sid='+COGO_SID+'&pidA='+pa+'&pidB='+pb+'&angA='+a1+'&angB='+a2+'&side='+side)"
+        ".then(function(r){return r.json();}).then(function(d){"
+          "if(d.error){alert(d.error);return;}"
+          "LAST_RESULT=d;"
+          "var res=document.getElementById('result');"
+          "res.innerHTML='Coordinates: '+d.lat.toFixed(7)+', '+d.lon.toFixed(7)+'<br>'+"
+            "'altHAE: '+d.altHAE.toFixed(3)+' m<br>'+"
+            "'AP: '+d.distAP.toFixed(3)+' m &nbsp; BP: '+d.distBP.toFixed(3)+' m';"
+          "res.style.display='block';"
+          "document.getElementById('save-block').style.display='block';"
+        "}).catch(function(e){alert('Error: '+e);});"
+    "}"
+    "</script>"
+  );
+
+  sendFooter();
+}
+
+// ---- COGO sub-page: trilateration (two distances from a known baseline) ----
+static void handleCogoTrilaterationPage() {
+  String sid = _server->hasArg("sid") ? _server->arg("sid") : SurveyPoints::getActiveSurveyId();
+
+  sendHeader("Trilateration", "survey");
+  sendChunk("<div class='settings-breadcrumb'><a href='/cogo?sid=" + sid + "' class='btn btn-secondary btn-small'>&#8592; COGO</a></div>");
+
+  if (sid.isEmpty()) {
+    sendChunk("<div class='card'><p style='color:#888'>No active survey.</p></div>");
+    sendFooter();
+    return;
+  }
+
+  sendChunk("<div class='card'><h2>&#128200; Trilateration</h2>");
+  sendChunk("<p style='color:#7f8c8d;font-size:0.85em;margin-top:-6px'>Two known points + the measured distance from each to the unknown point (e.g. a horizontal disto in forced centring).</p>");
+  sendChunk("<div class='form-grid'>");
+  sendChunk("<div><label>Station A</label><select id='sel-a'></select></div>");
+  sendChunk("<div><label>Station B</label><select id='sel-b'></select></div>");
+  sendChunk("<div><label>Distance from A (m)</label><input id='in-a1' type='number' step='0.001' placeholder='12.084'></div>");
+  sendChunk("<div><label>Distance from B (m)</label><input id='in-a2' type='number' step='0.001' placeholder='9.771'></div>");
+  sendChunk("</div>");
+  sendChunk("<div style='margin-top:8px'><label>Side (relative to A&#8594;B)</label>");
+  sendChunk("<div style='display:flex;gap:8px'>");
+  sendChunk("<button type='button' id='side-l' class='btn-secondary' style='flex:1' onclick='setSide(false)'>&#8630; Left</button>");
+  sendChunk("<button type='button' id='side-r' class='btn' style='flex:1' onclick='setSide(true)'>Right &#8631;</button>");
+  sendChunk("</div></div>");
+  sendChunk("<button onclick='calcResult()' style='width:100%;padding:10px;font-size:1em;background:#27ae60;color:white;border:none;border-radius:6px;cursor:pointer;margin-top:10px'>&#128202; Calculate</button>");
+  sendChunk("<div id='result' style='display:none;margin-top:12px;padding:10px;background:#ecf0f1;border-radius:4px;font-family:monospace;font-size:0.9em'></div>");
+
+  sendChunk("<div id='save-block' style='display:none;margin-top:12px'>");
+  sendChunk("<div class='form-grid'>");
+  sendChunk("<div><label>Name</label><input id='save-name' type='text' placeholder='P0xx'></div>");
+  sendChunk("<div><label>Code</label><input id='save-codice' type='text' placeholder='optional'></div>");
+  sendChunk("</div>");
+  sendChunk("<button onclick=\"doSaveCogoPoint('trilateration')\" class='btn-success' style='width:100%;padding:10px;font-size:1em;border:none;border-radius:6px;cursor:pointer;margin-top:6px'>&#128190; Save point to survey</button>");
+  sendChunk("</div>");
+  sendChunk("</div>");
+
+  sendCogoMeasureScript(sid);
+  sendChunk(
+    "<script>"
+    "function calcResult(){"
+      "var pa=document.getElementById('sel-a').value,pb=document.getElementById('sel-b').value;"
+      "if(!pa||!pb||pa===pb){alert('Select two different points');return;}"
+      "var d1=parseFloat(document.getElementById('in-a1').value);"
+      "var d2=parseFloat(document.getElementById('in-a2').value);"
+      "if(isNaN(d1)||isNaN(d2)||d1<=0||d2<=0){alert('Invalid distance');return;}"
+      "var side=SIDE_RIGHT?'R':'L';"
+      "fetch('/api/cogo/trilaterate/compute?sid='+COGO_SID+'&pidA='+pa+'&pidB='+pb+'&distA='+d1+'&distB='+d2+'&side='+side)"
+        ".then(function(r){return r.json();}).then(function(d){"
+          "if(d.error){alert(d.error);return;}"
+          "LAST_RESULT=d;"
+          "var res=document.getElementById('result');"
+          "res.innerHTML='Coordinates: '+d.lat.toFixed(7)+', '+d.lon.toFixed(7)+'<br>'+"
+            "'altHAE: '+d.altHAE.toFixed(3)+' m';"
+          "res.style.display='block';"
+          "document.getElementById('save-block').style.display='block';"
+        "}).catch(function(e){alert('Error: '+e);});"
+    "}"
+    "</script>"
+  );
+
+  sendFooter();
+}
+
+// ---- COGO sub-page: polar (radiation) — new point from station + azimuth + distance ----
+static void handleCogoPolarPage() {
+  String sid = _server->hasArg("sid") ? _server->arg("sid") : SurveyPoints::getActiveSurveyId();
+
+  sendHeader("Polar", "survey");
+  sendChunk("<div class='settings-breadcrumb'><a href='/cogo?sid=" + sid + "' class='btn btn-secondary btn-small'>&#8592; COGO</a></div>");
+
+  if (sid.isEmpty()) {
+    sendChunk("<div class='card'><p style='color:#888'>No active survey.</p></div>");
+    sendFooter();
+    return;
+  }
+
+  sendChunk("<div class='card'><h2>&#127919; Polar (Radiation)</h2>");
+  sendChunk("<p style='color:#7f8c8d;font-size:0.85em;margin-top:-6px'>New point from a known station + azimuth (gon, clockwise from North) + distance.</p>");
+  sendChunk("<div class='form-grid'>");
+  sendChunk("<div class='form-full'><label>Station</label><select id='sel-a'></select></div>");
+  sendChunk("<div><label>Azimuth, gon</label><input id='in-az' type='number' step='0.0001' placeholder='134.5000'></div>");
+  sendChunk("<div><label>Distance (m)</label><input id='in-dist' type='number' step='0.001' placeholder='15.240'></div>");
+  sendChunk("</div>");
+  sendChunk("<button onclick='calcResult()' style='width:100%;padding:10px;font-size:1em;background:#27ae60;color:white;border:none;border-radius:6px;cursor:pointer;margin-top:8px'>&#128202; Calculate</button>");
+  sendChunk("<div id='result' style='display:none;margin-top:12px;padding:10px;background:#ecf0f1;border-radius:4px;font-family:monospace;font-size:0.9em'></div>");
+
+  sendChunk("<div id='save-block' style='display:none;margin-top:12px'>");
+  sendChunk("<div class='form-grid'>");
+  sendChunk("<div><label>Name</label><input id='save-name' type='text' placeholder='P0xx'></div>");
+  sendChunk("<div><label>Code</label><input id='save-codice' type='text' placeholder='optional'></div>");
+  sendChunk("</div>");
+  sendChunk("<button onclick=\"doSaveCogoPoint('polar')\" class='btn-success' style='width:100%;padding:10px;font-size:1em;border:none;border-radius:6px;cursor:pointer;margin-top:6px'>&#128190; Save point to survey</button>");
+  sendChunk("</div>");
+  sendChunk("</div>");
+
+  sendChunk("<script>");
+  sendChunk("var COGO_SID='" + sid + "';var LAST_RESULT=null;");
+  sendChunk(
+    "function parseGon(s){"
+      "var g=parseFloat((s||'').trim().replace(',','.'));"
+      "if(isNaN(g))return NaN;"
+      "return g*0.9;"
+    "}"
+  );
+  sendChunk(
+    "function loadStations(){"
+      "fetch('/api/pts/points?sid='+COGO_SID).then(function(r){return r.json();}).then(function(d){"
+        "var feats=d.features||[];"
+        "var sel=document.getElementById('sel-a');sel.innerHTML='';"
+        "feats.forEach(function(f){"
+          "var nm=(f.properties&&f.properties.name)?f.properties.name:f.id;"
+          "var cd=(f.properties&&f.properties.codice)?' ['+f.properties.codice+']':'';"
+          "var o=document.createElement('option');o.value=f.id;o.textContent=nm+cd;sel.appendChild(o);"
+        "});"
+      "}).catch(function(e){alert('Error loading points: '+e);});"
+    "}"
+  );
+  sendChunk(
+    "function calcResult(){"
+      "var pa=document.getElementById('sel-a').value;"
+      "if(!pa){alert('Select a station');return;}"
+      "var az=parseGon(document.getElementById('in-az').value);"
+      "var dist=parseFloat(document.getElementById('in-dist').value);"
+      "if(isNaN(az)){alert('Invalid azimuth');return;}"
+      "if(isNaN(dist)||dist<=0){alert('Invalid distance');return;}"
+      "fetch('/api/cogo/polar/compute?sid='+COGO_SID+'&pidA='+pa+'&az='+az+'&dist='+dist)"
+        ".then(function(r){return r.json();}).then(function(d){"
+          "if(d.error){alert(d.error);return;}"
+          "LAST_RESULT=d;"
+          "var res=document.getElementById('result');"
+          "res.innerHTML='Coordinates: '+d.lat.toFixed(7)+', '+d.lon.toFixed(7)+'<br>altHAE: '+d.altHAE.toFixed(3)+' m';"
+          "res.style.display='block';"
+          "document.getElementById('save-block').style.display='block';"
+        "}).catch(function(e){alert('Error: '+e);});"
+    "}"
+  );
+  sendChunk(
+    "function doSaveCogoPoint(method){"
+      "if(!LAST_RESULT){alert('Calculate first');return;}"
+      "var name=document.getElementById('save-name').value;"
+      "var codice=document.getElementById('save-codice').value;"
+      "var pa=document.getElementById('sel-a').value;"
+      "var body='sid='+encodeURIComponent(COGO_SID)+'&lat='+LAST_RESULT.lat+'&lon='+LAST_RESULT.lon+'&alt='+LAST_RESULT.altHAE+"
+        "'&name='+encodeURIComponent(name)+'&codice='+encodeURIComponent(codice)+"
+        "'&method='+encodeURIComponent(method)+'&srcA='+encodeURIComponent(pa)+'&srcB=';"
+      "fetch('/api/cogo/point/save',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})"
+        ".then(function(r){return r.json();}).then(function(d){"
+          "if(d.error){alert(d.error);return;}"
+          "alert('Saved as '+d.pid);"
+          "window.location.href='/survey';"
+        "}).catch(function(e){alert('Error: '+e);});"
+    "}"
+  );
+  sendChunk("loadStations();");
+  sendChunk("</script>");
+
+  sendFooter();
+}
+
+// ---- COGO sub-page: oriented station — new point from station + backsight + angle + distance ----
+static void handleCogoOrientedPage() {
+  String sid = _server->hasArg("sid") ? _server->arg("sid") : SurveyPoints::getActiveSurveyId();
+
+  sendHeader("Oriented Station", "survey");
+  sendChunk("<div class='settings-breadcrumb'><a href='/cogo?sid=" + sid + "' class='btn btn-secondary btn-small'>&#8592; COGO</a></div>");
+
+  if (sid.isEmpty()) {
+    sendChunk("<div class='card'><p style='color:#888'>No active survey.</p></div>");
+    sendFooter();
+    return;
+  }
+
+  sendChunk("<div class='card'><h2>&#129517; Oriented Station</h2>");
+  sendChunk("<p style='color:#7f8c8d;font-size:0.85em;margin-top:-6px'>New point from an occupied station oriented on a backsight, plus the angle (gon, clockwise from the backsight) and distance read on the instrument.</p>");
+  sendChunk("<div class='form-grid'>");
+  sendChunk("<div><label>Station (occupied)</label><select id='sel-a'></select></div>");
+  sendChunk("<div><label>Backsight</label><select id='sel-b'></select></div>");
+  sendChunk("<div><label>Angle from backsight, gon</label><input id='in-a1' type='number' step='0.0001' placeholder='0.0000'></div>");
+  sendChunk("<div><label>Distance (m)</label><input id='in-a2' type='number' step='0.001' placeholder='15.240'></div>");
+  sendChunk("</div>");
+  sendChunk("<button onclick='calcResult()' style='width:100%;padding:10px;font-size:1em;background:#27ae60;color:white;border:none;border-radius:6px;cursor:pointer;margin-top:8px'>&#128202; Calculate</button>");
+  sendChunk("<div id='result' style='display:none;margin-top:12px;padding:10px;background:#ecf0f1;border-radius:4px;font-family:monospace;font-size:0.9em'></div>");
+
+  sendChunk("<div id='save-block' style='display:none;margin-top:12px'>");
+  sendChunk("<div class='form-grid'>");
+  sendChunk("<div><label>Name</label><input id='save-name' type='text' placeholder='P0xx'></div>");
+  sendChunk("<div><label>Code</label><input id='save-codice' type='text' placeholder='optional'></div>");
+  sendChunk("</div>");
+  sendChunk("<button onclick=\"doSaveCogoPoint('oriented_station')\" class='btn-success' style='width:100%;padding:10px;font-size:1em;border:none;border-radius:6px;cursor:pointer;margin-top:6px'>&#128190; Save point to survey</button>");
+  sendChunk("</div>");
+  sendChunk("</div>");
+
+  sendCogoMeasureScript(sid);
+  sendChunk(
+    "<script>"
+    "function calcResult(){"
+      "var pa=document.getElementById('sel-a').value,pb=document.getElementById('sel-b').value;"
+      "if(!pa||!pb||pa===pb){alert('Select two different points');return;}"
+      "var ang=parseGon(document.getElementById('in-a1').value);"
+      "var dist=parseFloat(document.getElementById('in-a2').value);"
+      "if(isNaN(ang)){alert('Invalid angle');return;}"
+      "if(isNaN(dist)||dist<=0){alert('Invalid distance');return;}"
+      "fetch('/api/cogo/oriented/compute?sid='+COGO_SID+'&pidA='+pa+'&pidB='+pb+'&ang='+ang+'&dist='+dist)"
+        ".then(function(r){return r.json();}).then(function(d){"
+          "if(d.error){alert(d.error);return;}"
+          "LAST_RESULT=d;"
+          "var res=document.getElementById('result');"
+          "res.innerHTML='Coordinates: '+d.lat.toFixed(7)+', '+d.lon.toFixed(7)+'<br>altHAE: '+d.altHAE.toFixed(3)+' m';"
+          "res.style.display='block';"
+          "document.getElementById('save-block').style.display='block';"
+        "}).catch(function(e){alert('Error: '+e);});"
+    "}"
+    "</script>"
+  );
+
+  sendFooter();
+}
+
+// ---- COGO sub-page: area/perimeter of a closed polygon from N survey points ----
+static void handleCogoAreaPage() {
+  String sid = _server->hasArg("sid") ? _server->arg("sid") : SurveyPoints::getActiveSurveyId();
+
+  sendHeader("Area & Perimeter", "survey");
+  sendChunk("<div class='settings-breadcrumb'><a href='/cogo?sid=" + sid + "' class='btn btn-secondary btn-small'>&#8592; COGO</a></div>");
+
+  if (sid.isEmpty()) {
+    sendChunk("<div class='card'><p style='color:#888'>No active survey.</p></div>");
+    sendFooter();
+    return;
+  }
+
+  sendChunk("<div class='card'><h2>&#128202; Area &amp; Perimeter</h2>");
+  sendChunk("<p style='color:#7f8c8d;font-size:0.85em;margin-top:-6px'>Tap points in perimeter order (clockwise or counter-clockwise) to build the polygon.</p>");
+  sendChunk("<div id='area-pts' style='max-height:280px;overflow-y:auto;border:1px solid #ddd;border-radius:4px;padding:4px 8px'></div>");
+  sendChunk("<button type='button' class='btn-secondary' style='margin-top:8px' onclick='clearAreaSel()'>&#10005; Clear selection</button> ");
+  sendChunk("<button onclick='calcArea()' style='padding:8px 16px;font-size:1em;background:#27ae60;color:white;border:none;border-radius:6px;cursor:pointer;margin-top:8px'>&#128202; Calculate</button>");
+  sendChunk("<div id='area-result' style='display:none;margin-top:12px;padding:10px;background:#ecf0f1;border-radius:4px;font-family:monospace;font-size:0.95em'></div>");
+  sendChunk("</div>");
+
+  sendChunk("<script>");
+  sendChunk("var COGO_SID='" + sid + "';var AREA_ORDER=[];");
+  sendChunk(
+    "function loadAreaPoints(){"
+      "fetch('/api/pts/points?sid='+COGO_SID).then(function(r){return r.json();}).then(function(d){"
+        "var feats=d.features||[];"
+        "var box=document.getElementById('area-pts');box.innerHTML='';"
+        "feats.forEach(function(f){"
+          "var nm=(f.properties&&f.properties.name)?f.properties.name:f.id;"
+          "var cd=(f.properties&&f.properties.codice)?' ['+f.properties.codice+']':'';"
+          "var row=document.createElement('label');"
+          "row.style.cssText='display:flex;align-items:center;gap:8px;padding:5px 2px;border-bottom:1px solid #eee;cursor:pointer';"
+          "var cb=document.createElement('input');cb.type='checkbox';cb.value=f.id;cb.onchange=function(){toggleAreaPt(this);};"
+          "var badge=document.createElement('span');badge.className='area-badge';"
+          "badge.style.cssText='display:none;min-width:20px;height:20px;border-radius:50%;background:#9b59b6;color:#fff;font-size:11px;font-weight:bold;align-items:center;justify-content:center;';"
+          "var lbl=document.createElement('span');lbl.textContent=nm+cd;"
+          "row.appendChild(cb);row.appendChild(badge);row.appendChild(lbl);box.appendChild(row);"
+        "});"
+      "}).catch(function(e){alert('Error loading points: '+e);});"
+    "}"
+  );
+  sendChunk(
+    "function toggleAreaPt(cb){"
+      "var pid=cb.value;"
+      "if(cb.checked){AREA_ORDER.push(pid);}"
+      "else{AREA_ORDER=AREA_ORDER.filter(function(p){return p!==pid;});}"
+      "renumberAreaPts();"
+    "}"
+  );
+  sendChunk(
+    "function renumberAreaPts(){"
+      "var boxes=document.getElementById('area-pts').querySelectorAll('input[type=checkbox]');"
+      "boxes.forEach(function(cb){"
+        "var badge=cb.nextSibling;"
+        "var idx=AREA_ORDER.indexOf(cb.value);"
+        "if(idx>=0){badge.textContent=(idx+1);badge.style.display='inline-flex';}"
+        "else{badge.textContent='';badge.style.display='none';}"
+      "});"
+    "}"
+  );
+  sendChunk(
+    "function clearAreaSel(){"
+      "AREA_ORDER=[];"
+      "document.getElementById('area-pts').querySelectorAll('input[type=checkbox]').forEach(function(cb){cb.checked=false;});"
+      "renumberAreaPts();"
+      "document.getElementById('area-result').style.display='none';"
+    "}"
+  );
+  sendChunk(
+    "function calcArea(){"
+      "if(AREA_ORDER.length<3){alert('Select at least 3 points, in perimeter order');return;}"
+      "fetch('/api/cogo/area/compute?sid='+COGO_SID+'&pids='+AREA_ORDER.join(','))"
+        ".then(function(r){return r.json();}).then(function(d){"
+          "if(d.error){alert(d.error);return;}"
+          "var res=document.getElementById('area-result');"
+          "res.innerHTML='Area: '+d.area.toFixed(2)+' m&sup2; ('+(d.area/10000).toFixed(4)+' ha)<br>'+"
+            "'Perimeter: '+d.perimeter.toFixed(3)+' m<br>'+"
+            "'Points: '+d.n;"
+          "res.style.display='block';"
+        "}).catch(function(e){alert('Error: '+e);});"
+    "}"
+  );
+  sendChunk("loadAreaPoints();");
+  sendChunk("</script>");
 
   sendFooter();
 }
@@ -5899,6 +6541,282 @@ static void handlePtsPointEdit() {
   if (sid.isEmpty() || pid.isEmpty()) { _server->send(400,"application/json","{\"error\":\"Missing sid/pid\"}"); return; }
   bool ok = SurveyPoints::editPoint(sid, pid, name, codice);
   _server->send(200, "application/json", ok ? "{\"ok\":true}" : "{\"error\":\"Not found\"}");
+}
+
+// ---- COGO API: distance/bearing/delta N-E between two points ----
+static void handleCogoCompute() {
+  String sid  = _server->hasArg("sid")  ? _server->arg("sid")  : SurveyPoints::getActiveSurveyId();
+  String pid1 = _server->hasArg("pid1") ? _server->arg("pid1") : "";
+  String pid2 = _server->hasArg("pid2") ? _server->arg("pid2") : "";
+  if (sid.isEmpty() || pid1.isEmpty() || pid2.isEmpty()) {
+    _server->send(400, "application/json", "{\"error\":\"Missing sid/pid1/pid2\"}");
+    return;
+  }
+
+  double lat1, lon1, alt1, lat2, lon2, alt2;
+  String name1, name2;
+  if (!SurveyPoints::getPointCoords(sid, pid1, lat1, lon1, alt1, name1) ||
+      !SurveyPoints::getPointCoords(sid, pid2, lat2, lon2, alt2, name2)) {
+    _server->send(404, "application/json", "{\"error\":\"Point not found\"}");
+    return;
+  }
+
+  double dist2d  = GeoMath::haversine2D(lat1, lon1, lat2, lon2);
+  double bearing = GeoMath::forwardAzimuth(lat1, lon1, lat2, lon2);
+  double dAlt    = alt2 - alt1;
+  double dist3d  = GeoMath::distance3D(dist2d, dAlt);
+  double dN, dE;
+  GeoMath::localDeltaNE(lat1, lon1, lat2, lon2, dN, dE);
+
+  String json = "{";
+  json += "\"name1\":\""  + jsonEscape(name1) + "\",";
+  json += "\"name2\":\""  + jsonEscape(name2) + "\",";
+  json += "\"dist2d\":"   + String(dist2d, 4) + ",";
+  json += "\"dist3d\":"   + String(dist3d, 4) + ",";
+  json += "\"bearing\":"  + String(bearing, 3) + ",";
+  json += "\"dN\":"       + String(dN, 4) + ",";
+  json += "\"dE\":"       + String(dE, 4) + ",";
+  json += "\"dAlt\":"     + String(dAlt, 4);
+  json += "}";
+  _server->send(200, "application/json", json);
+}
+
+// ---- COGO API: chainage & offset of a point relative to an A-B alignment ----
+static void handleCogoChainageCompute() {
+  String sid  = _server->hasArg("sid")  ? _server->arg("sid")  : SurveyPoints::getActiveSurveyId();
+  String pidA = _server->hasArg("pidA") ? _server->arg("pidA") : "";
+  String pidB = _server->hasArg("pidB") ? _server->arg("pidB") : "";
+  String pidP = _server->hasArg("pidP") ? _server->arg("pidP") : "";
+  if (sid.isEmpty() || pidA.isEmpty() || pidB.isEmpty() || pidP.isEmpty()) {
+    _server->send(400, "application/json", "{\"error\":\"Missing sid/pidA/pidB/pidP\"}");
+    return;
+  }
+
+  double latA, lonA, altA, latB, lonB, altB, latP, lonP, altP;
+  String nameA, nameB, nameP;
+  if (!SurveyPoints::getPointCoords(sid, pidA, latA, lonA, altA, nameA) ||
+      !SurveyPoints::getPointCoords(sid, pidB, latB, lonB, altB, nameB) ||
+      !SurveyPoints::getPointCoords(sid, pidP, latP, lonP, altP, nameP)) {
+    _server->send(404, "application/json", "{\"error\":\"Point not found\"}");
+    return;
+  }
+
+  double chainage, offset;
+  GeoMath::chainageOffset(latA, lonA, latB, lonB, latP, lonP, chainage, offset);
+  double baseline = GeoMath::haversine2D(latA, lonA, latB, lonB);
+
+  String json = "{";
+  json += "\"chainage\":" + String(chainage, 4) + ",";
+  json += "\"offset\":"   + String(offset, 4)   + ",";
+  json += "\"baseline\":" + String(baseline, 4);
+  json += "}";
+  _server->send(200, "application/json", json);
+}
+
+// ---- COGO API: forward intersection compute ----
+static void handleCogoIntersectCompute() {
+  String sid  = _server->hasArg("sid")  ? _server->arg("sid")  : SurveyPoints::getActiveSurveyId();
+  String pidA = _server->hasArg("pidA") ? _server->arg("pidA") : "";
+  String pidB = _server->hasArg("pidB") ? _server->arg("pidB") : "";
+  String side = _server->hasArg("side") ? _server->arg("side") : "R";
+  if (sid.isEmpty() || pidA.isEmpty() || pidB.isEmpty() ||
+      !_server->hasArg("angA") || !_server->hasArg("angB")) {
+    _server->send(400, "application/json", "{\"error\":\"Missing parameters\"}");
+    return;
+  }
+  double angA = _server->arg("angA").toDouble();
+  double angB = _server->arg("angB").toDouble();
+
+  double latA, lonA, altA, latB, lonB, altB;
+  String nameA, nameB;
+  if (!SurveyPoints::getPointCoords(sid, pidA, latA, lonA, altA, nameA) ||
+      !SurveyPoints::getPointCoords(sid, pidB, latB, lonB, altB, nameB)) {
+    _server->send(404, "application/json", "{\"error\":\"Point not found\"}");
+    return;
+  }
+
+  double latP, lonP, distAP, distBP;
+  bool rightSide = (side != "L");
+  if (!GeoMath::forwardIntersection(latA, lonA, latB, lonB, angA, angB, rightSide,
+                                     latP, lonP, distAP, distBP)) {
+    _server->send(400, "application/json", "{\"error\":\"Invalid angles (must form a triangle, sum below 180deg)\"}");
+    return;
+  }
+
+  String json = "{";
+  json += "\"lat\":"    + String(latP, 8) + ",";
+  json += "\"lon\":"    + String(lonP, 8) + ",";
+  json += "\"altHAE\":" + String((altA + altB) / 2.0, 3) + ",";
+  json += "\"distAP\":" + String(distAP, 4) + ",";
+  json += "\"distBP\":" + String(distBP, 4);
+  json += "}";
+  _server->send(200, "application/json", json);
+}
+
+// ---- COGO API: trilateration compute ----
+static void handleCogoTrilaterateCompute() {
+  String sid  = _server->hasArg("sid")  ? _server->arg("sid")  : SurveyPoints::getActiveSurveyId();
+  String pidA = _server->hasArg("pidA") ? _server->arg("pidA") : "";
+  String pidB = _server->hasArg("pidB") ? _server->arg("pidB") : "";
+  String side = _server->hasArg("side") ? _server->arg("side") : "R";
+  if (sid.isEmpty() || pidA.isEmpty() || pidB.isEmpty() ||
+      !_server->hasArg("distA") || !_server->hasArg("distB")) {
+    _server->send(400, "application/json", "{\"error\":\"Missing parameters\"}");
+    return;
+  }
+  double distA = _server->arg("distA").toDouble();
+  double distB = _server->arg("distB").toDouble();
+
+  double latA, lonA, altA, latB, lonB, altB;
+  String nameA, nameB;
+  if (!SurveyPoints::getPointCoords(sid, pidA, latA, lonA, altA, nameA) ||
+      !SurveyPoints::getPointCoords(sid, pidB, latB, lonB, altB, nameB)) {
+    _server->send(404, "application/json", "{\"error\":\"Point not found\"}");
+    return;
+  }
+
+  double latP, lonP;
+  bool rightSide = (side != "L");
+  if (!GeoMath::trilaterate(latA, lonA, latB, lonB, distA, distB, rightSide, latP, lonP)) {
+    _server->send(400, "application/json", "{\"error\":\"No solution (distances do not intersect with the baseline)\"}");
+    return;
+  }
+
+  String json = "{";
+  json += "\"lat\":"    + String(latP, 8) + ",";
+  json += "\"lon\":"    + String(lonP, 8) + ",";
+  json += "\"altHAE\":" + String((altA + altB) / 2.0, 3);
+  json += "}";
+  _server->send(200, "application/json", json);
+}
+
+// ---- COGO API: polar (radiation) compute ----
+static void handleCogoPolarCompute() {
+  String sid  = _server->hasArg("sid")  ? _server->arg("sid")  : SurveyPoints::getActiveSurveyId();
+  String pidA = _server->hasArg("pidA") ? _server->arg("pidA") : "";
+  if (sid.isEmpty() || pidA.isEmpty() || !_server->hasArg("az") || !_server->hasArg("dist")) {
+    _server->send(400, "application/json", "{\"error\":\"Missing parameters\"}");
+    return;
+  }
+  double az   = _server->arg("az").toDouble();
+  double dist = _server->arg("dist").toDouble();
+
+  double latA, lonA, altA;
+  String nameA;
+  if (!SurveyPoints::getPointCoords(sid, pidA, latA, lonA, altA, nameA)) {
+    _server->send(404, "application/json", "{\"error\":\"Point not found\"}");
+    return;
+  }
+
+  double latP, lonP;
+  GeoMath::destinationPoint(latA, lonA, az, dist, latP, lonP);
+
+  String json = "{";
+  json += "\"lat\":"    + String(latP, 8) + ",";
+  json += "\"lon\":"    + String(lonP, 8) + ",";
+  json += "\"altHAE\":" + String(altA, 3);
+  json += "}";
+  _server->send(200, "application/json", json);
+}
+
+// ---- COGO API: oriented station compute ----
+static void handleCogoOrientedCompute() {
+  String sid  = _server->hasArg("sid")  ? _server->arg("sid")  : SurveyPoints::getActiveSurveyId();
+  String pidA = _server->hasArg("pidA") ? _server->arg("pidA") : "";
+  String pidB = _server->hasArg("pidB") ? _server->arg("pidB") : "";
+  if (sid.isEmpty() || pidA.isEmpty() || pidB.isEmpty() ||
+      !_server->hasArg("ang") || !_server->hasArg("dist")) {
+    _server->send(400, "application/json", "{\"error\":\"Missing parameters\"}");
+    return;
+  }
+  double ang  = _server->arg("ang").toDouble();
+  double dist = _server->arg("dist").toDouble();
+
+  double latA, lonA, altA, latB, lonB, altB;
+  String nameA, nameB;
+  if (!SurveyPoints::getPointCoords(sid, pidA, latA, lonA, altA, nameA) ||
+      !SurveyPoints::getPointCoords(sid, pidB, latB, lonB, altB, nameB)) {
+    _server->send(404, "application/json", "{\"error\":\"Point not found\"}");
+    return;
+  }
+
+  double azAB = GeoMath::forwardAzimuth(latA, lonA, latB, lonB);
+  double latP, lonP;
+  GeoMath::destinationPoint(latA, lonA, azAB + ang, dist, latP, lonP);
+
+  String json = "{";
+  json += "\"lat\":"    + String(latP, 8) + ",";
+  json += "\"lon\":"    + String(lonP, 8) + ",";
+  json += "\"altHAE\":" + String(altA, 3);
+  json += "}";
+  _server->send(200, "application/json", json);
+}
+
+// ---- COGO API: save a COGO-derived point (intersection/trilateration/...) ----
+static void handleCogoPointSave() {
+  String sid    = _server->hasArg("sid")    ? _server->arg("sid")    : "";
+  String name   = _server->hasArg("name")   ? _server->arg("name")   : "";
+  String codice = _server->hasArg("codice") ? _server->arg("codice") : "";
+  String method = _server->hasArg("method") ? _server->arg("method") : "cogo";
+  String srcA   = _server->hasArg("srcA")   ? _server->arg("srcA")   : "";
+  String srcB   = _server->hasArg("srcB")   ? _server->arg("srcB")   : "";
+  if (sid.isEmpty() || !_server->hasArg("lat") || !_server->hasArg("lon")) {
+    _server->send(400, "application/json", "{\"error\":\"Missing sid/lat/lon\"}");
+    return;
+  }
+  double lat = _server->arg("lat").toDouble();
+  double lon = _server->arg("lon").toDouble();
+  double alt = _server->hasArg("alt") ? _server->arg("alt").toDouble() : 0.0;
+
+  String pid;
+  bool ok = SurveyPoints::saveCogoPoint(sid, lat, lon, alt, name, codice, method, srcA, srcB, pid);
+  if (!ok) { _server->send(500, "application/json", "{\"error\":\"Save failed\"}"); return; }
+  _server->send(200, "application/json", "{\"ok\":true,\"pid\":\"" + pid + "\"}");
+}
+
+// ---- COGO API: area/perimeter of a polygon from ordered point ids ----
+static void handleCogoAreaCompute() {
+  String sid  = _server->hasArg("sid")  ? _server->arg("sid")  : SurveyPoints::getActiveSurveyId();
+  String pids = _server->hasArg("pids") ? _server->arg("pids") : "";
+  if (sid.isEmpty() || pids.isEmpty()) {
+    _server->send(400, "application/json", "{\"error\":\"Missing sid/pids\"}");
+    return;
+  }
+
+  std::vector<double> lats, lons;
+  int pos = 0;
+  while (pos <= (int)pids.length()) {
+    int comma = pids.indexOf(',', pos);
+    String pid = (comma < 0) ? pids.substring(pos) : pids.substring(pos, comma);
+    pid.trim();
+    if (!pid.isEmpty()) {
+      double lat, lon, alt;
+      String name;
+      if (!SurveyPoints::getPointCoords(sid, pid, lat, lon, alt, name)) {
+        _server->send(404, "application/json", "{\"error\":\"Point not found: " + pid + "\"}");
+        return;
+      }
+      lats.push_back(lat);
+      lons.push_back(lon);
+    }
+    if (comma < 0) break;
+    pos = comma + 1;
+  }
+
+  if (lats.size() < 3) {
+    _server->send(400, "application/json", "{\"error\":\"Need at least 3 points\"}");
+    return;
+  }
+
+  double area, perimeter;
+  GeoMath::polygonAreaPerimeter(lats, lons, area, perimeter);
+
+  String json = "{";
+  json += "\"area\":"      + String(area, 3) + ",";
+  json += "\"perimeter\":" + String(perimeter, 4) + ",";
+  json += "\"n\":"         + String((int)lats.size());
+  json += "}";
+  _server->send(200, "application/json", json);
 }
 
 // ---- Survey API: download GeoJSON ----
@@ -7007,6 +7925,24 @@ void WebUI::begin(SdFat& sd, WebServer& server) {
   _server->on("/api/pts/download/csv",    HTTP_GET,  handlePtsDownloadCSV);
   _server->on("/api/pts/sync",            HTTP_GET,  handlePtsSync);
   _server->on("/api/pts/extint",          HTTP_GET,  handlePtsExtint);
+
+  // COGO (distance/bearing, chainage/offset, polar, oriented station, intersection, trilateration, area/perimeter)
+  _server->on("/cogo",               HTTP_GET,  handleCogoHub);
+  _server->on("/cogo/distance",      HTTP_GET,  handleCogoDistancePage);
+  _server->on("/cogo/chainage",      HTTP_GET,  handleCogoChainagePage);
+  _server->on("/cogo/polar",         HTTP_GET,  handleCogoPolarPage);
+  _server->on("/cogo/oriented",      HTTP_GET,  handleCogoOrientedPage);
+  _server->on("/cogo/intersect",     HTTP_GET,  handleCogoIntersectPage);
+  _server->on("/cogo/trilateration", HTTP_GET,  handleCogoTrilaterationPage);
+  _server->on("/cogo/area",          HTTP_GET,  handleCogoAreaPage);
+  _server->on("/api/cogo/compute",            HTTP_GET,  handleCogoCompute);
+  _server->on("/api/cogo/chainage/compute",   HTTP_GET,  handleCogoChainageCompute);
+  _server->on("/api/cogo/polar/compute",      HTTP_GET,  handleCogoPolarCompute);
+  _server->on("/api/cogo/oriented/compute",   HTTP_GET,  handleCogoOrientedCompute);
+  _server->on("/api/cogo/intersect/compute",  HTTP_GET,  handleCogoIntersectCompute);
+  _server->on("/api/cogo/trilaterate/compute",HTTP_GET,  handleCogoTrilaterateCompute);
+  _server->on("/api/cogo/area/compute",       HTTP_GET,  handleCogoAreaCompute);
+  _server->on("/api/cogo/point/save",         HTTP_POST, handleCogoPointSave);
 
   // GNSS log files API
   _server->on("/api/gnss/files", HTTP_GET, handleApiGnssFiles);

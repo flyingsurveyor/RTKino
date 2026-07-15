@@ -101,6 +101,17 @@ namespace SurveyPoints {
     bool   setActiveSurveyId(const String& sid);
     int    getSurveyPointCount(const String& sid);
 
+    // ---- Lightweight point listing (id/name/lat/lon only) ----
+    // Used by the OLED map view; avoids re-parsing the full GeoJSON feature
+    // (accuracy/DOP/etc.) when only position is needed.
+    struct SurveyPointBrief {
+        String id;
+        String name;
+        double lat;
+        double lon;
+    };
+    bool listPoints(const String& sid, std::vector<SurveyPointBrief>& out);
+
     // ---- Quality gate ----
     QualityWarning checkQuality();
 
@@ -114,6 +125,18 @@ namespace SurveyPoints {
 
     // ---- Edit a point's name/codice (coordinates untouched) ----
     bool editPoint(const String& sid, const String& pid, const String& name, const String& codice);
+
+    // ---- Look up a single point's coordinates (lat/lon deg, altHAE m) + name, by id ----
+    bool getPointCoords(const String& sid, const String& pid,
+                         double& lat, double& lon, double& altHAE, String& name);
+
+    // ---- Persist a COGO-derived point (forward intersection, trilateration, ...) ----
+    // Tagged "source":"cogo" (vs. GNSS-measured points) so the WebUI can render a
+    // distinct badge; srcA/srcB record the point ids it was computed from.
+    bool saveCogoPoint(const String& sid, double lat, double lon, double altHAE,
+                        const String& name, const String& codice,
+                        const String& method, const String& srcA, const String& srcB,
+                        String& outPid);
 
     // ---- Download ----
     String getSurveyGeoJSON(const String& sid);

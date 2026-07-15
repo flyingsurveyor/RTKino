@@ -84,6 +84,12 @@ namespace OledMenu {
   String (*getStakeoutNavString) ()     = nullptr;
   void   (*getStakeoutNavData)(OledStakeoutNavData&) = nullptr;
 
+  // Survey map
+  void   (*onEnterSurveyMap)      ()             = nullptr;
+  bool   (*getSurveyMapRoverValid)()             = nullptr;
+  int    (*getSurveyMapPointCount)()             = nullptr;
+  bool   (*getSurveyMapPoint)(int, OledSurveyMapPoint&) = nullptr;
+
   // Tracking
   void   (*onTrackStartStop)    ()      = nullptr;
   void   (*onSetTrackTrigger)   (int)   = nullptr;
@@ -106,21 +112,22 @@ static const int MAX_VISIBLE    = 5;
 static const int MAX_DISP_CHARS = 21;
 
 // ---------------------------------------------------------------------------
-// Main menu  (6 items)
+// Main menu  (8 items)
 // ---------------------------------------------------------------------------
 // "Misura punto" was removed: it's redundant with Surveys -> Misura punto
 // and with the home-screen double-click quick-measure shortcut.
 // Index 0 = Surveys
-// Index 1 = Stakeout
-// Index 2 = Tracking
-// Index 3 = RTCM IN
-// Index 4 = Base
-// Index 5 = Settings
-// Index 6 = Back
+// Index 1 = Map (survey points around current position)
+// Index 2 = Stakeout
+// Index 3 = Tracking
+// Index 4 = RTCM IN
+// Index 5 = Base
+// Index 6 = Settings
+// Index 7 = Back
 static const char* MAIN_ITEMS[] = {
-  "Surveys", "Stakeout", "Tracking", "RTCM IN", "Base", "Settings", "Back"
+  "Surveys", "Map", "Stakeout", "Tracking", "RTCM IN", "Base", "Settings", "Back"
 };
-static const int MAIN_COUNT = 7;
+static const int MAIN_COUNT = 8;
 
 // ---------------------------------------------------------------------------
 // Settings root (3 items) — Display removed: contrast/dim has no visible
@@ -176,6 +183,12 @@ static const char* SURVEY_ITEMS[] = { "Misura punto", "Rilievi", "Nuovo rilievo"
 static const int   SURVEY_COUNT   = 4;
 
 // ---------------------------------------------------------------------------
+// Survey map menu (3 items) — opened with a click while on OLED_SURVEY_MAP.
+// ---------------------------------------------------------------------------
+enum SurveyMapMenuItem { SMI_FIT_ALL = 0, SMI_ZOOM_TO_POINT, SMI_BACK, SMI_COUNT };
+static const char* SURVEY_MAP_MENU_ITEMS[SMI_COUNT] = { "Fit all", "Zoom to point", "Back" };
+
+// ---------------------------------------------------------------------------
 // Base mode menu (6 items) — mirrors the WebUI's Base page: select a saved
 // station + output profiles first, then Start/Stop act on whatever is
 // currently selected.
@@ -209,15 +222,16 @@ static const char* STAKEOUT_ITEMS[] = { "Naviga", "File", "Back" };
 static const int   STAKEOUT_COUNT   = 3;
 
 // ---------------------------------------------------------------------------
-// Stakeout map view — discrete zoom presets (cm per pixel), cycled with the
-// rotary encoder. Fine end (1cm/px) matches stakeout centimeter precision;
-// coarse end (10m/px) covers a ~640m-wide view for a long walk to target.
+// Map views (Stakeout + Survey) — shared layout and discrete zoom presets
+// (cm per pixel), cycled with the rotary encoder. Fine end (1cm/px) matches
+// survey/stakeout centimeter precision; coarse end (10m/px) covers a ~640m-
+// wide view for a long walk to target.
 // ---------------------------------------------------------------------------
-static const float STAKEOUT_MAP_SCALE_CM[] = { 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000 };
-static const int   STAKEOUT_MAP_SCALE_COUNT = 10;
-static const int   STAKEOUT_MAP_CX = 64;
-static const int   STAKEOUT_MAP_CY = 28;   // map canvas is y=0..55; bottom line y=56..63 is the scale/distance readout
-static const int   STAKEOUT_MAP_MAX_RADIUS_PX = 26;
+static const float MAP_SCALE_CM[] = { 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000 };
+static const int   MAP_SCALE_COUNT = 10;
+static const int   MAP_CX = 64;
+static const int   MAP_CY = 28;   // map canvas is y=0..55; bottom line y=56..63 is the scale/distance readout
+static const int   MAP_MAX_RADIUS_PX = 26;
 
 // ---------------------------------------------------------------------------
 // Tracking sub-menu
@@ -251,8 +265,13 @@ static String s_selCodLbl    = "";
 // position to return to in OLED_MENU_BASE ("Start" vs "Stop").
 static bool   s_baseActionWasStop  = false;
 
-// Current zoom level (index into STAKEOUT_MAP_SCALE_CM) for the Stakeout map view
+// Current zoom level (index into MAP_SCALE_CM) for each map view
 static int    s_stakeoutMapZoomIdx = 4;
+static int    s_surveyMapZoomIdx   = 4;
+
+// Survey map: index of the point highlighted by "Zoom to point" (-1 = none,
+// i.e. plain "show everything" view). Cleared by Fit all / re-entering the map.
+static int    s_surveyMapHighlightIdx = -1;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -317,23 +336,55 @@ static void toggleRtcmInItem(int idx) {
 }
 
 // ---------------------------------------------------------------------------
-// Stakeout map: pick the tightest zoom preset that still keeps the target
-// within the visible radius, so the map is useful the moment it's opened
-// instead of showing an off-screen target at a stale zoom level.
+// Map zoom: pick the tightest preset that still keeps a given distance
+// within the visible radius. Shared by the Stakeout map (single target) and
+// the Survey map (farthest of N points, or one picked point).
 // ---------------------------------------------------------------------------
+static int zoomIdxForMaxDistanceCm(double maxDistCm) {
+  for (int i = 0; i < MAP_SCALE_COUNT; i++) {
+    if (maxDistCm / MAP_SCALE_CM[i] <= MAP_MAX_RADIUS_PX) return i;
+  }
+  return MAP_SCALE_COUNT - 1;  // beyond even the widest preset
+}
+
+// Stakeout map: auto-fit zoom to the single active target, so the map is
+// useful the moment it's opened instead of showing it off-screen.
 static void pickInitialStakeoutMapZoom() {
   if (!OledMenu::getStakeoutNavData) return;
   OledMenu::OledStakeoutNavData nav;
   OledMenu::getStakeoutNavData(nav);
   if (!nav.valid) return;
-  double distCm = nav.distance * 100.0;
-  for (int i = 0; i < STAKEOUT_MAP_SCALE_COUNT; i++) {
-    if (distCm / STAKEOUT_MAP_SCALE_CM[i] <= STAKEOUT_MAP_MAX_RADIUS_PX) {
-      s_stakeoutMapZoomIdx = i;
-      return;
+  s_stakeoutMapZoomIdx = zoomIdxForMaxDistanceCm(nav.distance * 100.0);
+}
+
+// Survey map: auto-fit zoom to the farthest point of the active survey, so
+// every point is visible the moment the map is opened. Also clears any
+// "Zoom to point" highlight — Fit all is the plain "show everything" view.
+static void fitAllSurveyMapPoints() {
+  s_surveyMapHighlightIdx = -1;
+  if (!OledMenu::getSurveyMapRoverValid || !OledMenu::getSurveyMapRoverValid()) return;
+  int cnt = OledMenu::getSurveyMapPointCount ? OledMenu::getSurveyMapPointCount() : 0;
+  double maxDistCm = 0.0;
+  for (int i = 0; i < cnt; i++) {
+    OledMenu::OledSurveyMapPoint p;
+    if (OledMenu::getSurveyMapPoint && OledMenu::getSurveyMapPoint(i, p)) {
+      double distCm = p.distance * 100.0;
+      if (distCm > maxDistCm) maxDistCm = distCm;
     }
   }
-  s_stakeoutMapZoomIdx = STAKEOUT_MAP_SCALE_COUNT - 1;  // target beyond even the widest preset
+  s_surveyMapZoomIdx = zoomIdxForMaxDistanceCm(maxDistCm);
+}
+
+// Survey map: auto-fit zoom to a single chosen point ("Zoom to point") and
+// highlight it with a circle so the effect is visible even when its zoom
+// bucket happens to match the previous one (e.g. tightly-clustered points).
+static void zoomToSurveyMapPoint(int idx) {
+  if (!OledMenu::getSurveyMapPoint) return;
+  OledMenu::OledSurveyMapPoint p;
+  if (OledMenu::getSurveyMapPoint(idx, p)) {
+    s_surveyMapZoomIdx      = zoomIdxForMaxDistanceCm(p.distance * 100.0);
+    s_surveyMapHighlightIdx = idx;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -403,11 +454,11 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
         break;
       // RTCM IN
       case OLED_MENU_RTCMIN:
-        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 3);
+        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 4);
         break;
       // Settings
       case OLED_MENU_SETTINGS:
-        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 5);
+        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 6);
         break;
       case OLED_MENU_SETTINGS_NET:
       case OLED_MENU_SETTINGS_SYS:
@@ -442,9 +493,19 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
       case OLED_SURVEY_QUALITY_WARN:
         enterMenu(OLED_SURVEY_MENU, SURVEY_COUNT);
         break;
+      // Survey map
+      case OLED_SURVEY_MAP:
+        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 1);
+        break;
+      case OLED_SURVEY_MAP_MENU:
+        s_state = OLED_SURVEY_MAP;
+        break;
+      case OLED_SURVEY_MAP_POINT_LIST:
+        enterMenu(OLED_SURVEY_MAP_MENU, SMI_COUNT, SMI_ZOOM_TO_POINT);
+        break;
       // Base mode
       case OLED_MENU_BASE:
-        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 4);
+        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 5);
         break;
       case OLED_BASE_LIST:
         enterMenu(OLED_MENU_BASE, BASE_COUNT, 0);
@@ -475,7 +536,7 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
         break;
       // Stakeout
       case OLED_STAKEOUT_MENU:
-        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 1);
+        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 2);
         break;
       case OLED_STAKEOUT_FILE_LIST:
         enterMenu(OLED_STAKEOUT_MENU, STAKEOUT_COUNT);
@@ -490,7 +551,7 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
         break;
       // Tracking
       case OLED_TRACK_MENU:
-        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 2);
+        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 3);
         break;
       case OLED_TRACK_SETTINGS:
         enterMenu(OLED_TRACK_MENU, TRACK_MENU_COUNT, 1);
@@ -522,11 +583,12 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
       }
       return;
     }
-    // ---- Stakeout map: rotation zooms in/out instead of scrolling a list ----
-    if (s_state == OLED_STAKEOUT_MAP) {
-      s_stakeoutMapZoomIdx += (direction > 0) ? 1 : -1;
-      if (s_stakeoutMapZoomIdx < 0) s_stakeoutMapZoomIdx = 0;
-      if (s_stakeoutMapZoomIdx >= STAKEOUT_MAP_SCALE_COUNT) s_stakeoutMapZoomIdx = STAKEOUT_MAP_SCALE_COUNT - 1;
+    // ---- Map views: rotation zooms in/out instead of scrolling a list ----
+    if (s_state == OLED_STAKEOUT_MAP || s_state == OLED_SURVEY_MAP) {
+      int& zoomIdx = (s_state == OLED_STAKEOUT_MAP) ? s_stakeoutMapZoomIdx : s_surveyMapZoomIdx;
+      zoomIdx += (direction > 0) ? 1 : -1;
+      if (zoomIdx < 0) zoomIdx = 0;
+      if (zoomIdx >= MAP_SCALE_COUNT) zoomIdx = MAP_SCALE_COUNT - 1;
       return;
     }
     switch (s_state) {
@@ -540,6 +602,8 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
       case OLED_SURVEY_LIST:
       case OLED_SURVEY_CODE_CAT:
       case OLED_SURVEY_CODE_CODE:
+      case OLED_SURVEY_MAP_MENU:
+      case OLED_SURVEY_MAP_POINT_LIST:
       case OLED_MENU_BASE:
       case OLED_BASE_LIST:
       case OLED_BASE_OUTPUTS_MENU:
@@ -571,23 +635,28 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
         case 0: // Surveys
           enterMenu(OLED_SURVEY_MENU, SURVEY_COUNT);
           break;
-        case 1: // Stakeout
+        case 1: // Map
+          if (OledMenu::onEnterSurveyMap) OledMenu::onEnterSurveyMap();
+          fitAllSurveyMapPoints();
+          s_state = OLED_SURVEY_MAP;
+          break;
+        case 2: // Stakeout
           enterMenu(OLED_STAKEOUT_MENU, STAKEOUT_COUNT);
           break;
-        case 2: // Tracking
+        case 3: // Tracking
           enterMenu(OLED_TRACK_MENU, TRACK_MENU_COUNT);
           break;
-        case 3: { // RTCM IN
+        case 4: { // RTCM IN
           enterMenu(OLED_MENU_RTCMIN, RI_COUNT);
           break;
         }
-        case 4: // Base
+        case 5: // Base
           enterMenu(OLED_MENU_BASE, BASE_COUNT);
           break;
-        case 5: // Settings
+        case 6: // Settings
           enterMenu(OLED_MENU_SETTINGS, SETTINGS_ROOT_COUNT);
           break;
-        case 6: // Back
+        case 7: // Back
           s_state = OLED_NORMAL;
           break;
       }
@@ -596,7 +665,7 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
     // ---- RTCM IN sub-menu ----
     case OLED_MENU_RTCMIN:
       if (s_cursor == RI_BACK) {
-        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 3);
+        enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 4);
       } else {
         toggleRtcmInItem(s_cursor);
       }
@@ -607,7 +676,7 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
       switch (s_cursor) {
         case 0: enterMenu(OLED_MENU_SETTINGS_NET, NI_COUNT);  break;
         case 1: enterMenu(OLED_MENU_SETTINGS_SYS, SYI_COUNT); break;
-        case 2: enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 5);     break;
+        case 2: enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 6);     break;
       }
       break;
 
@@ -735,6 +804,39 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
       launchSurveyMeasure(true);
       break;
 
+    // ---- Survey map: click dismisses an active highlight, else opens menu ----
+    case OLED_SURVEY_MAP:
+      if (s_surveyMapHighlightIdx >= 0) {
+        s_surveyMapHighlightIdx = -1;
+      } else {
+        enterMenu(OLED_SURVEY_MAP_MENU, SMI_COUNT);
+      }
+      break;
+
+    // ---- Survey map menu ----
+    case OLED_SURVEY_MAP_MENU:
+      switch (s_cursor) {
+        case SMI_FIT_ALL:
+          fitAllSurveyMapPoints();
+          s_state = OLED_SURVEY_MAP;
+          break;
+        case SMI_ZOOM_TO_POINT: {
+          int cnt = OledMenu::getSurveyMapPointCount ? OledMenu::getSurveyMapPointCount() : 0;
+          enterMenu(OLED_SURVEY_MAP_POINT_LIST, max(cnt, 1));
+          break;
+        }
+        case SMI_BACK:
+          s_state = OLED_SURVEY_MAP;
+          break;
+      }
+      break;
+
+    // ---- Survey map: pick a point to zoom to ----
+    case OLED_SURVEY_MAP_POINT_LIST:
+      zoomToSurveyMapPoint(s_cursor);
+      s_state = OLED_SURVEY_MAP;
+      break;
+
     // ---- Base mode root ----
     case OLED_MENU_BASE:
       switch (s_cursor) {
@@ -756,7 +858,7 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
           s_state = OLED_BASE_CONFIRM_STOP;
           break;
         case 5: // Back
-          enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 4);
+          enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 5);
           break;
       }
       break;
@@ -827,7 +929,7 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
     // ---- Confirm: Survey-in auto ----
     case OLED_BASE_CONFIRM_SVIN:
       if (OledMenu::onStartSurveyIn) OledMenu::onStartSurveyIn();
-      enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 4);
+      enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 5);
       break;
 
     // ---- Base list (select only) ----
@@ -845,7 +947,7 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
           enterMenu(OLED_STAKEOUT_FILE_LIST, max(cnt, 1));
           break;
         }
-        case 2: enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 1); break;
+        case 2: enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 2); break;
       }
       break;
 
@@ -880,7 +982,7 @@ void handleInput(int direction, bool click, bool doubleClick, bool longPress) {
       switch (s_cursor) {
         case 0: if (OledMenu::onTrackStartStop) OledMenu::onTrackStartStop(); break;
         case 1: enterMenu(OLED_TRACK_SETTINGS, TRACK_SETTINGS_COUNT); break;
-        case 2: enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 2); break;
+        case 2: enterMenu(OLED_MENU_MAIN, MAIN_COUNT, 3); break;
       }
       break;
 
@@ -1242,6 +1344,93 @@ void draw(Adafruit_SSD1306& disp) {
       break;
     }
 
+    // ---- Survey MAP screen: north-up, rover always centered, N points ----
+    case OLED_SURVEY_MAP: {
+      bool roverOK = OledMenu::getSurveyMapRoverValid && OledMenu::getSurveyMapRoverValid();
+      int  cnt     = OledMenu::getSurveyMapPointCount ? OledMenu::getSurveyMapPointCount() : 0;
+
+      // "You are here" marker: fixed cross at screen center
+      disp.drawFastHLine(MAP_CX - 3, MAP_CY, 7, SSD1306_WHITE);
+      disp.drawFastVLine(MAP_CX, MAP_CY - 3, 7, SSD1306_WHITE);
+
+      float scaleCm = MAP_SCALE_CM[s_surveyMapZoomIdx];
+
+      if (roverOK) {
+        for (int i = 0; i < cnt; i++) {
+          OledMenu::OledSurveyMapPoint p;
+          if (!OledMenu::getSurveyMapPoint || !OledMenu::getSurveyMapPoint(i, p)) continue;
+          double distCm = p.distance * 100.0;
+          double pxOff  = distCm / scaleCm;
+          double azRad  = p.azimuth * DEG_TO_RAD;
+          int tx = MAP_CX + (int)round(pxOff * sin(azRad));
+          int ty = MAP_CY - (int)round(pxOff * cos(azRad)); // North = up
+          const int margin = 3;  // room for the highlight circle (radius 3)
+          if (tx < margin) tx = margin;
+          if (tx > SCREEN_W - 1 - margin) tx = SCREEN_W - 1 - margin;
+          if (ty < margin) ty = margin;
+          if (ty > 55 - margin) ty = 55 - margin;
+          if (i == s_surveyMapHighlightIdx) {
+            disp.drawCircle(tx, ty, 3, SSD1306_WHITE);
+          } else {
+            disp.drawPixel(tx,     ty,     SSD1306_WHITE);
+            disp.drawPixel(tx + 1, ty,     SSD1306_WHITE);
+            disp.drawPixel(tx,     ty + 1, SSD1306_WHITE);
+          }
+        }
+      }
+
+      // Bottom info bar: current scale (left) + point count / fix state (right)
+      char scaleBuf[12];
+      if (scaleCm < 100) snprintf(scaleBuf, sizeof(scaleBuf), "%.0fcm/px", scaleCm);
+      else               snprintf(scaleBuf, sizeof(scaleBuf), "%.0fm/px", scaleCm / 100.0f);
+      disp.setCursor(0, HINT_Y);
+      disp.print(scaleBuf);
+
+      char rightBuf[12];
+      if (!roverOK) snprintf(rightBuf, sizeof(rightBuf), "NO FIX");
+      else          snprintf(rightBuf, sizeof(rightBuf), "%d pt", cnt);
+      int16_t x1, y1; uint16_t w, h;
+      disp.getTextBounds(rightBuf, 0, 0, &x1, &y1, &w, &h);
+      disp.setCursor(SCREEN_W - (int)w, HINT_Y);
+      disp.print(rightBuf);
+      break;
+    }
+
+    // ---- Survey map menu (Fit all / Zoom to point / Back) ----
+    case OLED_SURVEY_MAP_MENU: {
+      disp.setCursor(0, TITLE_Y);
+      disp.print("MAP MENU");
+      dashedLine(SEP_Y);
+      for (int i = 0; i < SMI_COUNT; i++) {
+        int y = ITEMS_Y_START + i * ROW_H;
+        drawItem(y, SURVEY_MAP_MENU_ITEMS[i], nullptr, i == s_cursor);
+      }
+      drawHint("^ scroll *ok <back");
+      break;
+    }
+
+    // ---- Survey map: point picker for "Zoom to point" ----
+    case OLED_SURVEY_MAP_POINT_LIST: {
+      disp.setCursor(0, TITLE_Y);
+      disp.print("ZOOM TO POINT");
+      dashedLine(SEP_Y);
+      int cnt = OledMenu::getSurveyMapPointCount ? OledMenu::getSurveyMapPointCount() : 0;
+      if (cnt == 0) {
+        disp.setCursor(0, ITEMS_Y_START);
+        disp.print("No points");
+      } else {
+        for (int i = s_scrollTop; i < cnt && (i - s_scrollTop) < MAX_VISIBLE; i++) {
+          int y = ITEMS_Y_START + (i - s_scrollTop) * ROW_H;
+          OledMenu::OledSurveyMapPoint p;
+          String lbl = (OledMenu::getSurveyMapPoint && OledMenu::getSurveyMapPoint(i, p)) ? p.label : String(i);
+          if (lbl.length() > MAX_DISP_CHARS) lbl = lbl.substring(0, MAX_DISP_CHARS);
+          drawItem(y, lbl.c_str(), nullptr, i == s_cursor);
+        }
+      }
+      drawHint("^ scroll *ok <back");
+      break;
+    }
+
     // ---- Base mode root ----
     case OLED_MENU_BASE: {
       disp.setCursor(0, TITLE_Y);
@@ -1458,17 +1647,17 @@ void draw(Adafruit_SSD1306& disp) {
       if (OledMenu::getStakeoutNavData) OledMenu::getStakeoutNavData(nav);
 
       // "You are here" marker: fixed cross at screen center
-      disp.drawFastHLine(STAKEOUT_MAP_CX - 3, STAKEOUT_MAP_CY, 7, SSD1306_WHITE);
-      disp.drawFastVLine(STAKEOUT_MAP_CX, STAKEOUT_MAP_CY - 3, 7, SSD1306_WHITE);
+      disp.drawFastHLine(MAP_CX - 3, MAP_CY, 7, SSD1306_WHITE);
+      disp.drawFastVLine(MAP_CX, MAP_CY - 3, 7, SSD1306_WHITE);
 
-      float scaleCm = STAKEOUT_MAP_SCALE_CM[s_stakeoutMapZoomIdx];
+      float scaleCm = MAP_SCALE_CM[s_stakeoutMapZoomIdx];
 
       if (nav.valid) {
         double distCm  = nav.distance * 100.0;
         double pxOff   = distCm / scaleCm;
         double azRad   = nav.azimuth * DEG_TO_RAD;
-        int tx = STAKEOUT_MAP_CX + (int)round(pxOff * sin(azRad));
-        int ty = STAKEOUT_MAP_CY - (int)round(pxOff * cos(azRad)); // North = up
+        int tx = MAP_CX + (int)round(pxOff * sin(azRad));
+        int ty = MAP_CY - (int)round(pxOff * cos(azRad)); // North = up
         // Clamp to the map canvas (y 0..55) so the target stays visible
         // (with a direction cue) even if it doesn't fit at the current zoom.
         const int margin = 3;

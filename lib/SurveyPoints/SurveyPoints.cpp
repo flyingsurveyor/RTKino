@@ -381,6 +381,70 @@ int getSurveyPointCount(const String& sid) {
     return count;
 }
 
+// ---- listPoints ----
+bool listPoints(const String& sid, std::vector<SurveyPointBrief>& out) {
+    out.clear();
+    String json = loadSurveyJSON(sid);
+    if (json.isEmpty()) return false;
+
+    auto extractStr = [&](const String& key, int from) -> String {
+        String needle = "\"" + key + "\":\"";
+        int    ki     = json.indexOf(needle, from);
+        if (ki < 0) return "";
+        int vs = ki + needle.length();
+        int ve = json.indexOf("\"", vs);
+        if (ve < 0) return "";
+        return json.substring(vs, ve);
+    };
+
+    int pos = 0;
+    while (true) {
+        int fi = json.indexOf("\"type\":\"Feature\"", pos);
+        if (fi < 0) break;
+
+        int featureStart = -1;
+        for (int i = fi; i >= 1; i--) {
+            if (json[i] == '{') { featureStart = i; break; }
+        }
+        if (featureStart < 0) { pos = fi + 1; continue; }
+
+        int depth = 0, featureEnd = -1;
+        for (int i = featureStart; i < (int)json.length(); i++) {
+            if (json[i] == '{') depth++;
+            else if (json[i] == '}') { if (--depth == 0) { featureEnd = i; break; } }
+        }
+        if (featureEnd < 0) break;
+
+        int propsStart = json.indexOf("\"properties\":", featureStart);
+        int from       = (propsStart > 0 && propsStart < featureEnd) ? propsStart : featureStart;
+
+        SurveyPointBrief pt;
+        pt.id   = extractStr("id",   featureStart);
+        pt.name = extractStr("name", from);
+        pt.lat  = 0.0;
+        pt.lon  = 0.0;
+
+        int geomPos = json.indexOf("\"coordinates\":", featureStart);
+        if (geomPos > 0 && geomPos < featureEnd) {
+            int bracketPos = json.indexOf("[", geomPos);
+            if (bracketPos > 0) {
+                int endB = json.indexOf("]", bracketPos);
+                String coords = json.substring(bracketPos + 1, endB);
+                int c1 = coords.indexOf(",");
+                int c2 = coords.indexOf(",", c1 + 1);
+                String lon_s = coords.substring(0, c1);
+                String lat_s = coords.substring(c1 + 1, c2 > 0 ? c2 : coords.length());
+                lon_s.trim(); lat_s.trim();
+                pt.lon = lon_s.toDouble();
+                pt.lat = lat_s.toDouble();
+            }
+        }
+        out.push_back(pt);
+        pos = featureEnd + 1;
+    }
+    return !out.empty();
+}
+
 // ---- checkQuality ----
 QualityWarning checkQuality() {
     QualityWarning w;
@@ -564,6 +628,63 @@ bool editPoint(const String& sid, const String& pid, const String& name, const S
 
     String newJson = json.substring(0, featureStart) + feature + json.substring(featureEnd + 1);
     return saveSurveyJSON(sid, newJson);
+}
+
+// ---- getPointCoords ----
+bool getPointCoords(const String& sid, const String& pid,
+                     double& lat, double& lon, double& altHAE, String& name) {
+    String json = loadSurveyJSON(sid);
+    if (json.isEmpty()) return false;
+
+    String needle = "\"id\":\"" + pid + "\"";
+    int    idx    = json.indexOf(needle);
+    if (idx < 0) return false;
+
+    int featureStart = -1;
+    for (int i = idx; i >= 1; i--) {
+        if (json[i] == '{') { featureStart = i; break; }
+    }
+    if (featureStart < 0) return false;
+
+    int depth = 0, featureEnd = -1;
+    for (int i = featureStart; i < (int)json.length(); i++) {
+        if (json[i] == '{') depth++;
+        else if (json[i] == '}') { depth--; if (depth == 0) { featureEnd = i; break; } }
+    }
+    if (featureEnd < 0) return false;
+
+    lat = lon = altHAE = 0.0;
+    name = pid;
+
+    int geomPos = json.indexOf("\"coordinates\":", featureStart);
+    if (geomPos > 0 && geomPos < featureEnd) {
+        int bracketPos = json.indexOf("[", geomPos);
+        if (bracketPos > 0) {
+            int endB = json.indexOf("]", bracketPos);
+            String coords = json.substring(bracketPos + 1, endB);
+            int c1 = coords.indexOf(",");
+            int c2 = coords.indexOf(",", c1 + 1);
+            String lon_s = coords.substring(0, c1);
+            String lat_s = coords.substring(c1 + 1, c2 > 0 ? c2 : coords.length());
+            String alt_s = (c2 > 0) ? coords.substring(c2 + 1) : "0";
+            lon_s.trim(); lat_s.trim(); alt_s.trim();
+            lon    = lon_s.toDouble();
+            lat    = lat_s.toDouble();
+            altHAE = alt_s.toDouble();
+        }
+    }
+
+    int propsStart = json.indexOf("\"properties\":", featureStart);
+    int from = (propsStart > 0 && propsStart < featureEnd) ? propsStart : featureStart;
+    String nameNeedle = "\"name\":\"";
+    int ni = json.indexOf(nameNeedle, from);
+    if (ni > 0 && ni < featureEnd) {
+        int ns = ni + nameNeedle.length();
+        int ne = json.indexOf("\"", ns);
+        if (ne > 0) name = json.substring(ns, ne);
+    }
+
+    return true;
 }
 
 // ---- getSurveyGeoJSON ----
@@ -1023,6 +1144,66 @@ static bool buildAndSavePoint(const MeasureParams& params,
     }
     return ok;
 }
+
+namespace SurveyPoints {
+
+// ---- saveCogoPoint ----
+bool saveCogoPoint(const String& sid, double lat, double lon, double altHAE,
+                    const String& name, const String& codice,
+                    const String& method, const String& srcA, const String& srcB,
+                    String& outPid) {
+    int    existing = getSurveyPointCount(sid);
+    String pid      = nextPointId(existing);
+
+    String feat = "{";
+    feat += "\"type\":\"Feature\",";
+    feat += "\"id\":\"" + pid + "\",";
+    feat += "\"geometry\":{\"type\":\"Point\",\"coordinates\":[";
+    feat += fmtD(lon) + "," + fmtD(lat) + "," + fmtD(altHAE) + "]},";
+    feat += "\"properties\":{";
+    feat += "\"name\":\""      + jsonEscape(name.isEmpty() ? pid : name) + "\",";
+    feat += "\"codice\":\""    + jsonEscape(codice)      + "\",";
+    feat += "\"desc\":\"\",";
+    feat += "\"timestamp\":\"" + currentTimestamp()      + "\",";
+    feat += "\"source\":\"cogo\",";
+    feat += "\"cogo\":{";
+    feat += "\"method\":\"" + jsonEscape(method) + "\",";
+    feat += "\"srcA\":\""   + jsonEscape(srcA)    + "\",";
+    feat += "\"srcB\":\""   + jsonEscape(srcB)    + "\"}";
+    feat += "}}";
+
+    String surveyJson = loadSurveyJSON(sid);
+    if (surveyJson.isEmpty()) return false;
+
+    int featArrayEnd = surveyJson.lastIndexOf(']');
+    if (featArrayEnd < 0) return false;
+
+    bool needComma = false;
+    for (int i = featArrayEnd - 1; i >= 0; i--) {
+        char c = surveyJson[i];
+        if (c == ' ' || c == '\n' || c == '\r' || c == '\t') continue;
+        if (c == '[') break;
+        needComma = true;
+        break;
+    }
+
+    String newJson = surveyJson.substring(0, featArrayEnd)
+                   + (needComma ? "," : "")
+                   + feat
+                   + surveyJson.substring(featArrayEnd);
+
+    bool ok = saveSurveyJSON(sid, newJson);
+    if (ok) {
+        outPid = pid;
+        if (g_systemLog) {
+            g_systemLog->logEvent("POINT", pid + " '" + (name.isEmpty() ? pid : name) +
+                                   "' via COGO (" + method + ", from " + srcA + "+" + srcB + ")");
+        }
+    }
+    return ok;
+}
+
+} // namespace SurveyPoints
 
 // Allocate sample buffer: tries PSRAM first, then heap, shrinks if needed
 static GNSSSnapshot* allocateSampleBuffer(int& maxSamples) {

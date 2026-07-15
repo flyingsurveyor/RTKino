@@ -37,6 +37,7 @@
 #include "SurveyPoints.h"
 #include "PointCodes.h"
 #include "Stakeout.h"
+#include "GeoMath.h"
 #include "TrackRecorder.h"
 #include "EspNowRtcm.h"
 #if ENC_CLK_GPIO > 0 && ENC_DT_GPIO > 0 && ENC_SW_GPIO > 0
@@ -2553,6 +2554,20 @@ static void refreshSurveyList() {
   }
 }
 
+// ---- Survey map OLED cache --------------------------------------------------
+// Refreshed once when the OLED "Map" screen is entered (not on every redraw):
+// distance/azimuth to each cached point are recomputed live from the current
+// position every draw, but the point list itself only changes when the user
+// re-opens the map (e.g. after measuring a new point).
+static std::vector<SurveyPoints::SurveyPointBrief> g_surveyMapPoints;
+
+static void refreshSurveyMapPoints() {
+  g_surveyMapPoints.clear();
+  String sid = SurveyPoints::getActiveSurveyId();
+  if (sid.isEmpty()) return;
+  SurveyPoints::listPoints(sid, g_surveyMapPoints);
+}
+
 // ---- Stakeout OLED cache ---------------------------------------------------
 static std::vector<String> g_stakeoutFileIds;
 static std::vector<String> g_stakeoutFileLabels;
@@ -2838,6 +2853,30 @@ void setup() {
     out.distance      = st.d2d;
     out.azimuth       = st.az;
     out.roverCarrSoln = st.roverCarrSoln;
+  };
+
+  // Survey map callbacks ("Map" top-level menu entry)
+  OledMenu::onEnterSurveyMap = []() { refreshSurveyMapPoints(); };
+  OledMenu::getSurveyMapRoverValid = []() -> bool {
+    double lat, lon, h; uint8_t carrSoln, fixQuality;
+    takeStakeoutPosition(lat, lon, h, carrSoln, fixQuality);
+    return fixQuality != 0;
+  };
+  OledMenu::getSurveyMapPointCount = []() -> int { return (int)g_surveyMapPoints.size(); };
+  OledMenu::getSurveyMapPoint = [](int idx, OledMenu::OledSurveyMapPoint& out) -> bool {
+    if (idx < 0 || idx >= (int)g_surveyMapPoints.size()) return false;
+    const auto& pt = g_surveyMapPoints[idx];
+    out.label = pt.name.length() ? pt.name : pt.id;
+    double lat, lon, h; uint8_t carrSoln, fixQuality;
+    takeStakeoutPosition(lat, lon, h, carrSoln, fixQuality);
+    if (fixQuality != 0) {
+      out.distance = GeoMath::haversine2D(lat, lon, pt.lat, pt.lon);
+      out.azimuth  = GeoMath::forwardAzimuth(lat, lon, pt.lat, pt.lon);
+    } else {
+      out.distance = 0.0;
+      out.azimuth  = 0.0;
+    }
+    return true;
   };
 
   // Tracking action callbacks

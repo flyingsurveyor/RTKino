@@ -33,6 +33,10 @@ enum OledMenuState {
   OLED_SURVEY_MEASURE,      // Measuring screen (progress)
   OLED_SURVEY_RESULT,       // Result screen
   OLED_SURVEY_QUALITY_WARN, // Quality warning
+  // ---- Survey map states (top-level main menu entry, after Surveys) ------
+  OLED_SURVEY_MAP,          // North-up map view of the active survey's points
+  OLED_SURVEY_MAP_MENU,     // Click on the map: Fit all / Zoom to point / Back
+  OLED_SURVEY_MAP_POINT_LIST, // Point picker for "Zoom to point"
   // ---- Base mode states ----
   OLED_MENU_BASE,           // Base mode root menu
   OLED_BASE_LIST,           // Saved bases list (from bases.txt) — select only
@@ -162,6 +166,21 @@ namespace OledMenu {
     uint8_t roverCarrSoln = 0;    // 0=no RTK, 1=float, 2=fixed
   };
   extern void (*getStakeoutNavData)(OledStakeoutNavData& out);
+
+  // ---- Survey map callbacks ("Map" top-level menu entry) -------------------
+  // Shows every point of the currently active survey around the rover
+  // position — same north-up / centered / discrete-zoom model as the
+  // Stakeout map view, but for N points instead of a single target.
+  struct OledSurveyMapPoint {
+    String label;
+    double distance = 0.0;  // 2D ground distance from rover (m); valid only
+                             // when getSurveyMapRoverValid() is true
+    double azimuth  = 0.0;  // degrees from North, 0-360
+  };
+  extern void   (*onEnterSurveyMap)      ();  // refresh the point list from the active survey
+  extern bool   (*getSurveyMapRoverValid)();  // true if the current position fix is usable
+  extern int    (*getSurveyMapPointCount)();
+  extern bool   (*getSurveyMapPoint)     (int idx, OledSurveyMapPoint& out);
 
   // ---- Tracking callbacks --------------------------------------------------
   extern void   (*onTrackStartStop)    ();

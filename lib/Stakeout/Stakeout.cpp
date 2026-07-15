@@ -3,6 +3,7 @@
 #include "Stakeout.h"
 #include "FlashConfig.h"
 #include "SurveyPoints.h"
+#include "GeoMath.h"
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <math.h>
@@ -17,9 +18,6 @@
 
 // ArduinoJson budget for one imported file (GeoJSON)
 #define STAKEOUT_JSON_BUF    32768
-
-static const double DEG2RAD = M_PI / 180.0;
-static const double WGS84_A = 6378137.0;
 
 // ---------------------------------------------------------------------------
 // Namespace globals
@@ -57,29 +55,6 @@ static String stakeoutJsonEscape(const String& s) {
         else                out += c;
     }
     return out;
-}
-
-// Haversine great-circle distance (metres)
-static double haversine2D(double lat1, double lon1, double lat2, double lon2) {
-    double dLat = (lat2 - lat1) * DEG2RAD;
-    double dLon = (lon2 - lon1) * DEG2RAD;
-    double a = sin(dLat / 2) * sin(dLat / 2)
-             + cos(lat1 * DEG2RAD) * cos(lat2 * DEG2RAD)
-               * sin(dLon / 2) * sin(dLon / 2);
-    double c = 2 * atan2(sqrt(a), sqrt(1 - a));
-    return WGS84_A * c;
-}
-
-// Forward azimuth from (lat1,lon1) to (lat2,lon2), degrees from North (0-360)
-static double forwardAzimuth(double lat1, double lon1, double lat2, double lon2) {
-    double lat1r = lat1 * DEG2RAD;
-    double lat2r = lat2 * DEG2RAD;
-    double dLon  = (lon2 - lon1) * DEG2RAD;
-    double y = sin(dLon) * cos(lat2r);
-    double x = cos(lat1r) * sin(lat2r) - sin(lat1r) * cos(lat2r) * cos(dLon);
-    double az = atan2(y, x) / DEG2RAD;
-    if (az < 0) az += 360.0;
-    return az;
 }
 
 // Build the normalised JSON for a set of points and save to LittleFS.
@@ -626,9 +601,9 @@ StakeoutStatus getStatus() {
     st.targetLon  = tpt.lon;
     st.targetH    = tpt.h;
 
-    st.d2d  = haversine2D(rLat, rLon, tpt.lat, tpt.lon);
+    st.d2d  = GeoMath::haversine2D(rLat, rLon, tpt.lat, tpt.lon);
     st.dH   = isnan(tpt.h) ? NAN : (tpt.h - rH);
-    st.az   = forwardAzimuth(rLat, rLon, tpt.lat, tpt.lon);
+    st.az   = GeoMath::forwardAzimuth(rLat, rLon, tpt.lat, tpt.lon);
     st.valid = true;
     return st;
 }
